@@ -9,7 +9,7 @@ import {
   DEFAULT_ESEDRE_PORT,
 } from './config.js';
 
-export const CURRENT_ESEDRE_VERSION = '0.1.4';
+export const CURRENT_ESEDRE_VERSION = '0.1.5';
 export function computeNormalizedHash(content: string): string {
   const normalized = content.replace(/\r\n/g, '\n').trim();
   return crypto.createHash('sha1').update(normalized, 'utf-8').digest('hex');

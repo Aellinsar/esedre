@@ -16,6 +16,10 @@
 
 **Esedre** (with short CLI alias **`ese`**) is an open-source developer planning engine backed by plain text files (Markdown & JSON) that are easily version-controlled in git. Designed from the ground up for software engineers and autonomous companion LLM coding agents (such as Google Antigravity, Claude Code, and Cursor) to coordinate together, Esedre solves the single biggest bottleneck in LLM-assisted development: **agent context drift and session amnesia**.
 
+<p align="center">
+  <img src="docs/assets/esedre-dashboard-light.png" alt="Esedre Web Dashboard (Light Theme)" width="100%" />
+</p>
+
 ### ⚓ Core Pillar: Long-Term Grounding for LLM Agent Context
 
 LLM coding agents possess extraordinary implementation speed, but face a fundamental architectural ceiling: **context windows fill up, compact, and reset between turns and sessions**. External issue trackers live in distant web silos that agents cannot inspect reliably or locally without API keys and network overhead. Over multi-turn pair programming sessions, models lose track of architectural intent, past verification history, and upcoming milestones.
@@ -25,7 +29,7 @@ LLM coding agents possess extraordinary implementation speed, but face a fundame
 * **Git-Backed Ground Truth**: Tickets, feature breakdowns, architecture plans, and verification comments reside right alongside source code in git. They branch, merge, and stay synchronized with the codebase.
 * **First-Class MCP Integration**: Through the official Model Context Protocol, companion LLMs query roadmap priorities (`esedre_list_tickets`), inspect deep specifications (`esedre_get_ticket`), and update plans (`esedre_save_plan`) in real time.
 * **Cross-Session Memory & Grounding**: When an LLM agent begins a new turn, recovers from a context compaction, or transitions across developer handoffs, Esedre grounds the model to concrete technical specifications, constraints, and upcoming milestones: preventing drift and hallucinated direction.
-* **Optimistic Concurrency Protection**: Multi-agent pair-programming remains safe through SHA-1 content hashing, ensuring concurrent agents or developers never silently overwrite each other's work.
+* **Optimistic Concurrency Protection**: Multi-agent pair-programming remains safe through SHA-1 content hash versioning, ensuring concurrent agents or developers never silently overwrite each other's work.
 
 ### ⚡ Key Capabilities
 
@@ -180,6 +184,10 @@ The planner UI is styled entirely using CSS custom properties. When embedding in
 ```
 
 * **Standalone Theme Toggle**: When running via `esedre serve`, users can toggle between Day (Light) and Night (Dark) themes with one click in the header. Theme preferences persist automatically in `localStorage`.
+
+<p align="center">
+  <img src="docs/assets/esedre-dashboard-dark.png" alt="Esedre Web Dashboard (Dark Theme)" width="100%" />
+</p>
 
 ---
 
