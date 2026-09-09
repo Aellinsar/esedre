@@ -8,6 +8,12 @@ export interface ProjectDescriptor {
   slug: string;
   name: string;
   description: string;
+  colors?: {
+    name?: string;
+    badge?: string;
+    dot?: string;
+    border?: string;
+  };
 }
 
 export interface TicketMeta {

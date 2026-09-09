@@ -132,7 +132,7 @@ export function getDaemonState(port: number, workspaceRoot?: string): DaemonStat
     }
     return state;
   } catch {
-    // Corrupted state file — wipe it and self-heal
+    // Corrupted state file - wipe it and self-heal
     try {
       fs.unlinkSync(stateFile);
     } catch {}

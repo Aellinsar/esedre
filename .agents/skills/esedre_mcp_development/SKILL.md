@@ -61,4 +61,4 @@ The server exposes read-only markdown resources for dynamic agent context inject
 | `-32700` | Parse error | Invalid JSON sent on `stdin`. |
 | `-32601` | Method not found | Unknown JSON-RPC method requested. |
 | `-32602` | Invalid params | Missing required argument (e.g. ticket ID or URI). |
-| `-32603` | Internal / Security error | Thrown when storage operation fails or when the Project Firewall denies access (`EsedreAuthorizationError`). |
+| `-32603` | Internal / Security error | Thrown when storage operation fails or when the Agent Project Allow-List denies access (`EsedreAuthorizationError`). |

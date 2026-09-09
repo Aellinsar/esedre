@@ -6,7 +6,7 @@ import { FilesystemStorageAdapter } from '../src/storage/filesystem.js';
 import { SecurityFilter } from '../src/securityFilter.js';
 import { formatTicketListTable, formatTicketDetail, colors } from '../src/utils/formatter.js';
 import { EsedreMcpServer } from '../src/mcp/server.js';
-import { TicketType, TicketCategory, TicketStatus, EsedreConflictError } from '../src/types.js';
+import { TicketType, TicketCategory, TicketStatus, ProjectDescriptor, EsedreConflictError } from '../src/types.js';
 import { findEsedreConfig, EsedreAuthorizationError, validateProjectCode } from '../src/config.js';
 import { generateProjectSnapshot } from '../src/snapshot.js';
 import { configureWorkspace, CURRENT_ESEDRE_VERSION, findViteConfig } from '../src/upgrade.js';
@@ -15,7 +15,7 @@ import { startDaemon, stopDaemon, getDaemonStatus, printDaemonLogs } from '../sr
 
 function printHelp(): void {
   console.log(`
-${colors.bold}${colors.cyan}Esedre CLI (/eh-seh-dreh/)${colors.reset} — Developer Roadmap & Companion Agent Coordination Engine
+${colors.bold}${colors.cyan}Esedre CLI (/eh-seh-dreh/)${colors.reset}: Developer Roadmap & Companion LLM Coordination Engine
 
 ${colors.bold}USAGE:${colors.reset}
   .esedre/esedre <command> [options]
@@ -28,25 +28,19 @@ ${colors.bold}COMMANDS:${colors.reset}
   ${colors.bold}list${colors.reset}        [-p|--project <code|all>] [-s|--status <status>] [-t|--type <type>] [-q|--search <q>] [--json]
                List roadmap tickets with optional filters (defaults to active project).
                • Status values: 'Planned', 'In Development', 'Completed', 'Rejected'
-               • Type values: 'Feature', 'Platform', 'Tools', 'Idea', 'Bug'
+               • Type values:   'Feature', 'Platform', 'Tools', 'Idea', 'Bug'
 
   ${colors.bold}get${colors.reset}         <id> [--json]
-               Display full ticket metadata, summary, feature breakdown, comments, and sha1 hash.
+               Inspect full ticket specification, feature breakdown, and comments.
 
-  ${colors.bold}plan${colors.reset}        <id> [--set "<markdown>"] [--file <filepath>] [--last-hash <h>] [--force] [--json]
-               View or update a ticket's active implementation plan markdown.
-               • Pass --last-hash <sha1> from 'get' for optimistic concurrency protection.
+  ${colors.bold}plan${colors.reset}        <id> [--file <path> | --set "<markdown>"] [--last-hash <sha1>] [--json]
+               View or update implementation plan with optimistic concurrency control.
 
-  ${colors.bold}create${colors.reset}      --title "..." [-p|--project <code>] [-t|--type <type>] [--complexity <c>] [--effort "..."] [--summary "..."] [--author "..."] [--json]
-               Create a new roadmap ticket. Returns newly minted ticket ID and sha1 hash.
-               • Title is strictly max 48 characters.
-               • Type: 'Feature' (default), 'Platform', 'Tools', 'Idea', 'Bug'
-               • Complexity: 'Low', 'Medium' (default), 'High'
+  ${colors.bold}create${colors.reset}      --title "..." [-p|--project <code>] [-t|--type <type>] [--complexity <c>] [--effort "<e>"] [--summary "<s>"] [--json]
+               Mint a new roadmap ticket with sequential numeric ID.
 
-  ${colors.bold}update${colors.reset}      <id> [--status <status>] [--title "..."] [--in-dev] [--flag <name>] [--last-hash <h>] [--force] [--json]
-               Update a ticket's status, title, active development toggle, or feature flag.
-               • Status values: 'Planned', 'In Development', 'Completed', 'Rejected'
-               • Always supply --last-hash <sha1> to avoid overwriting concurrent edits.
+  ${colors.bold}update${colors.reset}      <id> [-s|--status <status>] [--title "..."] [--flag] [--no-flag] [--last-hash <sha1>] [--force] [--json]
+               Mutate ticket status, title, active state, or feature flag with OCC protection.
 
   ${colors.bold}comment${colors.reset}     <id> --text "..." [--author "..."] [--json]
                Append a research finding, test verification, or note to ticket history.
@@ -54,9 +48,10 @@ ${colors.bold}COMMANDS:${colors.reset}
   ${colors.bold}snapshot${colors.reset}    [--project <code>] [--json]
                Generate lean read-only projection snapshot (.esedre/snapshot.json) for zero-latency agent context.
 
-  ${colors.bold}configure${colors.reset}   [--project <code>] [--allow <c1,c2>] [--port <n>] [--no-mcp] [--proxy] [--no-proxy] [-y|--yes] [--json]
-               Initialize or update .esedre footprint, wrappers (.esedre/esedre.cmd, .esedre/ese.cmd, etc.),
-               .gitignore, MCP server config, and agent skill templates.
+  ${colors.bold}configure${colors.reset}   [--project <code>] [-n|--name <name>] [--allow <c1,c2>] [--port <n>] [--no-mcp] [--proxy] [--no-proxy] [-y|--yes] [--json]
+               Initialize or update .esedre footprint, register project code & display name in Esedre,
+               plant wrappers (.esedre/esedre.cmd, .esedre/ese.cmd, etc.), configure .gitignore,
+               MCP server config, agent skill templates, and display guided next steps.
 
   ${colors.bold}upgrade${colors.reset}     [--json]
                Upgrade workspace configuration schema, wrappers, and agent skills. Refreshes snapshot.
@@ -82,13 +77,15 @@ ${colors.bold}COMMANDS:${colors.reset}
   ${colors.bold}logs${colors.reset}        [--port <n>] [--lines <n>]
                Tail recent output logs from the Esedre daemon process.
 
-  ${colors.bold}mcp${colors.reset}         Start the Model Context Protocol (MCP) JSON-RPC 2.0 stdio server for AI agents.
-
-  ${colors.bold}serve${colors.reset}       [--port <n>] Start Esedre reverse proxy gateway (default 5674) with internal UI (5675) & API (5676).
-  ${colors.bold}daemon${colors.reset}      Alias for 'serve'. Run Esedre server in the background.
+  ${colors.bold}mcp${colors.reset}         Start the Model Context Protocol (MCP) JSON-RPC 2.0 stdio server for autonomous LLM coding agents.
 
 ${colors.bold}OPTIONS:${colors.reset}
-  --json              Output raw machine-readable JSON (strongly recommended for AI coding agents).
+  -p, --project <code> Project code (e.g. CORE, ALCE, DOCS).
+  -n, --name <name>    Project display name (e.g. "Alce Web Reader").
+  -t, --type <type>    Ticket type ('Feature', 'Platform', 'Tools', 'Idea', 'Bug').
+  -s, --status <stat>  Ticket status ('Planned', 'In Development', 'Completed', 'Rejected').
+  -q, --search <query> Case-insensitive substring search query.
+  --json              Output raw machine-readable JSON (strongly recommended for autonomous LLM coding agents).
   --last-hash <hash>  Optimistic concurrency control: last known sha1 hash of the ticket from 'get'.
   --force             Bypass optimistic concurrency last-hash conflict checks on writes.
   -h, --help          Show this help reference.
@@ -126,7 +123,7 @@ function parseArgs(rawArgs: string[]): { command: string; positionals: string[];
         flags['help'] = true;
       } else if (key === 'y') {
         flags['yes'] = true;
-      } else if (key === 't' || key === 'p' || key === 's' || key === 'q') {
+      } else if (key === 't' || key === 'p' || key === 's' || key === 'q' || key === 'n') {
         const next = rawArgs[i + 1];
         if (next !== undefined && !next.startsWith('-')) {
           flags[key] = next;
@@ -149,6 +146,7 @@ function parseArgs(rawArgs: string[]): { command: string; positionals: string[];
   // Map canonical shorthand flags to their long-form equivalents
   if (flags['t'] && !flags['type']) flags['type'] = flags['t'];
   if (flags['p'] && !flags['project']) flags['project'] = flags['p'];
+  if (flags['n'] && !flags['name']) flags['name'] = flags['n'];
   if (flags['s'] && !flags['status']) flags['status'] = flags['s'];
   if (flags['q'] && !flags['search']) flags['search'] = flags['q'];
 
@@ -174,22 +172,75 @@ async function main(): Promise<void> {
   try {
     switch (command) {
       case 'configure': {
-        const projectCode = (flags['project'] as string) || discovered.config?.projectCode;
-        if (!projectCode) {
-          console.error(`${colors.red}Error: Project code is required (--project <code> or configure projectCode in esedre.json).${colors.reset}`);
-          process.exit(1);
-        }
+        let projectCode = (flags['project'] as string) || (flags['p'] as string) || discovered.config?.projectCode;
+        let projectName = (flags['name'] as string) || (flags['n'] as string) || discovered.config?.projectName;
         const allowArg = flags['allow'] as string;
-        const allowedProjects = allowArg ? allowArg.split(',').map((s) => s.trim()) : undefined;
         const port = flags['port'] ? parseInt(String(flags['port']), 10) : (discovered.config?.port || 5674);
         const setupMcp = flags['no-mcp'] ? false : true;
         const isYes = Boolean(flags['yes'] || flags['y']);
+
+        if (process.stdin.isTTY && (!projectCode || !projectName) && !isJson) {
+          const readline = await import('node:readline/promises');
+          const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+          try {
+            if (!projectCode) {
+              const codeAnswer = await rl.question(
+                `${colors.cyan}?${colors.reset} Project code (1-6 alphanumeric characters, e.g. ALCE, DOCS): `
+              );
+              projectCode = codeAnswer.trim();
+            }
+            if (!projectName && projectCode) {
+              const nameAnswer = await rl.question(
+                `${colors.cyan}?${colors.reset} Project display name (e.g. ${projectCode} App) [${projectCode}]: `
+              );
+              projectName = nameAnswer.trim() || projectCode;
+            }
+          } finally {
+            rl.close();
+          }
+        }
+
+        if (!projectCode) {
+          console.error(`${colors.red}Error: Project code is required (--project <code>, -p <code>, or configure projectCode in esedre.json).${colors.reset}`);
+          process.exit(1);
+        }
 
         const codeVal = validateProjectCode(projectCode);
         if (!codeVal.valid) {
           console.error(`${colors.red}Error: ${codeVal.error}${colors.reset}`);
           process.exit(1);
         }
+
+        if (!projectName) {
+          projectName = projectCode;
+        }
+
+        // Register project in Esedre if not already registered (or update display name)
+        const existingProjects = await storage.getProjects();
+        const existing = existingProjects.find(
+          (p) => p.code.toLowerCase() === projectCode!.toLowerCase()
+        );
+        let projectNewlyRegistered = false;
+        let registeredProj: ProjectDescriptor;
+        if (!existing) {
+          registeredProj = await rawStorage.registerProject({
+            code: projectCode!,
+            name: projectName,
+          });
+          projectNewlyRegistered = true;
+        } else {
+          registeredProj = existing;
+          if (flags['name'] || flags['n']) {
+            registeredProj = await rawStorage.registerProject({
+              code: projectCode!,
+              name: projectName,
+            });
+          }
+        }
+
+        const allowedProjects = allowArg
+          ? allowArg.split(',').map((s) => s.trim())
+          : (discovered.config?.allowedProjects || [projectCode!]);
 
         let setupProxy: boolean | undefined = undefined;
         if (flags['proxy'] !== undefined) {
@@ -202,7 +253,7 @@ async function main(): Promise<void> {
         if (viteConfigPath && setupProxy === undefined && !isJson) {
           try {
             const rawContent = fs.readFileSync(viteConfigPath, 'utf-8');
-            const alreadyConfigured = rawContent.includes("'/esedre'") || rawContent.includes('"/esedre"') ;
+            const alreadyConfigured = rawContent.includes("'/esedre'") || rawContent.includes('"/esedre"');
             if (!alreadyConfigured) {
               if (isYes) {
                 setupProxy = true;
@@ -225,19 +276,50 @@ async function main(): Promise<void> {
 
         const res = configureWorkspace(discovered.workspaceRoot, {
           projectCode,
+          projectName: registeredProj.name,
           allowedProjects,
           port,
           setupMcp,
           setupProxy,
         });
 
+        // Generate initial projection snapshot (.esedre/snapshot.json) for zero-latency context
+        let snapshotTickets = 0;
+        try {
+          const snapshot = await generateProjectSnapshot(storage, projectCode, discovered.workspaceRoot);
+          snapshotTickets = snapshot.totalTickets;
+        } catch {}
+
         if (isJson) {
-          console.log(JSON.stringify(res, null, 2));
+          console.log(JSON.stringify({
+            ...res,
+            project: registeredProj,
+            projectNewlyRegistered,
+            snapshotTickets,
+            urls: {
+              ui: `http://localhost:${port}/app?project=${projectCode}`,
+              portfolio: `http://localhost:${port}/app?project=all`,
+              api: `http://localhost:${port}/api`,
+            },
+            commands: {
+              start: 'ese start',
+              status: 'ese status',
+              stop: 'ese stop',
+              create: `ese create --title "..." --project ${projectCode}`,
+              list: `ese list --project ${projectCode}`,
+            },
+          }, null, 2));
         } else {
           console.log(`${colors.bold}${colors.green}✔ Esedre workspace configured successfully!${colors.reset}`);
-          console.log(`  • Config: .esedre/esedre.json (Project: ${projectCode}, Version: ${CURRENT_ESEDRE_VERSION})`);
+          console.log(`  • Config: .esedre/esedre.json (Project: ${projectCode} (${registeredProj.name}), Version: ${CURRENT_ESEDRE_VERSION})`);
+          if (projectNewlyRegistered) {
+            console.log(`  • Project: ${colors.green}Registered new project '${projectCode}' (${registeredProj.name}) in Esedre${colors.reset}`);
+          } else {
+            console.log(`  • Project: Verified project '${projectCode}' (${registeredProj.name}) in Esedre`);
+          }
           console.log(`  • In-repo wrappers: .esedre/esedre.cmd, .esedre/ese.cmd, .esedre/esedre, .esedre/ese`);
           console.log(`  • .gitignore: ${res.gitignoreUpdated ? 'Added .esedre/snapshot.json' : 'Already configured'}`);
+          console.log(`  • Snapshot: Generated .esedre/snapshot.json (${snapshotTickets} tickets projected)`);
           console.log(`  • MCP: ${res.mcpConfigured ? 'Configured in .agents/mcp_config.json' : 'Skipped'}`);
           console.log(`  • Skill: ${res.skillConfigured ? 'Updated .agents/skills/esedre/SKILL.md' : `Retained (${res.skillStatus})`}`);
           if (res.globalStoreStatus === 'ready') {
@@ -262,6 +344,19 @@ async function main(): Promise<void> {
             console.log(`\n${colors.bold}Recommendation:${colors.reset} Please manually add this proxy to your dev server configuration:`);
             console.log(colors.dim + (res.recommendedProxySnippet?.split('\n').map((l: string) => '    ' + l).join('\n') || '') + colors.reset);
           }
+
+          console.log(`\n${colors.bold}Next Steps:${colors.reset}`);
+          console.log(`  1. ${colors.bold}Start the background daemon:${colors.reset}`);
+          console.log(`     ${colors.cyan}ese start${colors.reset}   (or: ${colors.dim}.esedre/ese start${colors.reset})`);
+          console.log(`\n  2. ${colors.bold}Open the visual Web UI:${colors.reset}`);
+          console.log(`     ${colors.cyan}http://localhost:${port}/app?project=${projectCode}${colors.reset}`);
+          if (res.viteProxyStatus === 'CONFIGURED' || res.viteProxyStatus === 'ALREADY_CONFIGURED') {
+            console.log(`     ${colors.dim}Embedded via host dev server:${colors.reset} http://localhost:5173/esedre/app?project=${projectCode}`);
+          }
+          console.log(`\n  3. ${colors.bold}Create your first ticket:${colors.reset}`);
+          console.log(`     ${colors.cyan}ese create --title "First feature" --type Feature --project ${projectCode}${colors.reset}`);
+          console.log(`\n  4. ${colors.bold}Inspect roadmap & tickets:${colors.reset}`);
+          console.log(`     ${colors.cyan}ese list --project ${projectCode}${colors.reset}`);
         }
         return;
       }
@@ -450,7 +545,7 @@ async function main(): Promise<void> {
         } else {
           console.log(`${colors.bold}Registered Projects:${colors.reset}`);
           for (const p of projects) {
-            console.log(`  • ${colors.bold}${p.code}${colors.reset} (#${p.id}): ${p.name} — ${colors.dim}${p.description}${colors.reset}`);
+            console.log(`  • ${colors.bold}${p.code}${colors.reset} (#${p.id}): ${p.name}: ${colors.dim}${p.description}${colors.reset}`);
           }
         }
         return;

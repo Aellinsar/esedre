@@ -157,7 +157,7 @@ export class EsedreMcpServer {
         const resources = tickets.map((t) => ({
           uri: `esedre://tickets/${t.meta.id}`,
           name: `Ticket #${t.meta.id}: ${t.meta.title}`,
-          description: `[${t.projectDescriptor?.code || t.meta.project || 'UNASSIGNED'}] ${t.meta.category} — ${t.meta.status}`,
+          description: `[${t.projectDescriptor?.code || t.meta.project || 'UNASSIGNED'}] ${t.meta.type || (t.meta as any).category} : ${t.meta.status}`,
           mimeType: 'text/markdown',
         }));
 

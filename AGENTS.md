@@ -1,4 +1,4 @@
-# Agent Guidelines & Operating Instructions — Esedre
+# Agent Guidelines & Operating Instructions: Esedre
 
 > **Environment Notice**: `esedre` is managed within **Google Antigravity**. Antigravity discovers and loads skills from `.agents/skills/` and instructions from this `AGENTS.md`.
 
@@ -6,7 +6,7 @@
 
 ## 1. Project Overview & Scope
 
-- **Repository Role**: Standalone open developer roadmap, ticketing engine, CLI utility (`esedre` / `ese`), web UI, and Model Context Protocol (MCP) server for autonomous AI coding agents and developers.
+- **Repository Role**: Standalone open developer roadmap, ticketing engine, CLI utility (`esedre` / `ese`), web UI, and Model Context Protocol (MCP) server for developers and autonomous companion LLM coding agents.
 - **Data Ecosystem**: Multi-topology project configuration via `.esedre/esedre.json` or `esedre.json` with support for centralized ticket data hubs, in-repo standalone tickets, and federated hybrid topologies.
 - **Core Architecture**: Node.js (v20+), TypeScript, ESM (`"type": "module"`), esbuild bundling to `dist/esedre.mjs`, Vite/React UI, and Vitest test runner.
 
@@ -67,18 +67,22 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 ---
 
-## 6. Security Firewall & Project Isolation Invariants
+## 6. Multi-Project Agent Isolation & Scope Invariants
 
 1. **Upward Configuration Discovery**
    - When the CLI or MCP server executes, it begins at `cwd` and traverses upward directory by directory, stopping at the **first** `esedre.json` it finds.
    - That file defines the active repo's `projectCode` and authorized access scope (`allowedProjects`).
 
-2. **Strict Project Firewall (Zero Cross-Project Leaks)**
-   - Neither the CLI tool nor the MCP server may expose, list, query, create, update, or mutate tickets, plans, or comments belonging to projects outside `allowedProjects`.
+2. **Multi-Project Agent Isolation (Zero Cross-Project Leaks)**
+   - Each agent or tool execution is strictly informed and scoped only to the projects declared in its workspace's `allowedProjects`. Neither the CLI tool nor the MCP server may expose, list, query, create, update, or mutate tickets, plans, or comments belonging to projects outside `allowedProjects`.
    - Unauthorized requests MUST throw `EsedreAuthorizationError` immediately:
      - **MCP Protocol**: Caught and returned as standard JSON-RPC 2.0 error code `-32603` with message `Access Denied: Project '<code>' is outside this workspace's authorized scope.`
      - **CLI Tool**: Exits cleanly with status code `1` and prints `Access Denied: ...`.
    - Wildcard `"*"` in `allowedProjects` permits all registered projects (used in multi-project umbrella workspaces or administrative environments).
+
+3. **Approved Terminology: "Agent Project Allow-List" (Strictly NO "Firewall")**
+   - The term "Firewall" is **NOT** approved terminology anywhere in documentation, descriptions, CLI output, commit messages, or code comments.
+   - Strictly use: **"Agent Project Allow-List, providing isolation of projects planning that you don't want an agent to access"** (or concise forms like "Agent Project Allow-List" and "Multi-Project Agent Isolation").
 
 ---
 
@@ -91,7 +95,7 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 2. **Mandatory Vitest Test Suite**
    - Run `npm test` (`npx vitest run`) on every code modification.
-   - All tests in `tests/` must pass cleanly (covering config discovery, storage adapter, multi-topology storage, security firewall, MCP protocol, and CLI execution).
+   - All tests in `tests/` must pass cleanly (covering config discovery, storage adapter, multi-topology storage, agent project allow-list isolation, MCP protocol, and CLI execution).
 
 3. **Local Dev & Cloudflare Tunnel Workflows**
    - `npm run dev`: Runs local Vite development server on port 5674.
@@ -122,7 +126,7 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 ## 9. Universal "Type" Standardization & Schema Invariants
 
 1. **Strict "Type" Field Invariant**:
-   - All layers—storage manifests (`meta.json`), CLI options (`--type` / `-t`), Web UI filters, and REST/MCP payloads—strictly standardize on **`type`** (`"Feature" | "Platform" | "Tools" | "Idea" | "Bug"`).
+   - All layers (storage manifests `meta.json`, CLI options `--type` / `-t`, Web UI filters, and REST/MCP payloads) strictly standardize on **`type`** (`"Feature" | "Platform" | "Tools" | "Idea" | "Bug"`).
    - The pre-v2 legacy field `category` is permanently deprecated. Never introduce `category` into new ticket templates, schemas, or tests.
 
 2. **CLI Shorthand Flags**:
@@ -160,3 +164,21 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 3. **Tunnel & HMR Non-Interference**:
    - Reverse proxies and gateway routes must never intercept or block WebSocket HMR channels (`/ws`, port 443 / `clientPort` tunnel traffic).
+
+---
+
+## 12. Terminology Standard: Strict "LLM" over "AI"
+
+1. **Strict Preference for "LLM" over "AI"**:
+   - In documentation, code comments, schemas, CLI descriptions, commit messages, and agent instructions, strictly use the term **LLM** (e.g. "autonomous LLM coding agents", "companion LLM", "LLM-driven workflows") rather than the generic term "AI".
+   
+2. **Dual Human & LLM Coordination**:
+   - Always frame Esedre as a tool engineered for **both** developers/engineers and autonomous companion LLMs working together in pair-programming workflows, never as a tool exclusively for models.
+
+---
+
+## 13. STRICT PROHIBITION ON EM DASHES (ZERO EXCEPTIONS)
+
+- **ABSOLUTE BAN ON EM DASHES (U+2014 / em dash)**: Never use em dashes anywhere in documentation, code, comments, CLI output, commit messages, or metadata. Use standard hyphens `-`, colons `:`, parentheses `()`, or rewrite sentences naturally without dashes.
+
+

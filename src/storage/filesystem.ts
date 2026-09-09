@@ -12,7 +12,7 @@ function isProjectMatch(code: string, slug: string, filter: string): boolean {
 import fs from 'node:fs';
 import path from 'node:path';
 import { EsedreTicket, TicketMeta, ProjectDescriptor, TicketComment, TicketDetail, TicketType, TicketCategory, EsedreConflictError } from '../types.js';
-import { StorageAdapter, CreateTicketInput, ListTicketsFilter } from './adapter.js';
+import { StorageAdapter, CreateTicketInput, ListTicketsFilter, RegisterProjectInput } from './adapter.js';
 import { EsedreConfig, findEsedreConfig } from '../config.js';
 import { computeTicketHash, verifyTicketHash } from '../snapshot.js';
 
@@ -281,12 +281,13 @@ export class FilesystemStorageAdapter implements StorageAdapter {
 
       if (descs.length === 0) {
         if (this.config.projectCode) {
+          const pName = this.config.projectName || this.config.projectCode;
           descs = [{
             id: 1,
             code: this.config.projectCode,
             slug: this.config.projectCode.toLowerCase(),
-            name: this.config.projectCode,
-            description: `${this.config.projectCode} project`,
+            name: pName,
+            description: `${pName} project`,
           }];
         } else {
           return locations;
@@ -313,6 +314,118 @@ export class FilesystemStorageAdapter implements StorageAdapter {
 
   public async getProjects(): Promise<ProjectDescriptor[]> {
     return this.resolveProjectLocations().map((l) => l.project);
+  }
+
+  public async registerProject(input: RegisterProjectInput): Promise<ProjectDescriptor> {
+    const rawCode = input.code.trim();
+    const cleanCode = rawCode.toUpperCase();
+    const cleanName = input.name?.trim() || cleanCode;
+    const cleanDesc = input.description?.trim() || `${cleanName} project`;
+    const slug = cleanCode.toLowerCase();
+
+    const colors = input.colors || {
+      badge: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300',
+      dot: 'bg-cyan-400',
+      border: 'border-cyan-500/40',
+    };
+
+    // 1. Check if dataDir hub is configured
+    const rawDataDirs = Array.isArray(this.config.dataDir)
+      ? this.config.dataDir
+      : (this.config.dataDir ? [this.config.dataDir] : []);
+
+    let targetHub: string | null = null;
+    for (const dDir of rawDataDirs) {
+      const resolved = path.resolve(this.workspaceRoot, dDir);
+      if (fs.existsSync(resolved)) {
+        targetHub = resolved;
+        break;
+      }
+    }
+
+    if (targetHub) {
+      const hubProjectsDir = path.join(targetHub, 'projects');
+      const projectDir = path.join(hubProjectsDir, cleanCode);
+      const ticketsDir = path.join(projectDir, 'tickets');
+      if (!fs.existsSync(ticketsDir)) {
+        fs.mkdirSync(ticketsDir, { recursive: true });
+      }
+
+      const pJsonPath = path.join(projectDir, 'project.json');
+      let existingPJson: any = null;
+      if (fs.existsSync(pJsonPath)) {
+        try { existingPJson = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8')); } catch {}
+      }
+
+      const id = existingPJson?.id || (await this.getProjects()).length + 1;
+      const projectDesc: ProjectDescriptor = {
+        id,
+        code: cleanCode,
+        slug,
+        name: cleanName,
+        description: cleanDesc,
+        colors,
+      };
+
+      writeSafeFile(pJsonPath, JSON.stringify(projectDesc, null, 2) + '\n');
+
+      const hubProjectsFile = path.join(targetHub, 'projects.json');
+      if (fs.existsSync(hubProjectsFile)) {
+        try {
+          const arr: ProjectDescriptor[] = JSON.parse(fs.readFileSync(hubProjectsFile, 'utf-8'));
+          const idx = arr.findIndex((p) => p.code.toLowerCase() === slug);
+          if (idx >= 0) {
+            arr[idx] = projectDesc;
+          } else {
+            arr.push(projectDesc);
+          }
+          writeSafeFile(hubProjectsFile, JSON.stringify(arr, null, 2) + '\n');
+        } catch {}
+      }
+
+      return projectDesc;
+    }
+
+    // 2. Standalone in-repo topology
+    const esedreDir = path.join(this.workspaceRoot, '.esedre');
+    const ticketsDir = path.join(esedreDir, 'tickets');
+    if (!fs.existsSync(ticketsDir)) {
+      fs.mkdirSync(ticketsDir, { recursive: true });
+    }
+
+    const pJsonPath = path.join(esedreDir, 'project.json');
+    let existingPJson: any = null;
+    if (fs.existsSync(pJsonPath)) {
+      try { existingPJson = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8')); } catch {}
+    }
+
+    const id = existingPJson?.id || 1;
+    const projectDesc: ProjectDescriptor = {
+      id,
+      code: cleanCode,
+      slug,
+      name: cleanName,
+      description: cleanDesc,
+      colors,
+    };
+
+    writeSafeFile(pJsonPath, JSON.stringify(projectDesc, null, 2) + '\n');
+
+    const projectsJsonPath = path.join(esedreDir, 'projects.json');
+    if (fs.existsSync(projectsJsonPath)) {
+      try {
+        const arr: ProjectDescriptor[] = JSON.parse(fs.readFileSync(projectsJsonPath, 'utf-8'));
+        const idx = arr.findIndex((p) => p.code.toLowerCase() === slug);
+        if (idx >= 0) {
+          arr[idx] = projectDesc;
+        } else {
+          arr.push(projectDesc);
+        }
+        writeSafeFile(projectsJsonPath, JSON.stringify(arr, null, 2) + '\n');
+      } catch {}
+    }
+
+    return projectDesc;
   }
 
   private findTicketLocation(id: number | string): { loc: ResolvedProjectLocation; ticketDir: string; id: number } | null {

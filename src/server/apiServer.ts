@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { SecurityFilter } from '../securityFilter.js';
 import { generateProjectSnapshot } from '../snapshot.js';
+import { validateProjectCode } from '../config.js';
 
 function readJsonBody(req: http.IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -39,20 +40,30 @@ export function invalidateApiCache(): void {
   cachedAllTimestamp = 0;
 }
 
-export function startApiServer(port: number, storage: SecurityFilter, workspaceRoot: string): http.Server {
-  const server = http.createServer(async (req, res) => {
-    // Handle CORS preflight
+export function createApiHandler(storage: SecurityFilter, workspaceRoot: string) {
+  return async (req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> => {
+    const rawUrl = req.url || '/';
+    const parsedPath = rawUrl.split('?')[0];
+
+    // Handle CORS preflight for API paths
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      });
-      res.end();
-      return;
+      if (parsedPath.startsWith('/api') || parsedPath.startsWith('/esedre/api')) {
+        res.writeHead(204, {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        });
+        res.end();
+        return true;
+      }
+      return false;
     }
 
-    const url = new URL(req.url || '/', `http://127.0.0.1:${port}`);
+    if (!parsedPath.startsWith('/api') && !parsedPath.startsWith('/esedre/api')) {
+      return false;
+    }
+
+    const url = new URL(rawUrl, 'http://127.0.0.1');
     let pathname = url.pathname;
     if (pathname.startsWith('/esedre/api')) {
       pathname = pathname.slice('/esedre'.length);
@@ -62,7 +73,8 @@ export function startApiServer(port: number, storage: SecurityFilter, workspaceR
       if (req.method === 'GET') {
         if (pathname === '/api/planning/projects') {
           const projects = await storage.getProjects();
-          return sendJson(res, 200, projects);
+          sendJson(res, 200, projects);
+          return true;
         }
 
         if (pathname === '/api/planning/tickets') {
@@ -79,25 +91,30 @@ export function startApiServer(port: number, storage: SecurityFilter, workspaceR
             category,
             search,
           });
-          return sendJson(res, 200, tickets);
+          sendJson(res, 200, tickets);
+          return true;
         }
 
         if (pathname.startsWith('/api/planning/ticket/')) {
           const idStr = pathname.slice('/api/planning/ticket/'.length);
           if (!idStr || !/^([a-zA-Z0-9]{1,6}-)?\d+$/.test(idStr)) {
-            return sendJson(res, 400, { error: 'Invalid ticket ID' });
+            sendJson(res, 400, { error: 'Invalid ticket ID' });
+            return true;
           }
           const ticket = await storage.getTicket(idStr);
           if (!ticket) {
-            return sendJson(res, 400, { error: 'Ticket not found' });
+            sendJson(res, 400, { error: 'Ticket not found' });
+            return true;
           }
-          return sendJson(res, 200, ticket);
+          sendJson(res, 200, ticket);
+          return true;
         }
 
         if (pathname === '/api/planning/all') {
           const now = Date.now();
           if (cachedAllData && now - cachedAllTimestamp < CACHE_TTL_MS) {
-            return sendJson(res, 200, cachedAllData);
+            sendJson(res, 200, cachedAllData);
+            return true;
           }
 
           const tickets = await storage.listTickets({});
@@ -150,7 +167,8 @@ export function startApiServer(port: number, storage: SecurityFilter, workspaceR
 
           cachedAllData = responsePayload;
           cachedAllTimestamp = now;
-          return sendJson(res, 200, responsePayload);
+          sendJson(res, 200, responsePayload);
+          return true;
         }
 
         if (pathname === '/api/planning/metas') {
@@ -159,7 +177,8 @@ export function startApiServer(port: number, storage: SecurityFilter, workspaceR
           for (const t of tickets) {
             metasMap[String(t.meta.id)] = t.meta;
           }
-          return sendJson(res, 200, metasMap);
+          sendJson(res, 200, metasMap);
+          return true;
         }
 
         if (pathname === '/api/planning/details') {
@@ -170,7 +189,8 @@ export function startApiServer(port: number, storage: SecurityFilter, workspaceR
               detailsMap[String(t.meta.id)] = t.detail.raw;
             }
           }
-          return sendJson(res, 200, detailsMap);
+          sendJson(res, 200, detailsMap);
+          return true;
         }
 
         if (pathname === '/api/planning/plans') {
@@ -181,7 +201,8 @@ export function startApiServer(port: number, storage: SecurityFilter, workspaceR
               plansMap[String(t.meta.id)] = t.planMarkdown;
             }
           }
-          return sendJson(res, 200, plansMap);
+          sendJson(res, 200, plansMap);
+          return true;
         }
 
         if (pathname === '/api/planning/comments') {
@@ -190,32 +211,39 @@ export function startApiServer(port: number, storage: SecurityFilter, workspaceR
           for (const t of tickets) {
             commentsMap[String(t.meta.id)] = t.comments || [];
           }
-          return sendJson(res, 200, commentsMap);
+          sendJson(res, 200, commentsMap);
+          return true;
         }
 
         if (pathname === '/api/planning/history') {
-          return sendJson(res, 200, {});
+          sendJson(res, 200, {});
+          return true;
         }
 
         if (pathname === '/api/planning/inline-comments') {
-          return sendJson(res, 200, {});
+          sendJson(res, 200, {});
+          return true;
         }
 
         if (pathname === '/api/planning/answers') {
-          return sendJson(res, 200, {});
+          sendJson(res, 200, {});
+          return true;
         }
 
         if (pathname === '/api/planning/plan-history') {
-          return sendJson(res, 200, {});
+          sendJson(res, 200, {});
+          return true;
         }
 
         if (pathname === '/api/planning/snapshot') {
           const projectCode = url.searchParams.get('project');
           if (!projectCode) {
-            return sendJson(res, 400, { error: 'Project query parameter is required for snapshot generation (no default fallback).' });
+            sendJson(res, 400, { error: 'Project query parameter is required for snapshot generation (no default fallback).' });
+            return true;
           }
           const snapshot = await generateProjectSnapshot(storage, projectCode, workspaceRoot);
-          return sendJson(res, 200, snapshot);
+          sendJson(res, 200, snapshot);
+          return true;
         }
       }
 
@@ -225,28 +253,54 @@ export function startApiServer(port: number, storage: SecurityFilter, workspaceR
         if (pathname === '/api/planning/tickets') {
           invalidateApiCache();
           const created = await storage.createTicket(body);
-          return sendJson(res, 201, { ticketId: String(created.meta.id), meta: created.meta });
+          sendJson(res, 201, { ticketId: String(created.meta.id), meta: created.meta });
+          return true;
+        }
+
+        if (pathname === '/api/planning/create-project') {
+          const { code, name, description, colors } = body;
+          if (!code || !name) {
+            sendJson(res, 400, { error: 'Both code and name are required to register a project.' });
+            return true;
+          }
+          const codeVal = validateProjectCode(code);
+          if (!codeVal.valid) {
+            sendJson(res, 400, { error: codeVal.error });
+            return true;
+          }
+          invalidateApiCache();
+          const project = await storage.registerProject({
+            code,
+            name,
+            description,
+            colors,
+          });
+          sendJson(res, 201, project);
+          return true;
         }
 
         if (pathname === '/api/planning/plans') {
           const { ticketId, planMarkdown, lastHash } = body;
           invalidateApiCache();
-        await storage.savePlan(ticketId, planMarkdown, lastHash);
-          return sendJson(res, 200, { success: true });
+          await storage.savePlan(ticketId, planMarkdown, lastHash);
+          sendJson(res, 200, { success: true });
+          return true;
         }
 
         if (pathname === '/api/planning/comments') {
           const { ticketId, text, author } = body;
           invalidateApiCache();
-        await storage.addComment(ticketId, { author: author || 'Developer', text });
+          await storage.addComment(ticketId, { author: author || 'Developer', text });
           const ticket = await storage.getTicket(ticketId);
-          return sendJson(res, 200, { comments: ticket?.comments || [] });
+          sendJson(res, 200, { comments: ticket?.comments || [] });
+          return true;
         }
 
         if (pathname === '/api/planning/update-meta') {
           const { ticketId, updates, lastHash } = body;
           const updated = await storage.updateTicket(ticketId, updates, lastHash);
-          return sendJson(res, 200, { meta: updated.meta });
+          sendJson(res, 200, { meta: updated.meta });
+          return true;
         }
 
         if (pathname === '/api/planning/toggle-flag') {
@@ -254,7 +308,8 @@ export function startApiServer(port: number, storage: SecurityFilter, workspaceR
           const updated = await storage.updateTicket(ticketId, {
             featureFlag: flagged ? 'chat_enhanced' : '',
           });
-          return sendJson(res, 200, { meta: updated.meta });
+          sendJson(res, 200, { meta: updated.meta });
+          return true;
         }
 
         if (pathname === '/api/planning/details') {
@@ -262,14 +317,28 @@ export function startApiServer(port: number, storage: SecurityFilter, workspaceR
           if (metaUpdates) {
             await storage.updateTicket(ticketId, metaUpdates);
           }
-          return sendJson(res, 200, { success: true, detail: detailMarkdown });
+          sendJson(res, 200, { success: true, detail: detailMarkdown });
+          return true;
         }
       }
 
-      return sendJson(res, 404, { error: `Endpoint not found: ${pathname}` });
+      sendJson(res, 404, { error: `Endpoint not found: ${pathname}` });
+      return true;
     } catch (err: any) {
       console.error('[Esedre API Error]:', err);
-      return sendJson(res, 500, { error: err.message });
+      sendJson(res, 500, { error: err.message });
+      return true;
+    }
+  };
+}
+
+export function startApiServer(port: number, storage: SecurityFilter, workspaceRoot: string): http.Server {
+  const handler = createApiHandler(storage, workspaceRoot);
+
+  const server = http.createServer(async (req, res) => {
+    const handled = await handler(req, res);
+    if (!handled && !res.headersSent) {
+      sendJson(res, 404, { error: `Endpoint not found: ${req.url}` });
     }
   });
 

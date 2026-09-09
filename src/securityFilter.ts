@@ -1,5 +1,5 @@
 import { EsedreTicket, TicketMeta, ProjectDescriptor, TicketComment } from './types.js';
-import { StorageAdapter, CreateTicketInput, ListTicketsFilter } from './storage/adapter.js';
+import { StorageAdapter, CreateTicketInput, ListTicketsFilter, RegisterProjectInput } from './storage/adapter.js';
 import { EsedreConfig, isProjectAuthorized, EsedreAuthorizationError } from './config.js';
 
 export class SecurityFilter implements StorageAdapter {
@@ -14,6 +14,17 @@ export class SecurityFilter implements StorageAdapter {
       return projs;
     }
     return projs.filter((p) => isProjectAuthorized(p.code, this.config.allowedProjects));
+  }
+
+  public async registerProject(input: RegisterProjectInput): Promise<ProjectDescriptor> {
+    const proj = await this.target.registerProject(input);
+    if (this.config.allowedProjects && !this.config.allowedProjects.includes('*')) {
+      const upper = proj.code.toUpperCase();
+      if (!this.config.allowedProjects.some((p) => p.toUpperCase() === upper)) {
+        this.config.allowedProjects.push(proj.code);
+      }
+    }
+    return proj;
   }
 
   public async listTickets(filter?: ListTicketsFilter): Promise<EsedreTicket[]> {

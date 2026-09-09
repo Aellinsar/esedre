@@ -1,11 +1,11 @@
 ---
-name: esedre_security_and_firewall
-description: Architectural specifications for Esedre's multi-project security firewall, upward hierarchy discovery, and zero-YAML policy.
+name: esedre_security_and_allowlist
+description: Architectural specifications for Esedre's multi-project Agent Project Allow-List, providing isolation of projects planning that you don't want an agent to access, upward hierarchy discovery, and zero-YAML policy.
 ---
 
-# Esedre Security Firewall & Project Isolation
+# Esedre Agent Project Allow-List & Project Isolation
 
-This skill outlines Esedre's multi-tenant isolation model, configuration hierarchy traversal, and project firewall invariants.
+This skill outlines Esedre's multi-tenant isolation model, configuration hierarchy traversal, and Agent Project Allow-List invariants.
 
 ## 1. Zero-YAML Invariant
 
@@ -32,14 +32,14 @@ When Esedre runs (either via the CLI or MCP server), it does not assume a fixed 
 ```
 
 - `projectCode` *(string, optional)*: Default project code for commands when omitted (e.g. `esedre list` or `esedre create`).
-- `allowedProjects` *(string[], optional)*: Whitelist of project codes this workspace is permitted to access.
+- `allowedProjects` *(string[], optional)*: Allow-list of project codes this workspace is permitted to access.
   - If omitted or empty, all projects are permitted.
   - If contains `"*"` (wildcard), all projects are permitted.
   - Otherwise, strictly limits access to the listed project codes (case-insensitive).
 
-## 3. Project Firewall Enforcement
+## 3. Agent Project Allow-List Enforcement
 
-The firewall is enforced by `FilesystemStorageAdapter` across every operation:
+The allow-list isolation is enforced by `SecurityFilter` across every operation:
 
 1. `getProjects()`: Automatically filters out any registered project whose code is not in `allowedProjects`.
 2. `listTickets()`:

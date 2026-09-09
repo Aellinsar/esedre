@@ -1,10 +1,10 @@
 # 🏛️ Esedre (`/eh-ˈseh-dreh/`)
 
 <p align="center">
-  <img src="docs/assets/esedre-hero.png" alt="Esedre — The Classical Council Forum for Developers & Companion Agents" width="100%" />
+  <img src="docs/assets/esedre-hero.png" alt="Esedre: The Classical Council Forum for Developers & Companion Agents" width="100%" />
 </p>
 
-> **Autonomous developer roadmap, ticketing engine, and Model Context Protocol (MCP) server for developers and companion AI coding agents.**
+> **Developer roadmap, ticketing engine, and Model Context Protocol (MCP) server for developers and companion LLM coding agents.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-100%25%20Passing-emerald.svg)](tests/)
@@ -14,14 +14,13 @@
 
 ## 🌟 Overview
 
-**Esedre** (with short CLI alias **`ese`**) is an open-source, file-first developer planning engine designed from the ground up for hybrid human-agent software engineering. It bridges the gap between software engineers, project managers, and autonomous coding agents (such as Google Antigravity, Claude, and GitHub Copilot) by providing:
+**Esedre** (with short CLI alias **`ese`**) is an open-source developer planning engine backed by text-based files (Markdown & JSON) that are easily backed by a git branch or repository for clean versioning and branch-aware workflows. Designed from the ground up for software engineers and autonomous companion LLM coding agents (such as Google Antigravity, Claude Code, and Cursor) to coordinate together, it provides:
 
-1. **Dual CLI Commands (`esedre` / `ese`)**: List, query, plan, create, and update tickets via simple terminal commands with human-readable colored tables or machine-readable `--json` output.
+1. **CLI Commands (`esedre` / `ese`)**: List, query, plan, create, and update tickets via simple terminal commands with human-readable colored tables or machine-readable `--json` output.
 2. **Model Context Protocol (MCP) Server**: Full JSON-RPC 2.0 stdio server implementing the official MCP specification (`2024-11-05`), exposing roadmap tickets as first-class tools and URI resources.
-3. **Multi-Project Security Firewall**: Strict tenant isolation preventing agents or tools from reading or mutating projects outside their authorized scope.
-4. **Optimistic Concurrency Control**: SHA-1 content hashing on all tickets and plans, preventing concurrent agents from clobbering each other's edits.
+3. **Multi-Project Agent Isolation**: Informs each companion LLM only of the projects it is authorized to access, keeping unrelated project tickets, specifications, and plans completely isolated.
+4. **Optimistic Concurrency Control**: SHA-1 content hashing on all tickets and plans, preventing concurrent agents or humans from clobbering each other's edits.
 5. **Local Web Dashboard & Embeddable Component**: Run a visual dashboard with `esedre serve` to manage tickets in your browser, or embed `<esedre-planner>` into any web app without adding UI framework dependencies to your project.
-6. **Zero-YAML Guarantee**: 100% standard JSON. Zero YAML files, zero indentation parsing ambiguities.
 
 ---
 
@@ -29,7 +28,7 @@
 
 ### Origin
 
-**Esedre** derives from classical Latin *exedra* (plural *esedre*)—the semicircular architectural council pavilions where ancient architects, master builders, and planners gathered to debate designs, draft blueprints, and coordinate construction. That classical forum mirrors Esedre's mission: a structured, open workspace where developers and companion AI agents collaborate to scope work, align on plans, and ship software.
+**Esedre** derives from classical Latin *exedra* (plural *esedre*), the semicircular architectural council pavilions where ancient architects, master builders, and planners gathered to debate designs, draft blueprints, and coordinate construction. That classical forum mirrors Esedre's mission: a structured, open workspace where developers and companion LLMs collaborate to scope work, align on plans, and ship software.
 
 ### Pronunciation Guide
 
@@ -83,13 +82,13 @@ Both `esedre` and `ese` can be used interchangeably:
 | `snapshot` | `ese snapshot [--json]` | Generate lean projection `.esedre/snapshot.json` for zero-latency agent context. |
 | `projects` | `ese projects [--json]` | List registered projects within authorized scope. |
 | `serve` | `ese serve [--port <n>]` | Start the reverse proxy gateway (default 5674) with internal UI & API. |
-| `mcp` | `ese mcp` | Launch the Model Context Protocol stdio server for AI coding agents. |
+| `mcp` | `ese mcp` | Launch the Model Context Protocol stdio server for companion LLMs. |
 
 ---
 
 ## 🤖 Model Context Protocol (MCP) Setup
 
-To connect Esedre to **Google Antigravity**, **Claude Desktop**, **Cursor**, or any MCP-compatible companion agent:
+To connect Esedre to **Google Antigravity**, **Claude Code**, **Cursor**, or any MCP-compatible companion LLM:
 
 ```json
 {
@@ -170,11 +169,11 @@ The planner UI is styled entirely using CSS custom properties. When embedding in
 
 ---
 
-## 🛡️ Security Firewall & Upward Discovery
+## 🛡️ Multi-Project Agent Isolation & Upward Discovery
 
-Esedre enforces a strict project isolation boundary:
+Esedre enforces clean project isolation so each companion LLM is informed only of the projects it is authorized to access:
 - **Upward Discovery**: When invoked in any subdirectory, Esedre climbs upward until it encounters the nearest `.esedre/esedre.json` or `esedre.json`, binding its execution to that repository's scope.
-- **Access Control**: Storage operations verify project authorization against `allowedProjects`.
+- **Scoped Project Awareness**: Storage operations and tools only inform and expose projects declared in `allowedProjects`. Companion LLMs cannot query, list, or mutate tickets outside their authorized scope.
 - Unauthorized requests throw `EsedreAuthorizationError`:
   - **CLI**: Prints `Access Denied: ...` and exits with status code 1.
   - **MCP**: Responds with standard JSON-RPC error `-32603`.

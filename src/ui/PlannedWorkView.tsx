@@ -1824,7 +1824,7 @@ export function PlannedWorkView({
                   )}
                   {availableProjects.map((proj) => (
                     <option key={proj.id} value={proj.code} className="bg-[var(--bg-surface)] text-[var(--text-primary)] py-1">
-                      {proj.code} - {proj.name}
+                      {proj.name}
                     </option>
                   ))}
                   {isOwner && !isEmbedded && (
@@ -2276,7 +2276,7 @@ export function PlannedWorkView({
                                         );
                                       }}
                                       className={`px-2 py-0.5 text-center inline-flex items-center gap-1 text-[10px] font-mono font-semibold rounded-full border transition-colors cursor-pointer ${colors.badge} hover:brightness-110`}
-                                      title={desc ? `Project: ${desc.code} - ${desc.name}. Click to edit.` : 'No project assigned. Click to assign.'}
+                                      title={desc ? `Project: ${desc.name}. Click to edit.` : 'No project assigned. Click to assign.'}
                                     >
                                       <span className={`w-1.5 h-1.5 rounded-full ${colors.dot} shrink-0`} />
                                       <span>{label}</span>
@@ -2647,7 +2647,7 @@ export function PlannedWorkView({
                                           <div className="flex items-center justify-between pb-2 border-b border-[var(--border-subtle)]">
                                             <div className="flex items-center gap-2">
                                               <Edit3 size={15} className="text-sky-600 dark:text-indigo-400" />
-                                              <h4 className="text-xs font-bold text-[var(--text-primary)]">Editing Specification — Ticket #{feat.ticketId}</h4>
+                                              <h4 className="text-xs font-bold text-[var(--text-primary)]">Editing Specification: Ticket #{feat.ticketId}</h4>
                                             </div>
                                             <div className="flex items-center gap-2">
                                               <div className="flex items-center bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded-lg p-0.5 text-[10px]">
@@ -3791,7 +3791,7 @@ export function PlannedWorkView({
                   >
                     <div className="flex items-center gap-2">
                       <span className={`w-2 h-2 rounded-full ${proj.colors.dot}`} />
-                      <span>{proj.code} - {proj.name}</span>
+                      <span>{proj.name}</span>
                     </div>
                     {isSelected && <Check size={12} className="text-sky-600 dark:text-indigo-400 shrink-0" />}
                   </button>
@@ -3959,7 +3959,7 @@ export function PlannedWorkView({
                 >
                   <div className="flex items-center gap-1.5">
                     <span className={`w-1.5 h-1.5 rounded-full ${proj.colors.dot} shrink-0`} />
-                    <span>{proj.code} - {proj.name}</span>
+                    <span>{proj.name}</span>
                   </div>
                   {getProjectDescriptor(metasMap[headerPopover.ticketId]?.projectId ?? metasMap[headerPopover.ticketId]?.project)?.id === proj.id && (
                     <Check size={12} className="shrink-0" />

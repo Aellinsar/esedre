@@ -6,12 +6,12 @@ import { FilesystemStorageAdapter } from '../src/storage/filesystem.js';
 import { SecurityFilter } from '../src/securityFilter.js';
 import { EsedreAuthorizationError } from '../src/config.js';
 
-describe('Esedre Storage Project Firewall (SecurityFilter)', () => {
+describe('Esedre Agent Project Allow-List (SecurityFilter)', () => {
   let tempDir: string;
   let adapter: SecurityFilter;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-firewall-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-allowlist-test-'));
     const ticketsDir = path.join(tempDir, 'src', 'data', 'planning', 'tickets');
     fs.mkdirSync(ticketsDir, { recursive: true });
 

@@ -230,7 +230,7 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
                 )}
                 {(availableProjects || ALL_PROJECTS).map((p) => (
                   <option key={p.id} value={p.id} className="bg-[var(--bg-surface)] text-[var(--text-primary)]">
-                    {p.code} - {p.name}
+                    {p.name}
                   </option>
                 ))}
                 {!isEmbedded && (

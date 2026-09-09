@@ -8,6 +8,7 @@ export const PROJECT_CODE_REGEX = /^[a-zA-Z0-9]{1,6}$/;
 export interface EsedreConfig {
   version?: string;
   projectCode?: string;
+  projectName?: string;
   allowedProjects?: string[];
   dataDir?: string | string[];
   serverUrl?: string;
