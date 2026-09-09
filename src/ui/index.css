@@ -1,0 +1,71 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  /* Clean, crisp light theme with steel-blue and deep cyan accents */
+  --bg-main: #f8fafc;              /* Soft neutral slate-50 canvas */
+  --bg-app: #f8fafc;               /* Slate-50 background */
+  --bg-card: #ffffff;              /* Crisp elevated white card containers */
+  --bg-surface: #ffffff;           /* Crisp surface panels */
+  --bg-surface-elevated: #f1f5f9;  /* Slate-100: subtle elevated contrast panels & headers */
+  --bg-input: #ffffff;             /* Crisp white inputs */
+  --border-subtle: #e2e8f0;        /* Slate-200: clean light borders */
+  --border-strong: #cbd5e1;        /* Slate-300: interactive/hover borders */
+  --border-accent: rgba(14, 116, 144, 0.4); /* Steel blue / cyan accent border */
+  --accent-primary: #0284c7;       /* Sky-600 / steel blue */
+  --accent-bg-subtle: rgba(2, 132, 199, 0.08);
+  --accent-border-subtle: rgba(2, 132, 199, 0.25);
+  --text-primary: #0f172a;         /* Slate-900: crisp readable dark text */
+  --text-secondary: #334155;       /* Slate-700: secondary text */
+  --text-muted: #64748b;           /* Slate-500: muted text */
+  color-scheme: light;
+}
+
+.dark {
+  /* Sleek, sophisticated dark theme */
+  --bg-main: #060812;              /* Deep obsidian canvas */
+  --bg-app: #060812;               /* Deep obsidian background */
+  --bg-card: #0b0f19;              /* Deep card containers */
+  --bg-surface: #0a0e1a;           /* Deep surface panels */
+  --bg-surface-elevated: #0f172a;  /* Slate-900: elevated contrast panels & headers */
+  --bg-input: #0b0f19;             /* Crisp dark inputs */
+  --border-subtle: #1e293b;        /* Slate-800: subtle dark borders */
+  --border-strong: #334155;        /* Slate-700: interactive/hover borders */
+  --border-accent: rgba(99, 102, 241, 0.5); /* Indigo accent border */
+  --accent-primary: #818cf8;       /* Indigo-400 */
+  --accent-bg-subtle: rgba(99, 102, 241, 0.12);
+  --accent-border-subtle: rgba(99, 102, 241, 0.3);
+  --text-primary: #f8fafc;         /* Slate-50: crisp readable text */
+  --text-secondary: #94a3b8;       /* Slate-400: secondary text */
+  --text-muted: #64748b;           /* Slate-500: muted text */
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-main);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow: hidden;
+}
+
+/* Custom scrollbar styling for sleek dark theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.2);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.35);
+}
+

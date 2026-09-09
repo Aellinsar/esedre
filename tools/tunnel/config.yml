@@ -1,0 +1,7 @@
+﻿tunnel: PLACEHOLDER-TUNNEL-ID
+credentials-file: PLACEHOLDER-CREDENTIALS-PATH
+
+ingress:
+  - hostname: planner.arwam.com
+    service: http://localhost:5674
+  - service: http_status:404

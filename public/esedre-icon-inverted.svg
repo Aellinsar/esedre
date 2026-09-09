@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <!-- Central Arch Vault connecting the 2 middle pillars -->
+  <path d="M 14.5 40 L 14.5 16 C 14.5 5.5 33.5 5.5 33.5 16 L 33.5 40" 
+        stroke="#a855f7" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+
+  <!-- 2 Outer Framing Pillars (Total 4 pillars) -->
+  <rect x="3.5" y="16" width="4" height="24" rx="1.2" fill="#a855f7" />
+  <rect x="40.5" y="16" width="4" height="24" rx="1.2" fill="#a855f7" />
+
+  <!-- Minimalist Woman Figure inside Central Arch (Well-spaced & visible) -->
+  <g fill="#0284c7">
+    <circle cx="24" cy="20" r="2.8" />
+    <path d="M 22.2 24.2 C 23 23.2 25 23.2 25.8 24.2 L 28.5 40 L 19.5 40 Z" />
+  </g>
+
+  <!-- Clean Base Foundation -->
+  <rect x="2" y="40" width="44" height="3.2" rx="1.2" fill="#a855f7" />
+</svg>
