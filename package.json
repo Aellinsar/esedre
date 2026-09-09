@@ -1,8 +1,12 @@
 {
   "name": "esedre",
-  "version": "0.1.1",
+  "version": "0.1.4",
   "description": "Esedre - Developer roadmap, ticketing, and companion LLM agent coordination platform",
   "homepage": "https://www.arwam.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aellinsar/esedre.git"
+  },
   "author": "ARWAM <dev@arwam.com>",
   "keywords": [
     "roadmap",
@@ -23,7 +27,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "docs/assets"
   ],
   "scripts": {
     "dev": "vite --port=5674",
@@ -40,7 +45,7 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "license": "MIT",
+  "license": "MPL-2.0",
   "dependencies": {
     "lucide-react": "^0.546.0",
     "react": "^19.2.8",

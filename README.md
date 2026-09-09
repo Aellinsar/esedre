@@ -1,12 +1,12 @@
 # 🏛️ Esedre (`/eh-ˈseh-dreh/`)
 
 <p align="center">
-  <img src="docs/assets/esedre-hero.png" alt="Esedre: The Classical Council Forum for Developers & Companion Agents" width="100%" />
+  <img src="https://cdn.jsdelivr.net/npm/esedre/docs/assets/esedre-hero.png" alt="Esedre: The Classical Council Forum for Developers & Companion Agents" width="100%" />
 </p>
 
-> **Developer roadmap, ticketing engine, and Model Context Protocol (MCP) server for developers and companion LLM coding agents.**
+> **The open developer roadmap and ticketing engine engineered to provide long-term grounding for LLM agent context, powered by a fast CLI, local Web UI, and Model Context Protocol (MCP) server.**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-blue.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-100%25%20Passing-emerald.svg)](tests/)
 [![Website: www.arwam.com](https://img.shields.io/badge/Website-www.arwam.com-cyan.svg)](https://www.arwam.com)
 
@@ -14,13 +14,27 @@
 
 ## 🌟 Overview
 
-**Esedre** (with short CLI alias **`ese`**) is an open-source developer planning engine backed by text-based files (Markdown & JSON) that are easily backed by a git branch or repository for clean versioning and branch-aware workflows. Designed from the ground up for software engineers and autonomous companion LLM coding agents (such as Google Antigravity, Claude Code, and Cursor) to coordinate together, it provides:
+**Esedre** (with short CLI alias **`ese`**) is an open-source developer planning engine backed by plain text files (Markdown & JSON) that are easily version-controlled in git. Designed from the ground up for software engineers and autonomous companion LLM coding agents (such as Google Antigravity, Claude Code, and Cursor) to coordinate together, Esedre solves the single biggest bottleneck in LLM-assisted development: **agent context drift and session amnesia**.
 
-1. **CLI Commands (`esedre` / `ese`)**: List, query, plan, create, and update tickets via simple terminal commands with human-readable colored tables or machine-readable `--json` output.
-2. **Model Context Protocol (MCP) Server**: Full JSON-RPC 2.0 stdio server implementing the official MCP specification (`2024-11-05`), exposing roadmap tickets as first-class tools and URI resources.
-3. **Multi-Project Agent Isolation**: Informs each companion LLM only of the projects it is authorized to access, keeping unrelated project tickets, specifications, and plans completely isolated.
-4. **Optimistic Concurrency Control**: SHA-1 content hashing on all tickets and plans, preventing concurrent agents or humans from clobbering each other's edits.
-5. **Local Web Dashboard & Embeddable Component**: Run a visual dashboard with `esedre serve` to manage tickets in your browser, or embed `<esedre-planner>` into any web app without adding UI framework dependencies to your project.
+### ⚓ Core Pillar: Long-Term Grounding for LLM Agent Context
+
+LLM coding agents possess extraordinary implementation speed, but face a fundamental architectural ceiling: **context windows fill up, compact, and reset between turns and sessions**. External issue trackers live in distant web silos that agents cannot inspect reliably or locally without API keys and network overhead. Over multi-turn pair programming sessions, models lose track of architectural intent, past verification history, and upcoming milestones.
+
+**Esedre's core feature is providing persistent, authoritative long-term grounding to LLM agent context:**
+
+* **Git-Backed Ground Truth**: Tickets, feature breakdowns, architecture plans, and verification comments reside right alongside source code in git. They branch, merge, and stay synchronized with the codebase.
+* **First-Class MCP Integration**: Through the official Model Context Protocol, companion LLMs query roadmap priorities (`esedre_list_tickets`), inspect deep specifications (`esedre_get_ticket`), and update plans (`esedre_save_plan`) in real time.
+* **Cross-Session Memory & Grounding**: When an LLM agent begins a new turn, recovers from a context compaction, or transitions across developer handoffs, Esedre grounds the model to concrete technical specifications, constraints, and upcoming milestones: preventing drift and hallucinated direction.
+* **Optimistic Concurrency Protection**: Multi-agent pair-programming remains safe through SHA-1 content hashing, ensuring concurrent agents or developers never silently overwrite each other's work.
+
+### ⚡ Key Capabilities
+
+1. **Long-Term LLM Agent Grounding**: The primary architectural foundation: anchoring companion LLM agents to persistent project memory, architectural plans, and git-backed roadmap milestones across multi-turn sessions and context compactions.
+2. **CLI Commands (`esedre` / `ese`)**: List, query, plan, create, and update tickets via simple terminal commands with human-readable colored tables or machine-readable `--json` output.
+3. **Model Context Protocol (MCP) Server**: Full JSON-RPC 2.0 stdio server implementing the official MCP specification (`2024-11-05`), exposing roadmap tickets as first-class tools and URI resources.
+4. **Agent Project Allow-List (Multi-Project Isolation)**: Informs each companion LLM only of the projects it is authorized to access, keeping unrelated project tickets, specifications, and plans completely isolated.
+5. **Optimistic Concurrency Control**: SHA-1 content hashing on all tickets and plans, preventing concurrent agents or humans from clobbering each other's edits.
+6. **Local Web Dashboard & Embeddable Component**: Run a visual dashboard with `esedre serve` to manage tickets in your browser, or embed `<esedre-planner>` into any web app without adding UI framework dependencies to your project.
 
 ---
 
@@ -197,4 +211,4 @@ npm run build
 
 ## 📄 License
 
-MIT © [ARWAM](https://www.arwam.com)
+[Mozilla Public License 2.0 (MPL-2.0)](LICENSE) © [ARWAM](https://www.arwam.com)

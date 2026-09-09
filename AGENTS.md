@@ -7,6 +7,7 @@
 ## 1. Project Overview & Scope
 
 - **Repository Role**: Standalone open developer roadmap, ticketing engine, CLI utility (`esedre` / `ese`), web UI, and Model Context Protocol (MCP) server for developers and autonomous companion LLM coding agents.
+- **Primary Mission & Biggest Core Feature**: Providing **long-term grounding to LLM agent context** by maintaining structured, git-backed roadmaps, architectural plans, and verification records across multi-turn sessions, context compactions, and developer handoffs.
 - **Data Ecosystem**: Multi-topology project configuration via `.esedre/esedre.json` or `esedre.json` with support for centralized ticket data hubs, in-repo standalone tickets, and federated hybrid topologies.
 - **Core Architecture**: Node.js (v20+), TypeScript, ESM (`"type": "module"`), esbuild bundling to `dist/esedre.mjs`, Vite/React UI, and Vitest test runner.
 
@@ -181,4 +182,17 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 - **ABSOLUTE BAN ON EM DASHES (U+2014 / em dash)**: Never use em dashes anywhere in documentation, code, comments, CLI output, commit messages, or metadata. Use standard hyphens `-`, colons `:`, parentheses `()`, or rewrite sentences naturally without dashes.
 
+---
 
+## 14. Core Architectural Pillar: Long-Term Grounding for LLM Agent Context
+
+1. **Primary Value Proposition & Biggest Core Feature**:
+   - The single biggest core feature of Esedre is providing **long-term grounding to LLM agent context**.
+   - Companion LLM coding agents naturally face context window limits, context compaction, and session amnesia across multi-turn workflows. External issue trackers live in remote cloud silos that agents cannot access reliably, locally, or deterministically.
+
+2. **Git-Backed Authoritative Memory**:
+   - By structuring tickets, architectural breakdowns, decision records, and verification comments in plain JSON and Markdown directly alongside source code, Esedre functions as persistent, version-controlled ground truth for companion LLMs.
+   - When an LLM agent begins a new turn, recovers from a context compaction, or collaborates across developer handoffs, the roadmap anchors the model to concrete technical specifications, constraints, and upcoming milestones.
+
+3. **Continuous Real-Time Alignment via MCP & CLI**:
+   - Through the Model Context Protocol (MCP) server and CLI commands, companion LLMs continuously query project priorities (`esedre_list_tickets`), inspect specifications (`esedre_get_ticket`), and update plans (`esedre_save_plan`) with optimistic concurrency checks (`sha1`), eliminating hallucinated project direction and preventing drift.
