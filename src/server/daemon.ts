@@ -5,6 +5,7 @@ import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolvePorts } from '../config.js';
+import { CURRENT_ESEDRE_VERSION } from '../types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,6 +31,9 @@ export interface DaemonStatus {
   workspaceRoot?: string;
   projects?: string[];
   logFile?: string;
+  version?: string;
+  staleVersion?: boolean;
+  installedVersion?: string;
   error?: string;
 }
 
@@ -223,6 +227,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       if (ping.responding && ping.isEsedre) {
         if (!options.quiet) {
           console.log(`\x1b[36m⚡ Esedre daemon already running on http://localhost:${port} (PID ${existingState.pid})\x1b[0m`);
+          if (existingState.version && existingState.version !== CURRENT_ESEDRE_VERSION) {
+            console.log(`\x1b[33m⚠️  Warning: Daemon is running v${existingState.version}, but v${CURRENT_ESEDRE_VERSION} is installed. Run 'ese stop && ese start' to reload.\x1b[0m`);
+          }
         }
         return existingState;
       }
@@ -243,7 +250,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       pid: process.pid,
       port,
       startedAt: new Date().toISOString(),
-      version: '0.1.0',
+      version: CURRENT_ESEDRE_VERSION,
       workspaceRoot,
       logFile,
     };
@@ -326,7 +333,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     uiPort: port + 1,
     apiPort: port + 2,
     startedAt: new Date().toISOString(),
-    version: '0.1.0',
+    version: CURRENT_ESEDRE_VERSION,
     workspaceRoot,
     logFile,
   };
@@ -424,6 +431,9 @@ export async function getDaemonStatus(options: { port?: number; json?: boolean; 
     const startedMs = Date.parse(state.startedAt) || Date.now();
     const uptimeSeconds = Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
 
+    const daemonVersion = state.version;
+    const isStale = Boolean(daemonVersion && daemonVersion !== CURRENT_ESEDRE_VERSION);
+
     return {
       running: true,
       pid: state.pid,
@@ -433,6 +443,9 @@ export async function getDaemonStatus(options: { port?: number; json?: boolean; 
       workspaceRoot: state.workspaceRoot,
       projects: ping.projects,
       logFile: state.logFile || logFile,
+      version: daemonVersion,
+      staleVersion: isStale,
+      installedVersion: CURRENT_ESEDRE_VERSION,
     };
   }
 
@@ -448,6 +461,9 @@ export async function getDaemonStatus(options: { port?: number; json?: boolean; 
     port,
     projects: ping.projects,
     logFile,
+    version: state?.version,
+    staleVersion: Boolean(state?.version && state.version !== CURRENT_ESEDRE_VERSION),
+    installedVersion: CURRENT_ESEDRE_VERSION,
   };
 }
 

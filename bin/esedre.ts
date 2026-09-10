@@ -710,10 +710,16 @@ async function main(): Promise<void> {
             console.log(`${colors.bold}${colors.green}● Esedre daemon is RUNNING${colors.reset}`);
             console.log(`  • Port:        ${status.port}`);
             if (status.pid) console.log(`  • PID:         ${status.pid}`);
+            if (status.version) console.log(`  • Version:     v${status.version}`);
             if (status.uptimeSeconds !== undefined) console.log(`  • Uptime:      ${status.uptimeSeconds}s`);
             if (status.startedAt) console.log(`  • Started:     ${status.startedAt}`);
             if (status.projects?.length) console.log(`  • Projects:    ${status.projects.join(', ')}`);
             if (status.logFile) console.log(`  • Logs:        ${status.logFile}`);
+
+            if (status.staleVersion) {
+              console.log(`\n${colors.yellow}⚠️  Warning: Daemon is running v${status.version}, but v${status.installedVersion} is installed.${colors.reset}`);
+              console.log(`   Restart to apply updates: ${colors.cyan}ese stop && ese start${colors.reset}`);
+            }
           } else {
             console.log(`${colors.yellow}○ Esedre daemon is STOPPED (port ${status.port})${colors.reset}`);
             if (status.logFile && fs.existsSync(status.logFile)) {
