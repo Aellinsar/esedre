@@ -215,7 +215,7 @@ export function createMockDataset(baseDir) {
           inDevelopment: true,
           featureFlag: 'ENABLE_MCP_SERVER',
           submittedBy: 'Matt G',
-          summary: 'Implement full JSON-RPC 2.0 stdio server implementing the official MCP specification (2024-11-05), exposing tickets and plans as first-class tools for companion LLMs.',
+          summary: 'Implement full JSON-RPC 2.0 stdio server implementing the official MCP specification (2024-11-05), exposing tickets and plans as first-class tools for LLM agents.',
           breakdown: [
             'MCP protocol lifecycle (initialize, tools/list, tools/call)',
             'Expose esedre_list_tickets, esedre_get_ticket, and esedre_save_plan',
@@ -291,7 +291,7 @@ export function createMockDataset(baseDir) {
           estimatedEffort: '2.0 hours',
           status: 'Completed',
           submittedBy: 'Matt G',
-          summary: 'Compile all active tickets and plans into a compact local JSON snapshot file so companion LLM agents get instant context with zero CLI overhead.',
+          summary: 'Compile all active tickets and plans into a compact local JSON snapshot file so LLM agents get instant context with zero CLI overhead.',
           breakdown: [
             'Extract active tickets, summaries, plans, and revisions',
             'Compute ticket staleness metrics (daysSinceUpdate)',

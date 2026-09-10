@@ -5,7 +5,7 @@ import os from 'node:os';
 import { FilesystemStorageAdapter } from '../src/storage/filesystem.js';
 import { SecurityFilter } from '../src/securityFilter.js';
 import { computeTicketHash, verifyTicketHash, generateProjectSnapshot } from '../src/snapshot.js';
-import { EsedreConflictError } from '../src/types.js';
+import { EsedreConflictError, CURRENT_ESEDRE_VERSION } from '../src/types.js';
 import { EsedreAuthorizationError } from '../src/config.js';
 import { configureWorkspace, classifyContent, computeNormalizedHash, ESEDRE_SKILL_TEMPLATE } from '../src/upgrade.js';
 
@@ -214,6 +214,7 @@ describe('Local Projection Snapshot Generation', () => {
     const snapshot = await generateProjectSnapshot(adapter, 'Core', tempDir);
 
     expect(snapshot.projectCode).toBe('Core');
+    expect(snapshot.version).toBe(CURRENT_ESEDRE_VERSION);
     expect(snapshot.totalTickets).toBe(2);
     expect(snapshot.tickets.length).toBe(2);
 
@@ -221,9 +222,79 @@ describe('Local Projection Snapshot Generation', () => {
     expect(fs.existsSync(snapshotFile)).toBe(true);
 
     const onDisk = JSON.parse(fs.readFileSync(snapshotFile, 'utf-8'));
+    expect(onDisk.version).toBe(CURRENT_ESEDRE_VERSION);
     expect(onDisk.totalTickets).toBe(2);
     expect(onDisk.tickets[0].sha1).toBeDefined();
     expect(onDisk.tickets[0].sha1.length).toBe(40);
+  });
+
+  it('includes compound ticketKey, plan content, and temporal metadata in snapshot', async () => {
+    const t1 = await adapter.createTicket({
+      title: 'Full Featured Ticket',
+      type: 'Feature',
+      complexity: 'High',
+      estimatedEffort: '4.0 - 6.0 hours',
+      summary: 'Comprehensive feature breakdown',
+      projectCode: 'Core',
+    });
+
+    await adapter.savePlan(t1.meta.id, '# Implementation Plan\n- Step 1: Design\n- Step 2: Test');
+    await adapter.updateTicket(t1.meta.id, { status: 'Completed' });
+
+    const snapshot = await generateProjectSnapshot(adapter, 'Core', tempDir);
+    const entry = snapshot.tickets.find((t) => t.id === t1.meta.id);
+
+    expect(entry).toBeDefined();
+    expect(entry!.ticketKey).toBe(`Core-${t1.meta.id}`);
+    expect(entry!.type).toBe('Feature');
+    expect(entry!.status).toBe('Completed');
+    expect(entry!.complexity).toBe('High');
+    expect(entry!.estimatedEffort).toBe('4.0 - 6.0 hours');
+    expect(entry!.hasPlan).toBe(true);
+    expect(entry!.planMarkdown).toContain('# Implementation Plan');
+    expect(entry!.completedAt).toBeDefined();
+    expect(entry!.daysSinceUpdate).toBeGreaterThanOrEqual(0);
+    expect(entry!.revision).toBeGreaterThanOrEqual(1);
+
+    // Verify snapshot file on disk can be loaded directly for zero-latency LLM agent context
+    const snapshotFile = path.join(tempDir, '.esedre', 'snapshot.json');
+    const directRead = JSON.parse(fs.readFileSync(snapshotFile, 'utf-8'));
+    expect(directRead.tickets[0].ticketKey).toBe(`Core-${t1.meta.id}`);
+    expect(directRead.tickets[0].hasPlan).toBe(true);
+  });
+
+  it('generates snapshot via CLI ese snapshot command', async () => {
+    await adapter.createTicket({ title: 'CLI Snapshot Ticket', category: 'Feature', projectCode: 'Core' });
+    const cliPath = path.resolve(__dirname, '..', 'dist', 'esedre.mjs');
+
+    // Create minimal .esedre/esedre.json in tempDir so CLI recognizes projectCode
+    fs.mkdirSync(path.join(tempDir, '.esedre'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tempDir, '.esedre', 'esedre.json'),
+      JSON.stringify({ version: CURRENT_ESEDRE_VERSION, projectCode: 'Core' }),
+      'utf-8'
+    );
+
+    const { execFileSync } = await import('node:child_process');
+    const out = execFileSync(
+      process.execPath,
+      [cliPath, 'snapshot', '--project', 'Core', '--json'],
+      {
+        cwd: tempDir,
+        encoding: 'utf-8',
+        env: {
+          ...process.env,
+          ESEDRE_GLOBAL_DIR: path.join(tempDir, 'global-store'),
+        },
+      }
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.projectCode).toBe('Core');
+    expect(parsed.totalTickets).toBeGreaterThanOrEqual(1);
+
+    const snapshotFile = path.join(tempDir, '.esedre', 'snapshot.json');
+    expect(fs.existsSync(snapshotFile)).toBe(true);
   });
 });
 

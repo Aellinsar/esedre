@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { EsedreTicket, TicketMeta, ProjectDescriptor, TicketComment, TicketDetail, TicketType, TicketCategory, EsedreConflictError } from '../types.js';
 import { StorageAdapter, CreateTicketInput, ListTicketsFilter, RegisterProjectInput } from './adapter.js';
-import { EsedreConfig, findEsedreConfig } from '../config.js';
+import { EsedreConfig, findEsedreConfig, expandHome } from '../config.js';
 import { computeTicketHash, verifyTicketHash } from '../snapshot.js';
 
 function writeSafeFile(filePath: string, content: string): void {
@@ -86,13 +86,33 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     const locations: ResolvedProjectLocation[] = [];
     const seenCodes = new Set<string>();
 
-    // 1. Hub Directories from config.dataDir
+    // 1. Hub Directories from config.dataDir or auto-detected in-workspace hub
     const rawDataDirs = Array.isArray(this.config.dataDir)
-      ? this.config.dataDir
+      ? [...this.config.dataDir]
       : (this.config.dataDir ? [this.config.dataDir] : []);
 
+    // Auto-detect if workspaceRoot or subfolder is itself a multi-project hub
+    if (rawDataDirs.length === 0) {
+      const candidateHubDirs = [
+        this.workspaceRoot,
+        path.join(this.workspaceRoot, 'data'),
+        path.join(this.workspaceRoot, '.esedre'),
+      ];
+      for (const cand of candidateHubDirs) {
+        const pSub = path.join(cand, 'projects');
+        if (fs.existsSync(pSub)) {
+          try {
+            if (fs.statSync(pSub).isDirectory()) {
+              rawDataDirs.push(cand);
+              break;
+            }
+          } catch {}
+        }
+      }
+    }
+
     for (const dDir of rawDataDirs) {
-      const resolvedHub = path.resolve(this.workspaceRoot, dDir);
+      const resolvedHub = path.resolve(this.workspaceRoot, expandHome(dDir));
       if (!fs.existsSync(resolvedHub)) continue;
 
       const projectsSubDir = path.join(resolvedHub, 'projects');
@@ -112,6 +132,9 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           if (fs.existsSync(pJsonPath)) {
             try {
               desc = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8'));
+              if (desc && !desc.slug) {
+                desc.slug = (desc.code || ent.name).toLowerCase();
+              }
             } catch {}
           }
 
@@ -202,7 +225,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     // 2. Federated Projects from config.projects
     if (this.config.projects && typeof this.config.projects === 'object') {
       for (const [code, rawPath] of Object.entries(this.config.projects)) {
-        const projectDir = path.resolve(this.workspaceRoot, rawPath);
+        const projectDir = path.resolve(this.workspaceRoot, expandHome(rawPath));
         if (!fs.existsSync(projectDir)) continue;
 
         let actualTicketsDir = path.join(projectDir, 'tickets');
@@ -223,6 +246,9 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           if (fs.existsSync(cand)) {
             try {
               desc = JSON.parse(fs.readFileSync(cand, 'utf-8'));
+              if (desc && !desc.slug) {
+                desc.slug = (desc.code || code).toLowerCase();
+              }
               break;
             } catch {}
           }
@@ -258,7 +284,15 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         path.join(this.workspaceRoot, 'src', 'data', 'planning', 'tickets'),
       ];
 
-      const foundTicketsDir = candidateDirs.find((d) => fs.existsSync(d)) || path.join(this.workspaceRoot, '.esedre', 'tickets');
+      const existingDirs = candidateDirs.filter((d) => fs.existsSync(d));
+      const foundTicketsDir =
+        existingDirs.find((d) => {
+          try {
+            return fs.readdirSync(d).length > 0;
+          } catch {
+            return false;
+          }
+        }) || existingDirs[0] || path.join(this.workspaceRoot, '.esedre', 'tickets');
 
       let descs: ProjectDescriptor[] = [];
       const pJsonCandidates = [
@@ -318,7 +352,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
 
   public async registerProject(input: RegisterProjectInput): Promise<ProjectDescriptor> {
     const rawCode = input.code.trim();
-    const cleanCode = rawCode.toUpperCase();
+    const cleanCode = rawCode;
     const cleanName = input.name?.trim() || cleanCode;
     const cleanDesc = input.description?.trim() || `${cleanName} project`;
     const slug = cleanCode.toLowerCase();
@@ -329,14 +363,33 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       border: 'border-cyan-500/40',
     };
 
-    // 1. Check if dataDir hub is configured
+    // 1. Check if dataDir hub is configured or in-workspace hub auto-detected
     const rawDataDirs = Array.isArray(this.config.dataDir)
-      ? this.config.dataDir
+      ? [...this.config.dataDir]
       : (this.config.dataDir ? [this.config.dataDir] : []);
+
+    if (rawDataDirs.length === 0) {
+      const candidateHubDirs = [
+        this.workspaceRoot,
+        path.join(this.workspaceRoot, 'data'),
+        path.join(this.workspaceRoot, '.esedre'),
+      ];
+      for (const cand of candidateHubDirs) {
+        const pSub = path.join(cand, 'projects');
+        if (fs.existsSync(pSub)) {
+          try {
+            if (fs.statSync(pSub).isDirectory()) {
+              rawDataDirs.push(cand);
+              break;
+            }
+          } catch {}
+        }
+      }
+    }
 
     let targetHub: string | null = null;
     for (const dDir of rawDataDirs) {
-      const resolved = path.resolve(this.workspaceRoot, dDir);
+      const resolved = path.resolve(this.workspaceRoot, expandHome(dDir));
       if (fs.existsSync(resolved)) {
         targetHub = resolved;
         break;
@@ -357,7 +410,9 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         try { existingPJson = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8')); } catch {}
       }
 
-      const id = existingPJson?.id || (await this.getProjects()).length + 1;
+      const existingProjects = await this.getProjects();
+      const maxId = existingProjects.reduce((max, p) => Math.max(max, p.id || 0), 0);
+      const id = existingPJson?.id || (maxId + 1);
       const projectDesc: ProjectDescriptor = {
         id,
         code: cleanCode,
@@ -435,7 +490,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     const strId = String(id).trim();
 
     // Check if prefixed with project code (e.g. "Prof-35", "Esedre-1", "Prof_35", "Prof:35")
-    const prefixMatch = strId.match(/^([a-zA-Z0-9]{1,6})[-_:](\d+)$/i);
+    const prefixMatch = strId.match(/^([a-zA-Z0-9]{1,7})[-_:](\d+)$/i);
     if (prefixMatch) {
       const code = prefixMatch[1].toLowerCase();
       const num = parseInt(prefixMatch[2], 10);
@@ -765,10 +820,10 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       const lower = String(requestedIdentifier).trim().toLowerCase();
       targetLoc = locations.find(
         (l) =>
-          l.project.code.toLowerCase() === lower ||
-          l.project.slug.toLowerCase() === lower ||
+          l.project.code?.toLowerCase() === lower ||
+          l.project.slug?.toLowerCase() === lower ||
           String(l.project.id) === lower ||
-          l.project.name.toLowerCase() === lower
+          l.project.name?.toLowerCase() === lower
       );
       if (!targetLoc) {
         throw new Error(`Project '${requestedIdentifier}' is invalid or not registered in this workspace.`);

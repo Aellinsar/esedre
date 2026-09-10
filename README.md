@@ -1,7 +1,7 @@
 # 🏛️ Esedre (`/eh-ˈseh-dreh/`)
 
 <p align="center">
-  <img src="https://cdn.jsdelivr.net/npm/esedre/docs/assets/esedre-hero.png" alt="Esedre: The Classical Council Forum for Developers & Companion Agents" width="100%" />
+  <img src="https://cdn.jsdelivr.net/npm/esedre/docs/assets/esedre-hero.png" alt="Esedre: The Classical Council Forum for Developers & LLM Agents" width="100%" />
 </p>
 
 > **The open developer roadmap and ticketing engine engineered to provide long-term grounding for LLM agent context, powered by a fast CLI, local Web UI, and Model Context Protocol (MCP) server.**
@@ -14,10 +14,10 @@
 
 ## 🌟 Overview
 
-**Esedre** (with short CLI alias **`ese`**) is an open-source developer planning engine backed by plain text files (Markdown & JSON) that are easily version-controlled in git. Designed from the ground up for software engineers and autonomous companion LLM coding agents (such as Google Antigravity, Claude Code, and Cursor) to coordinate together, Esedre solves the single biggest bottleneck in LLM-assisted development: **agent context drift and session amnesia**.
+**Esedre** (with short CLI alias **`ese`**) is an open-source developer planning engine backed by plain text files (Markdown & JSON) that are easily version-controlled in git. Designed from the ground up for software engineers and autonomous LLM coding agents (such as Google Antigravity, Claude Code, and Cursor) to coordinate together, Esedre solves the single biggest bottleneck in LLM-assisted development: **agent context drift and session amnesia**.
 
 <p align="center">
-  <img src="docs/assets/esedre-dashboard-light.png" alt="Esedre Web Dashboard (Light Theme)" width="100%" />
+  <img src="https://cdn.jsdelivr.net/npm/esedre/docs/assets/esedre-dashboard-light.png" alt="Esedre Web Dashboard (Light Theme)" width="100%" />
 </p>
 
 ### ⚓ Core Pillar: Long-Term Grounding for LLM Agent Context
@@ -27,18 +27,18 @@ LLM coding agents possess extraordinary implementation speed, but face a fundame
 **Esedre's core feature is providing persistent, authoritative long-term grounding to LLM agent context:**
 
 * **Git-Backed Ground Truth**: Tickets, feature breakdowns, architecture plans, and verification comments reside right alongside source code in git. They branch, merge, and stay synchronized with the codebase.
-* **First-Class MCP Integration**: Through the official Model Context Protocol, companion LLMs query roadmap priorities (`esedre_list_tickets`), inspect deep specifications (`esedre_get_ticket`), and update plans (`esedre_save_plan`) in real time.
+* **First-Class MCP Integration**: Through the official Model Context Protocol, LLM agents query roadmap priorities (`esedre_list_tickets`), inspect deep specifications (`esedre_get_ticket`), and update plans (`esedre_save_plan`) in real time.
 * **Cross-Session Memory & Grounding**: When an LLM agent begins a new turn, recovers from a context compaction, or transitions across developer handoffs, Esedre grounds the model to concrete technical specifications, constraints, and upcoming milestones: preventing drift and hallucinated direction.
 * **Optimistic Concurrency Protection**: Multi-agent pair-programming remains safe through SHA-1 content hash versioning, ensuring concurrent agents or developers never silently overwrite each other's work.
 
 ### ⚡ Key Capabilities
 
-1. **Long-Term LLM Agent Grounding**: The primary architectural foundation: anchoring companion LLM agents to persistent project memory, architectural plans, and git-backed roadmap milestones across multi-turn sessions and context compactions.
+1. **Long-Term LLM Agent Grounding**: The primary architectural foundation: anchoring LLM agents to persistent project memory, architectural plans, and git-backed roadmap milestones across multi-turn sessions and context compactions.
 2. **CLI Commands (`esedre` / `ese`)**: List, query, plan, create, and update tickets via simple terminal commands with human-readable colored tables or machine-readable `--json` output.
 3. **Model Context Protocol (MCP) Server**: Full JSON-RPC 2.0 stdio server implementing the official MCP specification (`2024-11-05`), exposing roadmap tickets as first-class tools and URI resources.
-4. **Agent Project Allow-List (Multi-Project Isolation)**: Informs each companion LLM only of the projects it is authorized to access, keeping unrelated project tickets, specifications, and plans completely isolated.
+4. **Agent Project Allow-List (Multi-Project Isolation)**: Informs each LLM agent only of the projects it is authorized to access, keeping unrelated project tickets, specifications, and plans completely isolated.
 5. **Optimistic Concurrency Control**: SHA-1 content hashing on all tickets and plans, preventing concurrent agents or humans from clobbering each other's edits.
-6. **Local Web Dashboard & Embeddable Component**: Run a visual dashboard with `esedre serve` to manage tickets in your browser, or embed `<esedre-planner>` into any web app without adding UI framework dependencies to your project.
+6. **Local Web Dashboard & Embeddable Component**: Run a visual dashboard with `ese start` to manage tickets in your browser, or embed `<esedre-planner>` into any web app without adding UI framework dependencies to your project.
 
 ---
 
@@ -46,7 +46,7 @@ LLM coding agents possess extraordinary implementation speed, but face a fundame
 
 ### Origin
 
-**Esedre** derives from classical Latin *exedra* (plural *esedre*), the semicircular architectural council pavilions where ancient architects, master builders, and planners gathered to debate designs, draft blueprints, and coordinate construction. That classical forum mirrors Esedre's mission: a structured, open workspace where developers and companion LLMs collaborate to scope work, align on plans, and ship software.
+**Esedre** derives from classical Latin *exedra* (plural *esedre*), the semicircular architectural council pavilions where ancient architects, master builders, and planners gathered to debate designs, draft blueprints, and coordinate construction. That classical forum mirrors Esedre's mission: a structured, open workspace where developers and LLM coding partners collaborate to scope work, align on plans, and ship software.
 
 ### Pronunciation Guide
 
@@ -61,52 +61,93 @@ Esedre is pronounced **`eh-SEH-dreh`** (phonetically: **`/ɛˈsɛ.drɛ/`**).
 ### 1. Installation
 
 ```bash
-# Global CLI installation
+# Global CLI installation (recommended)
 npm install -g esedre
 
-# Or run instantly without installation via npx
-npx esedre list
-npx ese list
+# Or run instantly without global installation via npx
+npx esedre init
 ```
 
-### 2. Configure Your Project (`.esedre/esedre.json`)
+### 2. Initialize Your Project
 
-Create an `.esedre/esedre.json` (or root `esedre.json`) configuration:
+Run `ese init` inside any project repository. It automatically configures `.esedre/esedre.json`, plants in-repo shell wrappers (`.esedre/ese`), configures MCP for LLM agents, and generates your initial snapshot:
 
-```json
-{
-  "projectCode": "MYAPP",
-  "allowedProjects": ["MYAPP"]
-}
+```bash
+ese init
+
+# Or non-interactive with custom project code and display name:
+ese init --project MYAPP --name "My App" -y
 ```
 
-> **Tip**: Passing `"allowedProjects": ["*"]` authorizes access to all registered projects in the workspace.
+### 3. Start the Web UI & Server
+
+```bash
+# Start background server daemon on port 5674
+ese start
+
+# Open dashboard: http://localhost:5674/app
+```
+
+### 4. Create Your First Ticket
+
+```bash
+ese create --title "Build authentication flow" --type Feature
+ese list
+ese get 1
+```
+
+> **Multi-Project Tip**: Passing `"allowedProjects": ["*"]` in `.esedre/esedre.json` authorizes access to all registered projects in the workspace.
 
 ---
 
 ## 💻 CLI Commands
 
-Both `esedre` and `ese` can be used interchangeably:
+Both `esedre` and `ese` can be used interchangeably. Commands are structured into semantic categories:
+
+### Roadmap Commands (Pair Programming & LLM Agents)
+
+Core day-to-day workflow commands for scoping, viewing, planning, and verifying tickets:
 
 | Command | Usage | Description |
 |---|---|---|
-| `list` | `ese list [--project <code\|all>] [--status <status>] [--json]` | List roadmap tickets. Defaults to the active project. |
+| `list` | `ese list [-p\|--project <code\|all>] [-s\|--status <status>] [-t\|--type <type>] [--json]` | List roadmap tickets with optional filters. Defaults to the active project. |
 | `get` | `ese get <id> [--json]` | View ticket specifications, feature breakdown, comments, and SHA-1 hash. |
 | `plan` | `ese plan <id> [--set "<markdown>"] [--file <path>] [--last-hash <h>]` | Read or update the active implementation plan markdown. |
-| `create` | `ese create --title "..." [--project <code>] [--category <cat>]` | Create a new ticket with auto-sequential ID. Title strictly capped at 48 chars. |
-| `update` | `ese update <id> [--status <status>] [--title "..."] [--last-hash <h>]` | Update ticket status or title with optimistic concurrency protection. |
-| `comment` | `ese comment <id> --text "..." [--author "..."]` | Append a developer or companion agent note to a ticket. |
-| `configure` | `ese configure [--project <code>] [--port <n>]` | Initialize workspace configuration, MCP config, and in-repo shell wrappers. |
-| `snapshot` | `ese snapshot [--json]` | Generate lean projection `.esedre/snapshot.json` for zero-latency agent context. |
+| `create` | `ese create --title "..." [-p\|--project <code>] [-t\|--type <type>]` | Create a new ticket with auto-sequential ID. Title strictly capped at 48 chars. |
+| `update` | `ese update <id> [-s\|--status <status>] [-t\|--type <type>] [--title "..."] [--last-hash <h>]` | Update ticket status, type, or title with optimistic concurrency protection. |
+| `comment` | `ese comment <id> ["<text>"] [--text "..."] [--author "..."]` | Append a developer or LLM agent note to ticket history. |
+| `snapshot` | `ese snapshot [--project <code>] [--json]` | Generate lean projection `.esedre/snapshot.json` for zero-latency agent context. |
 | `projects` | `ese projects [--json]` | List registered projects within authorized scope. |
-| `serve` | `ese serve [--port <n>]` | Start the reverse proxy gateway (default 5674) with internal UI & API. |
-| `mcp` | `ese mcp` | Launch the Model Context Protocol stdio server for companion LLMs. |
+
+### Service Daemon Commands
+
+Manage the local web dashboard and API server:
+
+| Command | Usage | Description |
+|---|---|---|
+| `start` | `ese start [--port <n>] [--foreground \| -f]` | Start the Esedre background server daemon (or foreground with `-f`). |
+| `stop` | `ese stop [--port <n>]` | Stop the running Esedre background server daemon. |
+| `status` | `ese status [--port <n>]` | Check health, uptime, and diagnostics of the running server. |
+| `logs` | `ese logs [--port <n>] [--lines <n>]` | Tail recent server output logs. |
+| `mcp` | `ese mcp` | Launch the Model Context Protocol stdio server for LLM agents. |
+
+### Developer Administration (Human Machine Setup)
+
+Commands for repository onboarding, central machine linking, and maintenance:
+
+| Command | Usage | Description |
+|---|---|---|
+| `init` | `ese init [<path>] [--project <code>] [--name <name>] [--hub] [-y]` | Bring a project repository online or bootstrap a dedicated data hub. |
+| `configure` | `ese configure [add <path> \| remove <target> \| set <k> <v>]` | Inspect or mutate central Esedre configuration (`~/.esedre/config.json`). |
+| `upgrade` | `ese upgrade [<path>] [--force \| -f]` | Upgrade workspace configuration schema, in-repo wrappers, and agent skills. |
+
+> **Human vs LLM Agent Workflows**: Developer Administration commands (`init`, `configure`, `upgrade`) manage system-level repository linking and central machine configuration. They are intended for human developers during initial setup. Autonomous LLM coding partners operate within the authorized workspace scope using Roadmap and Service Daemon commands (`list`, `get`, `plan`, `create`, `update`, `comment`, `snapshot`, `start`, `status`).
 
 ---
 
 ## 🤖 Model Context Protocol (MCP) Setup
 
-To connect Esedre to **Google Antigravity**, **Claude Code**, **Cursor**, or any MCP-compatible companion LLM:
+To connect Esedre to **Google Antigravity**, **Claude Code**, **Cursor**, or any MCP-compatible LLM agent:
 
 ```json
 {
@@ -125,7 +166,7 @@ To connect Esedre to **Google Antigravity**, **Claude Code**, **Cursor**, or any
 - `esedre_get_plan` & `esedre_save_plan`: Inspect and update implementation plans with optimistic concurrency (`lastHash`).
 - `esedre_create_ticket`: Mint new roadmap tickets with project code validation (up to 6 chars).
 - `esedre_update_ticket`: Modify status, title, complexity, or effort with optimistic concurrency (`lastHash`).
-- `esedre_add_comment`: Append developer or companion agent verification notes.
+- `esedre_add_comment`: Append developer or LLM agent verification notes.
 
 ### Resources
 - URI Scheme: `esedre://tickets/{id}` (MIME type: `text/markdown`)
@@ -183,19 +224,19 @@ The planner UI is styled entirely using CSS custom properties. When embedding in
 }
 ```
 
-* **Standalone Theme Toggle**: When running via `esedre serve`, users can toggle between Day (Light) and Night (Dark) themes with one click in the header. Theme preferences persist automatically in `localStorage`.
+* **Standalone Theme Toggle**: When running via `ese start`, users can toggle between Day (Light) and Night (Dark) themes with one click in the header. Theme preferences persist automatically in `localStorage`.
 
 <p align="center">
-  <img src="docs/assets/esedre-dashboard-dark.png" alt="Esedre Web Dashboard (Dark Theme)" width="100%" />
+  <img src="https://cdn.jsdelivr.net/npm/esedre/docs/assets/esedre-dashboard-dark.png" alt="Esedre Web Dashboard (Dark Theme)" width="100%" />
 </p>
 
 ---
 
 ## 🛡️ Multi-Project Agent Isolation & Upward Discovery
 
-Esedre enforces clean project isolation so each companion LLM is informed only of the projects it is authorized to access:
+Esedre enforces clean project isolation so each LLM agent is informed only of the projects it is authorized to access:
 - **Upward Discovery**: When invoked in any subdirectory, Esedre climbs upward until it encounters the nearest `.esedre/esedre.json` or `esedre.json`, binding its execution to that repository's scope.
-- **Scoped Project Awareness**: Storage operations and tools only inform and expose projects declared in `allowedProjects`. Companion LLMs cannot query, list, or mutate tickets outside their authorized scope.
+- **Scoped Project Awareness**: Storage operations and tools only inform and expose projects declared in `allowedProjects`. LLM agents cannot query, list, or mutate tickets outside their authorized scope.
 - Unauthorized requests throw `EsedreAuthorizationError`:
   - **CLI**: Prints `Access Denied: ...` and exits with status code 1.
   - **MCP**: Responds with standard JSON-RPC error `-32603`.

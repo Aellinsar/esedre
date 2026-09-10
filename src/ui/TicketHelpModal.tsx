@@ -33,8 +33,8 @@ const TYPES: TypeHelpItem[] = [
     name: 'Tools',
     badgeClass: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300',
     icon: <Wrench size={14} className="text-amber-600 dark:text-amber-400" />,
-    summary: 'Build tools, developer options, inspection utilities, benchmarks, test suites, and companion agent skills.',
-    scope: 'Internal tooling that accelerates developer workflows and pairs with AI coding assistants.',
+    summary: 'Build tools, developer options, inspection utilities, benchmarks, test suites, and LLM agent skills.',
+    scope: 'Internal tooling that accelerates developer workflows and pairs with LLM coding partners.',
   },
   {
     name: 'Idea',
@@ -61,7 +61,7 @@ const STATUSES = [
   {
     name: 'In Development',
     color: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300 font-semibold',
-    description: 'Actively being designed, developed, or verified by a developer or AI companion.',
+    description: 'Actively being designed, developed, or verified by a developer or LLM agent.',
   },
   {
     name: 'Completed',
@@ -248,7 +248,7 @@ export const TicketHelpModal: React.FC<TicketHelpModalProps> = ({ isOpen, onClos
                 </span>
               </div>
               <p className="text-[var(--text-secondary)] text-[11px] leading-relaxed">
-                Autonomous developer roadmap, ticketing engine, and Model Context Protocol (MCP) server for developers and companion AI coding assistants.
+                Autonomous developer roadmap, ticketing engine, and Model Context Protocol (MCP) server for developers and LLM coding partners.
               </p>
 
               <div className="pt-2.5 border-t border-[var(--border-subtle)] space-y-2">

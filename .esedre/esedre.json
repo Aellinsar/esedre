@@ -1,6 +1,5 @@
 {
   "version": "0.1.0",
   "projectCode": "Esedre",
-  "dataDir": "../esedre-data",
-  "port": 5674
+  "dataDir": "../esedre-data"
 }

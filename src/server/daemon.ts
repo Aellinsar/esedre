@@ -4,6 +4,7 @@ import os from 'node:os';
 import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { resolvePorts } from '../config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,6 +37,9 @@ export interface DaemonStatus {
  * Returns the centralized user runtime directory (~/.esedre).
  */
 export function getGlobalEsedreDir(): string {
+  if (process.env.ESEDRE_GLOBAL_DIR) {
+    return process.env.ESEDRE_GLOBAL_DIR;
+  }
   return path.join(os.homedir(), '.esedre');
 }
 
@@ -206,7 +210,7 @@ export interface StartDaemonOptions {
  * Completely idempotent: if already running, logs status (unless quiet) and exits 0.
  */
 export async function startDaemon(options: StartDaemonOptions = {}): Promise<DaemonState> {
-  const port = options.port || 5674;
+  const port = resolvePorts(undefined, { port: options.port }).gateway;
   const workspaceRoot = options.workspaceRoot || process.cwd();
   const stateFile = getDaemonStateFile(port, workspaceRoot);
   const logFile = getDaemonLogFile(port, workspaceRoot);
@@ -255,7 +259,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // 4. Resolve the CLI executable path (guarded against test runners like vitest)
   const isEsedreArgv1 = process.argv[1] && /esedre/i.test(path.basename(process.argv[1]));
   const cliCandidates = [
-    isEsedreArgv1 ? process.argv[1] : undefined,
+    isEsedreArgv1 ? path.resolve(process.argv[1]) : undefined,
     path.resolve(workspaceRoot, 'dist', 'esedre.mjs'),
     path.resolve(workspaceRoot, '../esedre/dist', 'esedre.mjs'),
     path.resolve(__dirname, 'esedre.mjs'),
@@ -272,7 +276,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   }
 
   // 5. Spawn background detached process
-  const child = spawn(process.execPath, [cliPath, 'serve', '--port', String(port)], {
+  const child = spawn(process.execPath, [cliPath, 'start', '--foreground', '--port', String(port)], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
     cwd: workspaceRoot,
@@ -281,6 +285,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   });
 
   child.unref();
+
+  // Close parent file descriptor so Windows file lock is released
+  try {
+    fs.closeSync(logFd);
+  } catch {}
 
   const pid = child.pid;
   if (!pid) {
@@ -350,7 +359,7 @@ export interface StopDaemonOptions {
  * Gracefully stops the background daemon process and cleans up state files.
  */
 export async function stopDaemon(options: StopDaemonOptions = {}): Promise<boolean> {
-  const port = options.port || 5674;
+  const port = resolvePorts(undefined, { port: options.port }).gateway;
   const workspaceRoot = options.workspaceRoot || process.cwd();
   const stateFile = getDaemonStateFile(port, workspaceRoot);
   const state = getDaemonState(port, workspaceRoot);
@@ -403,7 +412,7 @@ export async function stopDaemon(options: StopDaemonOptions = {}): Promise<boole
  * Returns diagnostic status of the daemon.
  */
 export async function getDaemonStatus(options: { port?: number; json?: boolean; workspaceRoot?: string } = {}): Promise<DaemonStatus> {
-  const port = options.port || 5674;
+  const port = resolvePorts(undefined, { port: options.port }).gateway;
   const workspaceRoot = options.workspaceRoot || process.cwd();
   const state = getDaemonState(port, workspaceRoot);
   const stateFile = getDaemonStateFile(port, workspaceRoot);
@@ -446,7 +455,7 @@ export async function getDaemonStatus(options: { port?: number; json?: boolean; 
  * Reads and prints recent daemon log lines.
  */
 export function printDaemonLogs(options: { port?: number; lines?: number; workspaceRoot?: string } = {}): void {
-  const port = options.port || 5674;
+  const port = resolvePorts(undefined, { port: options.port }).gateway;
   const workspaceRoot = options.workspaceRoot || process.cwd();
   const logFile = getDaemonLogFile(port, workspaceRoot);
 

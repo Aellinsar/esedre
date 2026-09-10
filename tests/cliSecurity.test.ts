@@ -69,6 +69,10 @@ describe('Esedre CLI Security & Project Isolation Integration', () => {
         cwd,
         encoding: 'utf-8',
         stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          ESEDRE_GLOBAL_DIR: path.join(tempDir, 'global-store'),
+        },
       });
       return { stdout, stderr: '', status: 0 };
     } catch (err: any) {
@@ -136,4 +140,25 @@ describe('Esedre CLI Security & Project Isolation Integration', () => {
     expect(tickets).toHaveLength(1);
     expect(tickets[0].project).toBe('Core');
   });
+
+  it('prints categorized help reference with active Web UI link', () => {
+    const res = runCli(['--help']);
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('ROADMAP COMMANDS (Pair Programming & LLM Agents)');
+    expect(res.stdout).toContain('SERVICE DAEMON COMMANDS');
+    expect(res.stdout).toContain('DEVELOPER ADMINISTRATION (Human Setup & Configuration)');
+    expect(res.stdout).toContain('http://localhost:5674/app?project=Core');
+  });
+
+  it('prints default project=all Web UI link when outside any workspace', () => {
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-outside-'));
+    try {
+      const res = runCli(['--help'], outsideDir);
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain('http://localhost:5674/app?project=all');
+    } finally {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
 });
+

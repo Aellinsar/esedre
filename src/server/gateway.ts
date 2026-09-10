@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { startUiServer } from './uiServer.js';
 import { startApiServer } from './apiServer.js';
 import { SecurityFilter } from '../securityFilter.js';
+import { resolvePorts } from '../config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -91,7 +92,12 @@ function proxyRequest(req: http.IncomingMessage, res: http.ServerResponse, targe
 }
 
 export function startGatewayCluster(options: GatewayOptions): EsedreServerCluster {
-  const gatewayPort = options.gatewayPort !== undefined ? options.gatewayPort : 5674;
+  const resolved = resolvePorts(undefined, {
+    gatewayPort: options.gatewayPort,
+    uiPort: options.uiPort,
+    apiPort: options.apiPort,
+  });
+  const gatewayPort = resolved.gateway;
   const uiPort = options.uiPort !== undefined ? options.uiPort : (gatewayPort ? gatewayPort + 1 : 0);
   const apiPort = options.apiPort !== undefined ? options.apiPort : (gatewayPort ? gatewayPort + 2 : 0);
   const webDir = resolveWebDir(options.webDir, options.workspaceRoot);

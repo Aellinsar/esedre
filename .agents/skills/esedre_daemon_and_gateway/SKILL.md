@@ -9,31 +9,25 @@ This skill provides an operational and architectural reference for the Esedre da
 
 ---
 
-## 1. Daemon Command Suite
+## 1. Server Command Suite
 
-Esedre provides background process management via the `daemon` command family (with root aliases `start`, `stop`, `status`):
+Esedre provides server lifecycle management via clean top-level commands:
 
 ```bash
-# Start background daemon on port 5674 (idempotent if already running)
-ese daemon start [--port 5674] [--quiet] [--json]
-ese start [--port 5674]
+# Start background server daemon on port 5674 (idempotent if already running)
+ese start [--port 5674] [--quiet] [--json]
+
+# Run foreground server directly in terminal (blocks terminal, Ctrl+C to stop)
+ese start -f [--port 5674]  # or: ese start --foreground
 
 # Check health, uptime, and active project topology
-ese daemon status [--port 5674] [--json]
-ese status [--port 5674]
+ese status [--port 5674] [--json]
 
-# Tail or view recent daemon logs
-ese daemon logs
+# Tail or view recent server logs
+ese logs [--lines <n>]
 
-# Stop running daemon gracefully
-ese daemon stop [--port 5674] [--quiet] [--json]
-ese stop [--port 5674]
-```
-
-### Foreground Server Alternative (`serve`)
-For active terminal debugging or container environments:
-```bash
-ese serve [--port 5674]
+# Stop running server daemon gracefully
+ese stop [--port 5674] [--quiet] [--json]
 ```
 
 ---
@@ -64,7 +58,7 @@ Background daemons use Node.js `child_process.spawn` with detached mode. On Wind
 const outFd = fs.openSync(logFile, 'a');
 const errFd = fs.openSync(logFile, 'a');
 
-const child = spawn(process.execPath, [cliPath, 'serve', '--port', String(port)], {
+const child = spawn(process.execPath, [cliPath, 'start', '--foreground', '--port', String(port)], {
   detached: true,
   stdio: ['ignore', outFd, errFd],
   cwd: workspaceRoot,
@@ -81,9 +75,10 @@ fs.closeSync(errFd);
 
 ---
 
-## 4. Embedded View & Zero-Effort Theme Contract
+## 4. Standalone Mode vs Embedded View & Theme Contract
 
-When embedding `<PlannedWorkView />` in a host application (e.g., inside a modal or drawer):
+- **Standalone Mode**: Normal, primary operation of Esedre accessed via its dedicated web UI (`/app`, port 5674). The server is ALWAYS run whenever Esedre is utilized (`ese start`).
+- **Embedded View**: Optional embedding of `<PlannedWorkView />` inside a host application (e.g., inside a modal or drawer):
 
 ```tsx
 import { PlannedWorkView } from 'esedre/src/ui/PlannedWorkView';

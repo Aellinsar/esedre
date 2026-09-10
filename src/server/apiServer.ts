@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { SecurityFilter } from '../securityFilter.js';
 import { generateProjectSnapshot } from '../snapshot.js';
-import { validateProjectCode } from '../config.js';
+import { validateProjectCode, validateProjectName } from '../config.js';
 
 function readJsonBody(req: http.IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -71,6 +71,11 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
 
     try {
       if (req.method === 'GET') {
+        if (pathname === '/api/ping') {
+          sendJson(res, 200, { status: 'ok', esedre: true });
+          return true;
+        }
+
         if (pathname === '/api/planning/projects') {
           const projects = await storage.getProjects();
           sendJson(res, 200, projects);
@@ -97,7 +102,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
 
         if (pathname.startsWith('/api/planning/ticket/')) {
           const idStr = pathname.slice('/api/planning/ticket/'.length);
-          if (!idStr || !/^([a-zA-Z0-9]{1,6}-)?\d+$/.test(idStr)) {
+          if (!idStr || !/^([a-zA-Z0-9]{1,7}-)?\d+$/.test(idStr)) {
             sendJson(res, 400, { error: 'Invalid ticket ID' });
             return true;
           }
@@ -266,6 +271,11 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
           const codeVal = validateProjectCode(code);
           if (!codeVal.valid) {
             sendJson(res, 400, { error: codeVal.error });
+            return true;
+          }
+          const nameVal = validateProjectName(name);
+          if (!nameVal.valid) {
+            sendJson(res, 400, { error: nameVal.error });
             return true;
           }
           invalidateApiCache();

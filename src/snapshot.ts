@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { EsedreTicket, TicketType, TicketCategory, TicketStatus } from './types.js';
+import { EsedreTicket, TicketType, TicketCategory, TicketStatus, CURRENT_ESEDRE_VERSION } from './types.js';
 import { StorageAdapter } from './storage/adapter.js';
 
 export interface TicketSnapshotEntry {
@@ -137,7 +137,7 @@ export async function generateProjectSnapshot(
   }
 
   const snapshot: ProjectSnapshot = {
-    version: '0.1.0',
+    version: CURRENT_ESEDRE_VERSION,
     projectCode,
     generatedAt: new Date().toISOString(),
     totalTickets: entries.length,

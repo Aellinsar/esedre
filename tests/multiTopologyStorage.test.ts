@@ -297,4 +297,56 @@ describe('Multi-Topology Storage Engine', () => {
     expect(newExtB.meta.project).toBe('ExtB');
     expect(await adapter.getTicket('ExtB-3')).not.toBeNull();
   });
+
+  // 6. Monorepo / In-Workspace Data Hub Auto-Detection
+  it('Topology 6: Monorepo / In-Workspace Data Hub (projects/ at root without explicit dataDir)', async () => {
+    const monoDir = path.join(rootTemp, 'monorepo');
+    const projA = path.join(monoDir, 'projects', 'AppA');
+    const projB = path.join(monoDir, 'projects', 'AppB');
+    fs.mkdirSync(projA, { recursive: true });
+    fs.mkdirSync(projB, { recursive: true });
+
+    seedProject(projA, { id: 1, code: 'AppA', name: 'Monorepo App A' }, 2);
+    seedProject(projB, { id: 2, code: 'AppB', name: 'Monorepo App B' }, 4);
+
+    // Save top-level projects.json
+    fs.writeFileSync(
+      path.join(monoDir, 'projects.json'),
+      JSON.stringify([
+        { id: 1, code: 'AppA', slug: 'appa', name: 'Monorepo App A', description: 'App A' },
+        { id: 2, code: 'AppB', slug: 'appb', name: 'Monorepo App B', description: 'App B' },
+      ], null, 2) + '\n',
+      'utf-8'
+    );
+
+    // Zero config passed - auto-detection discovers projects/ in workspaceRoot
+    const adapter = new FilesystemStorageAdapter(monoDir, {});
+
+    const projects = await adapter.getProjects();
+    expect(projects).toHaveLength(2);
+    expect(projects.map((p) => p.code).sort()).toEqual(['AppA', 'AppB']);
+
+    const allTickets = await adapter.listTickets();
+    expect(allTickets).toHaveLength(6);
+
+    // Filter by project override
+    const appATickets = await adapter.listTickets({ project: 'AppA' });
+    expect(appATickets).toHaveLength(2);
+    expect(appATickets.every((t) => t.meta.project === 'AppA')).toBe(true);
+
+    // Create ticket with project override
+    const created = await adapter.createTicket({
+      title: 'AppA Ticket 3',
+      type: 'Feature',
+      projectCode: 'AppA',
+    });
+    expect(created.meta.id).toBe(3);
+    expect(created.meta.project).toBe('AppA');
+
+    // Create ticket without project code in multi-project hub throws clear error
+    await expect(
+      adapter.createTicket({ title: 'Ambiguous Ticket', type: 'Feature' })
+    ).rejects.toThrow(/Project is required to create a ticket \(available: AppA, AppB\)/);
+  });
 });
+

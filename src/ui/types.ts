@@ -52,7 +52,7 @@ export const ALL_PROJECTS: ProjectDescriptor[] = [
     code: 'Esedre',
     slug: 'esedre',
     name: 'Esedre',
-    description: 'Esedre developer roadmap, ticketing, and companion agent coordination platform',
+    description: 'Esedre developer roadmap, ticketing, and LLM agent coordination platform',
     colors: {
       badge: 'border-fuchsia-300 dark:border-fuchsia-500/30 bg-fuchsia-50 dark:bg-fuchsia-500/10 text-fuchsia-950 dark:text-fuchsia-300 font-semibold',
       dot: 'bg-fuchsia-600 dark:bg-fuchsia-400',
@@ -76,7 +76,8 @@ export function getRuntimeProjects(): ProjectDescriptor[] {
 export const ALL_PROJECT_IDS: number[] = ALL_PROJECTS.map((p) => p.id);
 export const ALL_PROJECT_NAMES: string[] = ALL_PROJECTS.map((p) => p.name);
 export const ALL_PROJECT_CODES: string[] = ALL_PROJECTS.map((p) => p.code);
-export const MAX_PROJECT_CODE_LENGTH: number = 6;
+export const MAX_PROJECT_CODE_LENGTH: number = 7;
+export const MAX_PROJECT_NAME_LENGTH: number = 48;
 
 export const UNASSIGNED_PROJECT_COLORS: ProjectColors = {
   badge: 'border-slate-200 dark:border-slate-600/30 bg-slate-100 dark:bg-slate-800/40 text-slate-700 dark:text-slate-400',

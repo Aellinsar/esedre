@@ -28,19 +28,26 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 
 | Command | Syntax | Description |
 |---|---|---|
+| `init` | `esedre init [path] [--hub] [--project <code>] [--name "<name>"]` | Brings a repository online (creates `.esedre/esedre.json`, wrappers, initial snapshot) or bootstraps a data hub (`--hub`). |
+| `configure` | `esedre configure [add <path> \| remove <code\|path> \| set <k> <v>]` | Inspects or mutates central configuration in `~/.esedre/config.json`. |
+| `start` | `esedre start [--port <n>] [--foreground | -f] [--quiet] [--json]` | Starts the background server daemon (or foreground with `-f`). |
+| `stop` | `esedre stop [--port <n>] [--quiet] [--json]` | Stops the running background server daemon. |
+| `status` | `esedre status [--port <n>] [--json]` | Checks health, PID, uptime, and diagnostics of the running server. |
+| `logs` | `esedre logs [--port <n>] [--lines <n>]` | Tails recent server logs. |
 | `list` | `esedre list [--project <code\|all>] [--status <status>] [--json]` | Lists tickets. Defaults to the active repo's `projectCode` in `esedre.json`. `--project all` lists all permitted tickets. |
 | `get` | `esedre get <id> [--json]` | Displays complete ticket metadata, summary, feature breakdown, and comments. |
 | `plan` | `esedre plan <id> [--json] [--set "<markdown>"] [--file <path>]` | Reads or updates the implementation plan markdown. |
-| `create` | `esedre create --title "..." [--project <code>] [--category <cat>] [--effort "..."]` | Creates a new roadmap ticket with sequential ID. Defaults to active project. |
-| `update` | `esedre update <id> [--status <status>] [--title "..."] [--in-dev]` | Updates ticket status, title, active planning flag, or feature flag. |
-| `comment` | `esedre comment <id> --text "..." [--author "..."]` | Appends a developer or agent comment to the ticket's history. |
+| `create` | `esedre create --title "..." [--project <code>] [--type <type>] [--effort "..."]` | Creates a new roadmap ticket with sequential ID. Defaults to active project. |
+| `update` | `esedre update <id> [-p|--project <code>] [-s|--status <status>] [--title "..."] [--flag] [--last-hash <sha1>] [--force]` | Updates ticket status, title, active planning flag, or feature flag. Accepts compound ID (e.g. `Profe-96`) or numeric with `-p`. |
+| `comment` | `esedre comment <id> [-p|--project <code>] --text "..." [--author "..."]` | Appends a developer or agent comment to the ticket's history. Accepts compound ID or numeric with `-p`. |
 | `projects` | `esedre projects [--json]` | Lists registered projects that are within the current authorized scope. |
+| `snapshot` | `esedre snapshot [--project <code>]` | Re-generates `.esedre/snapshot.json` projection for zero-latency agent context. |
+| `upgrade` | `esedre upgrade [--json]` | Upgrades workspace configuration, scripts, wrappers, and agent skills. |
 | `mcp` | `esedre mcp` | Starts the Model Context Protocol stdio server. |
-| `skill` | `esedre skill` | Outputs the self-contained agent skill markdown. |
 
 ## 3. Machine-Readable `--json` Mode
 
-- AI coding agents should always invoke CLI commands with `--json` for predictable, programmatic JSON output.
+- Autonomous LLM coding agents should always invoke CLI commands with `--json` for predictable, programmatic JSON output.
 - All non-error output in `--json` mode must be strictly valid JSON written to `stdout`.
 - Diagnostic messages or progress logs must be routed strictly to `stderr`.
 

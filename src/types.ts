@@ -1,3 +1,5 @@
+export const CURRENT_ESEDRE_VERSION = '0.1.6';
+
 export type TicketType = 'Feature' | 'Platform' | 'Tools' | 'Idea' | 'Bug';
 export type TicketCategory = TicketType; // Back-compat alias
 export type TicketStatus = 'Planned' | 'In Development' | 'Completed' | 'Rejected';

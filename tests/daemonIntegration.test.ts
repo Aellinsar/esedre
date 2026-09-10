@@ -166,4 +166,38 @@ describe('Esedre Daemon Integration & CLI Lifecycle', () => {
       await new Promise<void>((resolve) => foreignServer.close(() => resolve()));
     }
   });
+
+  it('runs foreground server via start --foreground and terminates cleanly on SIGINT', async () => {
+    const FG_PORT = 5998;
+    const { spawn } = await import('node:child_process');
+    const child = spawn(process.execPath, [cliScript, 'start', '--port', String(FG_PORT), '--foreground'], {
+      cwd: workspaceRoot,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let output = '';
+    child.stdout?.on('data', (chunk) => {
+      output += chunk.toString();
+    });
+
+    try {
+      // Poll for server to become active
+      let ready = false;
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        try {
+          const res = await httpGet(`http://127.0.0.1:${FG_PORT}/api/ping`);
+          if (res.status === 200) {
+            ready = true;
+            break;
+          }
+        } catch {}
+      }
+      expect(ready).toBe(true);
+      expect(output).toContain(`Esedre Server active on http://localhost:${FG_PORT}`);
+    } finally {
+      child.kill('SIGINT');
+      await new Promise((resolve) => child.on('exit', resolve));
+    }
+  });
 });

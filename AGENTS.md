@@ -6,7 +6,7 @@
 
 ## 1. Project Overview & Scope
 
-- **Repository Role**: Standalone open developer roadmap, ticketing engine, CLI utility (`esedre` / `ese`), web UI, and Model Context Protocol (MCP) server for developers and autonomous companion LLM coding agents.
+- **Repository Role**: Standalone open developer roadmap, ticketing engine, CLI utility (`esedre` / `ese`), web UI, and Model Context Protocol (MCP) server for developers and autonomous LLM coding agents.
 - **Primary Mission & Biggest Core Feature**: Providing **long-term grounding to LLM agent context** by maintaining structured, git-backed roadmaps, architectural plans, and verification records across multi-turn sessions, context compactions, and developer handoffs.
 - **Data Ecosystem**: Multi-topology project configuration via `.esedre/esedre.json` or `esedre.json` with support for centralized ticket data hubs, in-repo standalone tickets, and federated hybrid topologies.
 - **Core Architecture**: Node.js (v20+), TypeScript, ESM (`"type": "module"`), esbuild bundling to `dist/esedre.mjs`, Vite/React UI, and Vitest test runner.
@@ -28,7 +28,7 @@
 
 ## 3. Multi-Topology Storage Resolution
 
-The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets across 5 supported topology patterns:
+The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets across 6 supported topology patterns:
 
 1. **Single Hub Topology**:
    - `dataDir: "../esedre-data"` points to a dedicated ticket repository structured as `projects/<ProjectCode>/tickets/<id>/` and `project.json`.
@@ -40,6 +40,8 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
    - `projects: { "Prof": "../ProfessorArwamSleepCenter", "Alce": "../alce-web" }` maps independent project repositories into a unified view.
 5. **Hybrid Topology**:
    - Combines `dataDir` hubs and `projects` federated paths, enabling personal ticket hubs and shared repositories to be managed side-by-side in one local runner.
+6. **Monorepo / In-Workspace Hub Topology**:
+   - When `dataDir` is omitted, the storage adapter automatically auto-discovers a `projects/` directory containing projects directly at `workspaceRoot` (or `./data`, `./.esedre`), enabling monorepos and ticket hubs to function out-of-the-box with zero configuration.
 
 ---
 
@@ -66,45 +68,78 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 4. **Main Branch Lockdown & PR Requirement**
    - Direct merges into `main` or direct pushes to `origin/main` are strictly forbidden; production deploys and releases occur via pull requests.
 
+5. **Mandatory Scope Clarification in Multi-Project Workspaces**
+   - In a multi-project workspace, if there is ANY ambiguity regarding which repositories, projects, or modified files are intended to be committed or pushed, you MUST ask the user for explicit clarification before staging, committing, or pushing.
+   - Never assume all modified repositories or workspaces should be committed or pushed together. Erroneous commits or pushes across projects are strictly prohibited.
+
 ---
 
-## 6. Multi-Project Agent Isolation & Scope Invariants
+## 6. Multi-Project Agent Isolation & Two-Tier Configuration
 
-1. **Upward Configuration Discovery**
-   - When the CLI or MCP server executes, it begins at `cwd` and traverses upward directory by directory, stopping at the **first** `esedre.json` it finds.
-   - That file defines the active repo's `projectCode` and authorized access scope (`allowedProjects`).
+1. **Two-Tier Configuration Hierarchy (Global vs Workspace)**:
+   - **Central Global Config (`~/.esedre/config.json`)**: Defines the central standalone portfolio configuration, including registered data hubs (`dataDir`), linked external repositories (`projects`), and default port (5674). Managed via `ese configure`.
+   - **Workspace Local Config (`.esedre/esedre.json`)**: Declares the active repository's local identity (`projectCode`) and authorized access scope (`allowedProjects`). Initialized via `ese init`.
+   - **Upward Resolution & Merging**: The CLI and MCP server crawl upward from `cwd` for `.esedre/esedre.json`. Local workspace settings take precedence, while infrastructure defaults (`dataDir`, `projects`, `port`) automatically inherit from `~/.esedre/config.json` when omitted locally. Outside any workspace, the central global configuration is used directly.
 
-2. **Multi-Project Agent Isolation (Zero Cross-Project Leaks)**
+2. **Command Split: `ese init` vs `ese configure`**:
+   - `ese init [path]`: Brings a project repository online (creates `.esedre/esedre.json`, wrappers, initial snapshot) or bootstraps a data hub repository (`ese init --hub`).
+   - `ese configure`: Inspects and mutates the central configuration in `~/.esedre/config.json` (`ese configure add <path>`, `ese configure remove <target>`, `ese configure set <k> <v>`).
+
+3. **Multi-Project Agent Isolation (Zero Cross-Project Leaks)**:
    - Each agent or tool execution is strictly informed and scoped only to the projects declared in its workspace's `allowedProjects`. Neither the CLI tool nor the MCP server may expose, list, query, create, update, or mutate tickets, plans, or comments belonging to projects outside `allowedProjects`.
    - Unauthorized requests MUST throw `EsedreAuthorizationError` immediately:
      - **MCP Protocol**: Caught and returned as standard JSON-RPC 2.0 error code `-32603` with message `Access Denied: Project '<code>' is outside this workspace's authorized scope.`
      - **CLI Tool**: Exits cleanly with status code `1` and prints `Access Denied: ...`.
    - Wildcard `"*"` in `allowedProjects` permits all registered projects (used in multi-project umbrella workspaces or administrative environments).
 
-3. **Approved Terminology: "Agent Project Allow-List" (Strictly NO "Firewall")**
+4. **Approved Terminology: "Agent Project Allow-List" (Strictly NO "Firewall")**:
    - The term "Firewall" is **NOT** approved terminology anywhere in documentation, descriptions, CLI output, commit messages, or code comments.
    - Strictly use: **"Agent Project Allow-List, providing isolation of projects planning that you don't want an agent to access"** (or concise forms like "Agent Project Allow-List" and "Multi-Project Agent Isolation").
 
 ---
 
-## 7. Build, Packaging & Quality Standards
+## 7. Build, Testing & Quality Standards
 
-1. **Single-File Bundling & UI Build**
+1. **Mandatory Build & Lint Verification (ZERO EXCEPTIONS)**:
+   - **SUPER DAMN REQUIRED**: You are STRICTLY AND ABSOLUTELY REQUIRED to run `npm test` and `npm run build` ALWAYS, ANY TIME you modify code or configuration.
    - Run `npm run build:cli` to produce `dist/esedre.mjs` and `dist/web/embed.js`.
    - Run `npm run build:ui` to compile the standalone React 19 web application into `dist/web/`.
-   - Run `npm run build` for full verification (linting + CLI build + UI build).
+   - Run `npm run build` for full verification (linting + CLI build + UI build). Confirm zero compilation, syntax, type, or unreferenced symbol errors.
 
-2. **Mandatory Vitest Test Suite**
+2. **Mandatory Vitest Test Suite & Headless Verification**:
    - Run `npm test` (`npx vitest run`) on every code modification.
    - All tests in `tests/` must pass cleanly (covering config discovery, storage adapter, multi-topology storage, agent project allow-list isolation, MCP protocol, and CLI execution).
+   - Proactively use headless testing scripts and unit tests in `tests/` for logic verification.
 
-3. **Local Dev & Cloudflare Tunnel Workflows**
+3. **Assertion Integrity & Zero Silent Test Weakening**:
+   - **Zero Silent Test Weakening**: Never weaken, delete, comment out, or relax unit test assertions. Diagnose the root cause and fix the implementation in the source code.
+   - Proactively add and maintain unit tests for text and configuration parsing, multi-topology resolution, optimistic concurrency, and storage boundaries.
+
+4. **Mandatory Unit Tests for Black-Boxable Logic**:
+   - Write Vitest unit tests for all properly black-boxable domain logic, storage adapters, configuration crawlers, schema validators, path resolvers, and MCP/CLI argument handlers.
+
+5. **Mandatory Root Cause Analysis Invariant**:
+   - You MUST perform deep architectural root-cause diagnosis before modifying any code.
+   - Never apply superficial band-aids, trial-and-error string tweaks, or downstream regex patches.
+   - When unit tests fail, NEVER weaken or modify test assertions to force a pass; diagnose why the implementation failed and fix the root cause in the source code.
+
+6. **Strict Ban on Autonomous Browser / UI Testing ("I'll Do UI Testing Unless I Say Otherwise")**:
+   - **STRICTLY GET OUT OF THE UI UNLESS DIRECTED**: NEVER launch browser subagents, Chrome DevTools MCP sessions, or open/navigate browser URLs for UI testing/verification unless the user explicitly and directly commands you to do so in that specific turn. The developer will conduct UI verification manually unless they instruct otherwise.
+   - Do NOT perform autonomous visual checks, browser recordings, or UI inspection on your own initiative.
+
+7. **Local Dev & Cloudflare Tunnel Workflows**:
    - `npm run dev`: Runs local Vite development server on port 5674.
    - `npm run net`: Cloudflare tunnel targeting port 5674 for `dev.esedre.com` (with `planner.arwam.com` as alias) with IP whitelist protection.
    - `npm run net:all`: Public open tunnel mode for external access.
 
-4. **Trailing Newline at EOF**
+8. **Trailing Newline at EOF**:
    - All code, JSON, Markdown, and config files must end with a single trailing newline (`\n`).
+
+9. **First-Class Antigravity Tool Usage Over Scripting (No Ad-Hoc Scripts for Simple Edits)**:
+   - You MUST strictly prioritize and use proper first-class Antigravity tools (`replace_file_content`, `multi_replace_file_content`, `write_to_file`, `view_file`, `grep_search`) whenever available and reasonable for code and file modifications.
+   - NEVER execute ad-hoc Node, Python, or PowerShell scripts/one-liners (e.g. `node -e "fs.writeFileSync(...)"` or temporary scratch scripts) for simple edits, 1-line changes, or file replacements.
+   - Scripting is strictly reserved for tasks where it is genuinely beneficial, such as bulk migrations, repo-wide codemods, or complex data transformations.
+
 ---
 
 ## 8. Daemon Lifecycle, Process Detachment & Gateway Topology
@@ -116,11 +151,17 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
      - `/` $\rightarrow$ transparent rewrite to `/app/`
      - Query parameters: `project=all` (portfolio overview) or `project=<Code>` (scoped view).
 
-2. **Detached Daemon Process Execution (`ese daemon`)**:
+2. **Server Lifecycle Commands (`ese start` / `ese stop` / `ese status` / `ese logs`)**:
+   - Clean top-level commands without verbose subcommands:
+     - `ese start`: Starts the background server and web UI daemon (default port 5674).
+     - `ese start --foreground` (or `-f`): Runs server in foreground (blocks terminal, Ctrl+C to stop).
+     - `ese stop`: Shuts down the running background server daemon.
+     - `ese status`: Checks health, PID, uptime, and diagnostics.
+     - `ese logs`: Tails recent server output logs.
    - **Background Spawning Pattern**: Background daemons are spawned with `child_process.spawn(..., { detached: true, stdio: ['ignore', outFd, errFd] })` and detached with `child.unref()`.
    - **Windows File Descriptor Cleanup Pattern**: Immediately after `child.unref()`, the parent launcher process must explicitly close parent file handles (`fs.closeSync(outFd)`, `fs.closeSync(errFd)`). Omitting this holds Windows file locks on `.esedre/daemon.log`, preventing clean restarts or log truncation.
    - **Dual Liveness Check**: Daemon status detection and shutdown commands must verify HTTP endpoint liveness (`GET /api/ping`) alongside PID liveness (`process.kill(pid, 0)`) to protect against PID recycling false positives.
-   - **State Persistence**: Daemon state resides strictly in `.esedre/daemon.json` (containing `pid`, `port`, `startedAt`, `version`, `projects`).
+   - **State Persistence**: Daemon state resides strictly in `~/.esedre/run/daemon-<port>.json` (falling back to `.esedre/daemon.json`).
 
 ---
 
@@ -150,9 +191,13 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 ---
 
-## 11. Embedded View & 0-Effort Drop-in Theme Contract
+## 11. Standalone Mode vs Embedded View & 0-Effort Drop-in Theme Contract
 
-1. **Zero-Effort Drop-in Fallback Bridge**:
+1. **Standalone Mode vs Embedded View**:
+   - **Standalone Mode**: Normal, primary operation of Esedre accessed via its dedicated web UI (port 5674 / `/app`). The unified server is ALWAYS run whenever Esedre is utilized (`ese start`).
+   - **Embedded View**: Optional embedding of the `<PlannedWorkView />` component inside a host application (e.g. Professor Arwam's Sleep Research Center) via host dev server reverse proxy (`/esedre`).
+
+2. **Zero-Effort Drop-in Fallback Bridge**:
    - `<PlannedWorkView />` embeds an internal CSS fallback bridge (`.esedre-host-bridge` / `.esedre-theme-root` with `ESEDRE_THEME_FALLBACK_CSS`).
    - If an embedding host application provides zero CSS variables, the planner automatically renders high-contrast, beautiful light or dark themes matching the user's OS preference (`prefers-color-scheme`) or `.dark` / `[data-theme]` classes.
 
@@ -168,13 +213,17 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 ---
 
-## 12. Terminology Standard: Strict "LLM" over "AI"
+## 12. Terminology Standard: Strict "LLM" over "AI" & Ban on "LLM Companion"
 
 1. **Strict Preference for "LLM" over "AI"**:
-   - In documentation, code comments, schemas, CLI descriptions, commit messages, and agent instructions, strictly use the term **LLM** (e.g. "autonomous LLM coding agents", "companion LLM", "LLM-driven workflows") rather than the generic term "AI".
+   - In documentation, code comments, schemas, CLI descriptions, commit messages, and agent instructions, strictly use the term **LLM** (e.g. "autonomous LLM coding agents", "LLM coding partner", "LLM-driven workflows") rather than the generic term "AI".
    
 2. **Dual Human & LLM Coordination**:
-   - Always frame Esedre as a tool engineered for **both** developers/engineers and autonomous companion LLMs working together in pair-programming workflows, never as a tool exclusively for models.
+   - Always frame Esedre as a tool engineered for **both** developers/engineers and autonomous LLM agents working together in pair-programming workflows, never as a tool exclusively for models.
+
+3. **Strict Ban on "LLM Companion" (Approved: "LLM Agent" or "LLM Coding Partner")**:
+   - The phrase "LLM Companion" (and variants such as "companion LLM", "companion LLMs", "companion agent", "AI companion") is STRICTLY BANNED in documentation, descriptions, CLI text, commit messages, and code comments.
+   - Approved terms are strictly: **"LLM Agent"** or **"LLM Coding Partner"** (or plural: "LLM Agents", "LLM Coding Partners", "autonomous LLM coding agents").
 
 ---
 
@@ -188,11 +237,29 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 1. **Primary Value Proposition & Biggest Core Feature**:
    - The single biggest core feature of Esedre is providing **long-term grounding to LLM agent context**.
-   - Companion LLM coding agents naturally face context window limits, context compaction, and session amnesia across multi-turn workflows. External issue trackers live in remote cloud silos that agents cannot access reliably, locally, or deterministically.
+   - LLM coding agents naturally face context window limits, context compaction, and session amnesia across multi-turn workflows. External issue trackers live in remote cloud silos that agents cannot access reliably, locally, or deterministically.
 
 2. **Git-Backed Authoritative Memory**:
-   - By structuring tickets, architectural breakdowns, decision records, and verification comments in plain JSON and Markdown directly alongside source code, Esedre functions as persistent, version-controlled ground truth for companion LLMs.
+   - By structuring tickets, architectural breakdowns, decision records, and verification comments in plain JSON and Markdown directly alongside source code, Esedre functions as persistent, version-controlled ground truth for LLM agents.
    - When an LLM agent begins a new turn, recovers from a context compaction, or collaborates across developer handoffs, the roadmap anchors the model to concrete technical specifications, constraints, and upcoming milestones.
 
 3. **Continuous Real-Time Alignment via MCP & CLI**:
-   - Through the Model Context Protocol (MCP) server and CLI commands, companion LLMs continuously query project priorities (`esedre_list_tickets`), inspect specifications (`esedre_get_ticket`), and update plans (`esedre_save_plan`) with optimistic concurrency checks (`sha1`), eliminating hallucinated project direction and preventing drift.
+   - Through the Model Context Protocol (MCP) server and CLI commands, LLM agents continuously query project priorities (`esedre_list_tickets`), inspect specifications (`esedre_get_ticket`), and update plans (`esedre_save_plan`) with optimistic concurrency checks (`sha1`), eliminating hallucinated project direction and preventing drift.
+
+---
+
+## 15. Planning Mode, Change Authorization & Problem Solving Philosophy
+
+1. **Explicit Approval Required Before Code Changes**:
+   - When in Planning Mode or presenting an implementation plan or design proposal, you are strictly forbidden from modifying source code, running build modifying tasks, or executing changes until the user explicitly responds with unambiguous confirmation.
+
+2. **"Ideas?" / Brainstorming is NEVER Approval to Implement**:
+   - When the user asks "Ideas?", "What do you think?", or asks for diagnosis/suggestions, treat it strictly as diagnostic planning/brainstorming and wait for unambiguous confirmation before touching any code.
+
+3. **Strict Workspace-Relative Path Invariant**:
+   - NEVER hardcode machine-specific absolute file paths (e.g. `C:\Users\...` or `file:///C:/Users/...`) in documentation, comments, scripts, or commit notes. Always use clean workspace-relative paths (e.g. `src/storage/...` or `tests/...`).
+
+4. **Problem Solving Philosophy: Root Cause Resolution & Paving the Desire Paths**:
+   - Fix underlying issues at their architectural source in parser, database, storage, or state logic; avoid superficial band-aids or downstream string patches.
+   - **Pave the Desire Paths**: When the LLM agent naturally gravitates toward a pattern, officially support and structure it rather than fighting it.
+   - Preserve all existing comments, docstrings, and type annotations that are unrelated to your immediate changes.

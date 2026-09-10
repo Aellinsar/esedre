@@ -7,8 +7,10 @@ import {
   isProjectAuthorized,
   EsedreConfig,
   validateProjectCode,
+  validateProjectName,
   DEFAULT_ESEDRE_PORT,
   MAX_PROJECT_CODE_LENGTH,
+  MAX_PROJECT_NAME_LENGTH,
   checkGitIgnore,
   appendSnapshotToGitIgnore,
 } from '../src/config.js';
@@ -98,24 +100,26 @@ describe('Esedre Config Discovery & Hierarchy Crawl', () => {
   });
 });
 
-describe('Project Code Validation & Constants', () => {
-  it('enforces 5674 as default Esedre port and 6 as max code length', () => {
+describe('Project Code & Name Validation Constants', () => {
+  it('enforces 5674 as default Esedre port, 7 as max code length, and 48 as max name length', () => {
     expect(DEFAULT_ESEDRE_PORT).toBe(5674);
-    expect(MAX_PROJECT_CODE_LENGTH).toBe(6);
+    expect(MAX_PROJECT_CODE_LENGTH).toBe(7);
+    expect(MAX_PROJECT_NAME_LENGTH).toBe(48);
   });
 
-  it('accepts valid 1 to 6 alphanumeric project codes', () => {
+  it('accepts valid 1 to 7 alphanumeric project codes', () => {
     expect(validateProjectCode('Core').valid).toBe(true);
     expect(validateProjectCode('Esedre').valid).toBe(true);
+    expect(validateProjectCode('AlceWeb').valid).toBe(true);
     expect(validateProjectCode('Web').valid).toBe(true);
     expect(validateProjectCode('Docs').valid).toBe(true);
     expect(validateProjectCode('A').valid).toBe(true);
-    expect(validateProjectCode('123456').valid).toBe(true);
+    expect(validateProjectCode('1234567').valid).toBe(true);
   });
 
-  it('rejects invalid project codes longer than 6 chars or containing special characters', () => {
-    expect(validateProjectCode('TOOLONG7').valid).toBe(false);
-    expect(validateProjectCode('EIGHT888').valid).toBe(false);
+  it('rejects invalid project codes longer than 7 chars or containing special characters', () => {
+    expect(validateProjectCode('TOOLONG8').valid).toBe(false);
+    expect(validateProjectCode('NINE99999').valid).toBe(false);
     expect(validateProjectCode('P-1').valid).toBe(false);
     expect(validateProjectCode('').valid).toBe(false);
   });
@@ -126,6 +130,17 @@ describe('Project Code Validation & Constants', () => {
     expect(validateProjectCode('ESEDRE', existing).valid).toBe(false);
     expect(validateProjectCode('web', existing).valid).toBe(false);
     expect(validateProjectCode('Docs', existing).valid).toBe(true);
+  });
+
+  it('validates project names up to 48 characters', () => {
+    expect(validateProjectName('Alce').valid).toBe(true);
+    expect(validateProjectName("Professor Arwam's Sleep Research Center").valid).toBe(true);
+    expect(validateProjectName('A'.repeat(48)).valid).toBe(true);
+
+    expect(validateProjectName('').valid).toBe(false);
+    expect(validateProjectName('   ').valid).toBe(false);
+    expect(validateProjectName('A'.repeat(49)).valid).toBe(false);
+    expect(validateProjectName('A'.repeat(49)).error).toContain('48');
   });
 });
 

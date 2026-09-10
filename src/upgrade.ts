@@ -7,9 +7,11 @@ import {
   migrateEsedreConfig,
   appendSnapshotToGitIgnore,
   DEFAULT_ESEDRE_PORT,
+  resolvePorts,
 } from './config.js';
 
-export const CURRENT_ESEDRE_VERSION = '0.1.5';
+import { CURRENT_ESEDRE_VERSION } from './types.js';
+export { CURRENT_ESEDRE_VERSION };
 export function computeNormalizedHash(content: string): string {
   const normalized = content.replace(/\r\n/g, '\n').trim();
   return crypto.createHash('sha1').update(normalized, 'utf-8').digest('hex');
@@ -152,7 +154,127 @@ DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 exec "$DIR/esedre" "$@"
 `;
 
-export const ESEDRE_SKILL_TEMPLATE = "---\nname: esedre\ndescription: Tooling and workflow reference for interacting with the Esedre developer ticketing and roadmap system. Use this skill whenever inspecting planned work, viewing ticket specs, updating implementation plans, or posting developer notes.\n---\n\n# Esedre Planning & Roadmap Workflow\n\nEsedre is the developer ticketing and companion LLM coding agent coordination platform. The engine codebase resides in the standalone repository `aellinsar/esedre` (`../esedre`), and operates on decoupled ticket repositories (such as `aellinsar/esedre-data` configured in `.esedre/esedre.json`). In `ProfessorArwamSleepCenter`, interact with tickets via the compiled bridge artifact `tools/esedre.mjs` (`node tools/esedre.mjs <command>`), in-repo shell wrappers in `.esedre/` (`.esedre/ese`), or the global `ese` CLI.\n\n## 0. Instant Zero-Latency Context (`.esedre/snapshot.json`)\n\nBefore querying tickets over the network or CLI, check `.esedre/snapshot.json` in the workspace root. It provides a local read-only projection containing all active and completed tickets, summaries, implementation plans, revision numbers, completion dates (`completedAt`), and staleness metrics (`daysSinceUpdate`).\n\n## 1. Model Context Protocol (MCP) Tools\n\nWhen Esedre MCP is active in your agent session (`.agents/mcp_config.json`), use these tools directly:\n\n| Tool | Purpose | Key Arguments |\n|---|---|---|\n| `esedre_list_tickets` | List roadmap tickets with filters | `project` (e.g. `Profe`, `Esedre`, `Alce`), `status`, `type`, `search` |\n| `esedre_get_ticket` | Full specification, summary, comments, revision & sha1 | `ticketId` (numeric or compound e.g. `Profe-35`) |\n| `esedre_get_plan` | Active implementation plan markdown | `ticketId` (numeric or compound) |\n| `esedre_save_plan` | Save implementation plan markdown with OCC | `ticketId`, `planMarkdown`, `lastHash` |\n| `esedre_create_ticket` | Mint a new ticket with auto sequential ID | `title` (max 48 chars), `type`, `project`, `effort`, `summary` |\n| `esedre_update_ticket` | Update ticket attributes with OCC | `ticketId`, `status`, `title`, `inDevelopment`, `featureFlag`, `lastHash` |\n\n## 2. Core CLI Commands (Fallback via `run_command`)\n\nBoth `esedre` and `ese` work interchangeably:\n\n### List Tickets\n```bash\n.esedre/ese list [-p|--project <code|all>] [-s|--status <status>] [-t|--type <type>] [-q|--search <q>] [--json]\n```\n\n### Read Ticket Details\n```bash\n.esedre/ese get <ticketId> [--json]\n```\n\n### Read or Update Implementation Plans\n```bash\n.esedre/ese plan <ticketId>\n.esedre/ese plan <ticketId> --file <planFilePath>\n.esedre/ese plan <ticketId> --set \"<markdownContent>\" [--last-hash <hash>]\n```\n\n### Create a Ticket\n```bash\n.esedre/ese create --title \"...\" [-p|--project Profe] [-t|--type Feature] [--complexity Medium] [--effort \"2.0 - 4.0 hours\"] [--json]\n```\n\n### Update Ticket Status\n```bash\n.esedre/ese update <ticketId> --status \"In Development\"\n.esedre/ese update <ticketId> --status \"Completed\"\n```\n\n### Append Comments or Notes\n```bash\n.esedre/ese comment <ticketId> --text \"Verified implementation.\" --author \"Antigravity\"\n```\n\n### Regenerate Snapshot\n```bash\n.esedre/ese snapshot\n```\n\n### Background Daemon Management\n```bash\n# Start background daemon on port 5674 (idempotent)\n.esedre/ese daemon start [--port 5674] [--quiet] [--json]\n\n# Check daemon health and diagnostics\n.esedre/ese daemon status [--port 5674] [--json]\n\n# View recent daemon activity logs\n.esedre/ese daemon logs\n\n# Stop background daemon\n.esedre/ese daemon stop [--port 5674] [--quiet] [--json]\n```\n\n### Foreground Gateway Server\n```bash\n.esedre/ese serve [--port 5674]\n```\n- Starts the unified gateway on port 5674, routing `/app` to Esedre UI (port 5675) and `/api` to Esedre REST API (port 5676).\n- Transparently rewrites `/` to `/app/`.\n\n### Workspace Configuration & Vite Proxy Setup\n```bash\n.esedre/ese configure [--project <code>] [--name <name>] [--port <n>] [--proxy] [--no-proxy] [-y]\n```\n- Automatically detects `vite.config.ts`/`vite.config.js`. In interactive mode or with `--proxy`, configures a reverse proxy for `/esedre` targeting port 5674 (`http://127.0.0.1:5674`).\n- If Vite is absent or declined, displays the recommended reverse proxy block for embedding the planner UI in the host app.\n\n## 3. Embedded View & Theme Token Contract\n\nWhen embedding `<PlannedWorkView />` inside a host app (e.g. `PlannedWorkModal.tsx`):\n\n### Zero-Effort Drop-in (Default Fallback)\n`PlannedWorkView` incorporates an internal CSS fallback bridge (`.esedre-host-bridge` / `.esedre-theme-root` with `ESEDRE_THEME_FALLBACK_CSS`).\nIf an embedding application supplies **zero CSS variables**, the component automatically falls back to clean, high-contrast light or dark themes matching the user's OS preference (`prefers-color-scheme: dark`) or host `.dark` / `[data-theme=\"night\"]` classes.\n\n### Theme Token Customization\nIf the host application declares any or all of the 12 core design tokens on `:root` or an ancestor container, `PlannedWorkView` automatically adopts them:\n- **Surface**: `--bg-surface`, `--bg-surface-elevated`, `--bg-input`\n- **Borders**: `--border-subtle`, `--border-strong`, `--border-accent`\n- **Text**: `--text-primary`, `--text-secondary`, `--text-muted`\n- **Accent**: `--accent-primary`, `--accent-bg-subtle`, `--accent-border-subtle`\n\n## 4. Safety & Invariants\n- **Always use `--json`** for CLI programmatic inspection.\n- **Optimistic Concurrency**: Writes support `--last-hash <hash>` to prevent overwriting concurrent updates.\n- **Universal Type Naming**: Always use `type` (`Feature`, `Platform`, `Tools`, `Idea`, `Bug`). The legacy name `category` is deprecated.\n- **Compound IDs for Multi-Project Portfolios**: In `project=all`, ticket IDs are `${projectCode}-${id}` (e.g. `Profe-1`, `Esedre-1`). DOM anchors strictly use `feature-card-${projectCode}-${id}`.\n- **Never delete tickets** directly via filesystem.\n- **Agent Project Allow-List**: Providing isolation of projects planning that you don't want an agent to access. A repository only accesses projects declared in its `.esedre/esedre.json` (`allowedProjects`). Unauthorized cross-project access is strictly blocked.\n- **Secret Developer Hash Route (`#/planner`, `#/plan`, `#planner`, `#plan`)**:\n  - In web applications embedding Esedre (such as Professor Arwam), `#/planner` and `#/plan` serve as direct secret developer entry routes.\n  - **SEO Invariant**: These developer routes are private and MUST NEVER be exposed in `sitemap.xml`, `robots.txt`, `llms.txt`, or public navigation links.\n  - The URL hash is preserved across hard page refreshes (F5) without falling back to `#/chat` or other views.\n";
+export const HISTORIC_SKILL_HASHES: string[] = [
+  '8611116c276fdfb598b965c716b251ce7c77c7f7',
+  '05f129fb6e06a18df00215af105567abcbf0bc67',
+];
+
+export const ESEDRE_SKILL_TEMPLATE = `---
+name: esedre
+description: Tooling and workflow reference for interacting with the Esedre developer ticketing and roadmap system. Use this skill whenever inspecting planned work, viewing ticket specs, updating implementation plans, or posting developer notes.
+---
+
+# Esedre Planning & Roadmap Workflow
+
+Esedre is the developer ticketing and LLM coding partner coordination platform. The engine codebase resides in the standalone repository \`aellinsar/esedre\` (\`../esedre\`), and operates on decoupled ticket repositories (such as \`aellinsar/esedre-data\` configured in \`.esedre/esedre.json\`). Interact with tickets via in-repo shell wrappers in \`.esedre/\` (\`.esedre/ese\`), or the global \`ese\` CLI.
+
+## 0. Instant Zero-Latency Context (\`.esedre/snapshot.json\`)
+
+Before querying tickets over the network or CLI, check \`.esedre/snapshot.json\` in the workspace root. It provides a local read-only projection containing all active and completed tickets, summaries, implementation plans, revision numbers, completion dates (\`completedAt\`), and staleness metrics (\`daysSinceUpdate\`).
+
+## 1. Model Context Protocol (MCP) Tools
+
+When Esedre MCP is active in your agent session (\`.agents/mcp_config.json\`), use these tools directly:
+
+| Tool | Purpose | Key Arguments |
+|---|---|---|
+| \`esedre_list_tickets\` | List roadmap tickets with filters | \`project\` (e.g. \`Profe\`, \`Esedre\`, \`Alce\`), \`status\`, \`type\`, \`search\` |
+| \`esedre_get_ticket\` | Full specification, summary, comments, revision & sha1 | \`ticketId\` (numeric e.g. \`96\` or compound e.g. \`Profe-96\`) |
+| \`esedre_get_plan\` | Active implementation plan markdown | \`ticketId\` (numeric or compound) |
+| \`esedre_save_plan\` | Save implementation plan markdown with OCC | \`ticketId\`, \`planMarkdown\`, \`lastHash\` |
+| \`esedre_create_ticket\` | Mint a new ticket with auto sequential ID | \`title\` (max 48 chars), \`type\`, \`project\`, \`effort\`, \`summary\` |
+| \`esedre_update_ticket\` | Update ticket attributes with OCC | \`ticketId\`, \`status\`, \`type\`, \`title\`, \`complexity\`, \`effort\`, \`inDevelopment\`, \`featureFlag\`, \`lastHash\` |
+| \`esedre_add_comment\` | Append developer or agent comment | \`ticketId\`, \`text\`, \`author\` |
+
+## 2. Core CLI Commands (Fallback via \`run_command\`)
+
+Both \`esedre\` and \`ese\` work interchangeably:
+
+### List Tickets
+\`\`\`bash
+.esedre/ese list [-p|--project <code|all>] [-s|--status <status>] [-t|--type <type>] [-q|--search <q>] [--json]
+\`\`\`
+
+### Read Ticket Details
+\`\`\`bash
+.esedre/ese get <ticketId> [--json]
+\`\`\`
+
+### Read or Update Implementation Plans
+\`\`\`bash
+.esedre/ese plan <ticketId>
+.esedre/ese plan <ticketId> --file <planFilePath>
+.esedre/ese plan <ticketId> --set "<markdownContent>" [--last-hash <hash>]
+\`\`\`
+
+### Create a Ticket
+\`\`\`bash
+.esedre/ese create --title "..." [-p|--project <code>] [-t|--type Feature] [--complexity Medium] [--effort "2.0 - 4.0 hours"] [--json]
+\`\`\`
+
+### Update Ticket Status & Attributes
+\`\`\`bash
+.esedre/ese update <ticketId> --status "In Development"
+.esedre/ese update <ticketId> --status "Completed"
+.esedre/ese update <ticketId> --type Feature --complexity Medium --effort "2.0 - 4.0 hours"
+\`\`\`
+
+### Append Comments or Notes
+\`\`\`bash
+.esedre/ese comment <ticketId> "Verified implementation." --author "Agent"
+.esedre/ese comment <ticketId> --text "Verified implementation." --author "Agent"
+\`\`\`
+
+### Regenerate Snapshot
+\`\`\`bash
+.esedre/ese snapshot
+\`\`\`
+
+### Server Lifecycle & Daemon Management
+\`\`\`bash
+# Start background server daemon on port 5674 (default)
+.esedre/ese start [--port 5674] [--quiet] [--json]
+
+# Run foreground gateway server directly (Ctrl+C to stop)
+.esedre/ese start -f [--port 5674]
+
+# Check daemon health and diagnostics
+.esedre/ese status [--port 5674] [--json]
+
+# View recent daemon activity logs
+.esedre/ese logs [--port 5674] [--lines <n>]
+
+# Stop background server daemon
+.esedre/ese stop [--port 5674] [--quiet] [--json]
+\`\`\`
+
+## 3. Embedded View & Theme Token Contract
+
+When embedding \`<PlannedWorkView />\` inside a host app (e.g. \`PlannedWorkModal.tsx\`):
+
+### Zero-Effort Drop-in (Default Fallback)
+\`PlannedWorkView\` incorporates an internal CSS fallback bridge (\`.esedre-host-bridge\` / \`.esedre-theme-root\` with \`ESEDRE_THEME_FALLBACK_CSS\`).
+If an embedding application supplies **zero CSS variables**, the component automatically falls back to clean, high-contrast light or dark themes matching the user's OS preference (\`prefers-color-scheme: dark\`) or host \`.dark\` / \`[data-theme="night"]\` classes.
+
+### Theme Token Customization
+If the host application declares any or all of the 12 core design tokens on \`:root\` or an ancestor container, \`PlannedWorkView\` automatically adopts them:
+- **Surface**: \`--bg-surface\`, \`--bg-surface-elevated\`, \`--bg-input\`
+- **Borders**: \`--border-subtle\`, \`--border-strong\`, \`--border-accent\`
+- **Text**: \`--text-primary\`, \`--text-secondary\`, \`--text-muted\`
+- **Accent**: \`--accent-primary\`, \`--accent-bg-subtle\`, \`--accent-border-subtle\`
+
+## 4. Safety & Invariants
+- **Always use \`--json\`** for CLI programmatic inspection.
+- **Optimistic Concurrency**: Writes support \`--last-hash <hash>\` to prevent overwriting concurrent updates.
+- **Universal Type Naming**: Always use \`type\` (\`Feature\`, \`Platform\`, \`Tools\`, \`Idea\`, \`Bug\`). The legacy name \`category\` is deprecated.
+- **Compound IDs for Multi-Project Portfolios**: In \`project=all\`, ticket IDs are \`\${projectCode}-\${id}\` (e.g. \`Profe-1\`, \`Esedre-1\`). DOM anchors strictly use \`feature-card-\${projectCode}-\${id}\`.
+- **Never delete tickets** directly via filesystem.
+- **Workspace Scoping**: An LLM coding partner operates strictly within the authorized project scope declared in the local repository configuration. Central repository linking and system-level configuration are managed separately; focus roadmap work, implementation plans, and verification notes on this project.
+- **Secret Developer Hash Route (\`#/planner\`, \`#/plan\`, \`#planner\`, \`#plan\`)**:
+  - In web applications embedding Esedre (such as Professor Arwam), \`#/planner\` and \`#/plan\` serve as direct secret developer entry routes.
+  - **SEO Invariant**: These developer routes are private and MUST NEVER be exposed in \`sitemap.xml\`, \`robots.txt\`, \`llms.txt\`, or public navigation links.
+  - The URL hash is preserved across hard page refreshes (F5) without falling back to \`#/chat\` or other views.
+`;
 
 export type ViteProxyStatus = 'CONFIGURED' | 'ALREADY_CONFIGURED' | 'SKIPPED' | 'MANUAL_REQUIRED' | 'NOT_APPLICABLE';
 
@@ -160,9 +282,11 @@ export interface ConfigureOptions {
   projectCode?: string;
   projectName?: string;
   allowedProjects?: string[];
+  dataDir?: string | string[];
   port?: number;
   setupMcp?: boolean;
   setupProxy?: boolean;
+  force?: boolean;
 }
 
 export interface ConfigureResult {
@@ -239,7 +363,7 @@ export function setupMcpConfig(targetDir: string): boolean {
   }
 }
 
-export function setupSkill(targetDir: string): { status: ContentStatus; updated: boolean } {
+export function setupSkill(targetDir: string, options: { force?: boolean } = {}): { status: ContentStatus; updated: boolean } {
   const skillDir = path.join(targetDir, '.agents', 'skills', 'esedre');
   fs.mkdirSync(skillDir, { recursive: true });
   const skillFile = path.join(skillDir, 'SKILL.md');
@@ -250,15 +374,20 @@ export function setupSkill(targetDir: string): { status: ContentStatus; updated:
   }
 
   const currentContent = fs.readFileSync(skillFile, 'utf-8');
-  const status = classifyContent(currentContent, ESEDRE_SKILL_TEMPLATE, []);
+  const status = classifyContent(currentContent, ESEDRE_SKILL_TEMPLATE, HISTORIC_SKILL_HASHES);
 
-  if (status === 'LATEST') {
+  if (status === 'LATEST' && !options.force) {
     return { status, updated: false };
   }
 
-  if (status === 'HISTORIC_DEFAULT' || status === 'MISSING') {
+  const hasBannedOrDeprecatedTerms =
+    currentContent.includes('companion agent') ||
+    currentContent.includes('companion LLM') ||
+    currentContent.includes('tools/esedre.mjs');
+
+  if (options.force || status === 'HISTORIC_DEFAULT' || status === 'MISSING' || hasBannedOrDeprecatedTerms) {
     fs.writeFileSync(skillFile, ESEDRE_SKILL_TEMPLATE, 'utf-8');
-    return { status, updated: true };
+    return { status: 'LATEST', updated: true };
   }
 
   return { status, updated: false };
@@ -437,11 +566,13 @@ export function configureWorkspace(targetDir: string, options: ConfigureOptions 
   let config: EsedreConfig;
   const projectCode = options.projectCode || existingRaw?.projectCode;
   const projectName = options.projectName || existingRaw?.projectName || (projectCode ? projectCode : undefined);
+  const dataDir = options.dataDir !== undefined ? options.dataDir : existingRaw?.dataDir;
 
   if (existingRaw) {
     config = migrateEsedreConfig(existingRaw, CURRENT_ESEDRE_VERSION);
     if (projectCode) config.projectCode = projectCode;
     if (projectName) config.projectName = projectName;
+    if (dataDir) config.dataDir = dataDir;
     if (options.allowedProjects) {
       config.allowedProjects = options.allowedProjects;
     } else if (projectCode) {
@@ -458,7 +589,8 @@ export function configureWorkspace(targetDir: string, options: ConfigureOptions 
       projectCode: projectCode || undefined,
       projectName: projectName || undefined,
       allowedProjects: options.allowedProjects || (projectCode ? [projectCode] : undefined),
-      port: options.port || DEFAULT_ESEDRE_PORT,
+      dataDir: dataDir || undefined,
+      port: options.port || undefined,
     };
   }
 
@@ -467,8 +599,12 @@ export function configureWorkspace(targetDir: string, options: ConfigureOptions 
   // Ensure in-repo tickets directory and project descriptor if projectCode is present and no hub exists
   let projectRegistered = false;
   if (projectCode) {
+    const hasExistingTicketsDir =
+      fs.existsSync(path.join(targetDir, 'tickets')) ||
+      fs.existsSync(path.join(targetDir, 'src', 'data', 'planning', 'tickets'));
+
     const ticketsDir = path.join(esedreDir, 'tickets');
-    if (!fs.existsSync(ticketsDir)) {
+    if (!hasExistingTicketsDir && !fs.existsSync(ticketsDir)) {
       fs.mkdirSync(ticketsDir, { recursive: true });
     }
     const inRepoPJson = path.join(esedreDir, 'project.json');
@@ -511,10 +647,11 @@ export function configureWorkspace(targetDir: string, options: ConfigureOptions 
   }
 
   // 5. Skill setup (.agents/skills/esedre/SKILL.md)
-  const skillRes = setupSkill(targetDir);
+  const skillRes = setupSkill(targetDir, { force: options.force });
 
   // 6. Vite proxy check & setup
-  const proxyRes = configureViteProxy(targetDir, config.port || DEFAULT_ESEDRE_PORT, options.setupProxy);
+  const targetPort = resolvePorts(config).gateway;
+  const proxyRes = configureViteProxy(targetDir, targetPort, options.setupProxy);
 
   // 7. Global store check & pre-creation (resilient, never crashes configure)
   const globalStoreRes = ensureGlobalEsedreStore();
@@ -539,3 +676,39 @@ export function configureWorkspace(targetDir: string, options: ConfigureOptions 
     globalStoreError: globalStoreRes.error,
   };
 }
+
+export const initWorkspace = configureWorkspace;
+
+export interface InitHubResult {
+  projectsJsonCreated: boolean;
+  projectsDirCreated: boolean;
+  hubDir: string;
+}
+
+export function initHub(targetDir: string): InitHubResult {
+  const resolved = path.resolve(targetDir);
+  if (!fs.existsSync(resolved)) {
+    fs.mkdirSync(resolved, { recursive: true });
+  }
+
+  const projectsDir = path.join(resolved, 'projects');
+  let projectsDirCreated = false;
+  if (!fs.existsSync(projectsDir)) {
+    fs.mkdirSync(projectsDir, { recursive: true });
+    projectsDirCreated = true;
+  }
+
+  const projectsJsonPath = path.join(resolved, 'projects.json');
+  let projectsJsonCreated = false;
+  if (!fs.existsSync(projectsJsonPath)) {
+    fs.writeFileSync(projectsJsonPath, '[]\n', 'utf-8');
+    projectsJsonCreated = true;
+  }
+
+  return {
+    projectsJsonCreated,
+    projectsDirCreated,
+    hubDir: resolved.replace(/\\/g, '/'),
+  };
+}
+

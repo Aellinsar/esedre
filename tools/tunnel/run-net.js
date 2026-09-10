@@ -1,4 +1,4 @@
-﻿import { spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
@@ -185,7 +185,7 @@ async function main() {
     if (portBusy) {
       console.log('âš¡ [Esedre] Existing server detected on port 5674. Reusing running daemon.\n');
     } else {
-      esedre = spawn(process.execPath, [esedrePath, 'serve'], {
+      esedre = spawn(process.execPath, [esedrePath, 'start', '--foreground'], {
         stdio: 'inherit',
         shell: false,
       });

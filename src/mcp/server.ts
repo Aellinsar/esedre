@@ -234,17 +234,27 @@ export class EsedreMcpServer {
     }
   }
 
+  private parseTicketId(val: any): string | number {
+    if (typeof val === 'number') return val;
+    const str = String(val).trim();
+    if (/^\d+$/.test(str)) {
+      return parseInt(str, 10);
+    }
+    return str;
+  }
+
   private getToolDefinitions(): any[] {
     return [
       {
         name: 'esedre_list_tickets',
-        description: 'List roadmap tickets with optional project code, status, category, or search query.',
+        description: 'List roadmap tickets with optional project code, status, type, category, or search query.',
         inputSchema: {
           type: 'object',
           properties: {
             project: { type: 'string', description: 'Project code (e.g. CORE, WEB, DOCS)' },
             status: { type: 'string', enum: ['Planned', 'In Development', 'Completed', 'Rejected'], description: 'Ticket status' },
-            category: { type: 'string', enum: ['Feature', 'Platform', 'Tools', 'Idea', 'Bug'], description: 'Ticket category' },
+            type: { type: 'string', enum: ['Feature', 'Platform', 'Tools', 'Idea', 'Bug'], description: 'Ticket type' },
+            category: { type: 'string', enum: ['Feature', 'Platform', 'Tools', 'Idea', 'Bug'], description: 'Ticket category (legacy alias for type)' },
             search: { type: 'string', description: 'Search keywords in title or ID' },
           },
         },
@@ -255,7 +265,7 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            ticketId: { type: 'integer', description: 'Numeric ticket ID (e.g. 96, 101)' },
+            ticketId: { type: ['integer', 'string'], description: 'Numeric ticket ID (e.g. 96, 101) or compound key (e.g. Profe-96)' },
           },
           required: ['ticketId'],
         },
@@ -266,7 +276,7 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            ticketId: { type: 'integer', description: 'Numeric ticket ID' },
+            ticketId: { type: ['integer', 'string'], description: 'Numeric ticket ID or compound key' },
           },
           required: ['ticketId'],
         },
@@ -277,7 +287,7 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            ticketId: { type: 'integer', description: 'Numeric ticket ID' },
+            ticketId: { type: ['integer', 'string'], description: 'Numeric ticket ID or compound key' },
             planMarkdown: { type: 'string', description: 'Implementation plan markdown content' },
             lastHash: { type: 'string', description: 'Optimistic concurrency control: last known sha1 hash of the ticket' },
           },
@@ -292,24 +302,29 @@ export class EsedreMcpServer {
           properties: {
             title: { type: 'string', description: 'Ticket title (max 48 characters)' },
             project: { type: 'string', description: 'Target project code (e.g. CORE, WEB, DOCS)' },
+            type: { type: 'string', enum: ['Feature', 'Platform', 'Tools', 'Idea', 'Bug'], description: 'Ticket type' },
             category: { type: 'string', enum: ['Feature', 'Platform', 'Tools', 'Idea', 'Bug'], description: 'Ticket category' },
             complexity: { type: 'string', description: 'Complexity (e.g. Low, Medium, High)' },
-            effort: { type: 'string', description: 'Estimated effort (e.g. 2.0 – 4.0 hours)' },
+            effort: { type: 'string', description: 'Estimated effort (e.g. 2.0 - 4.0 hours)' },
             summary: { type: 'string', description: 'Initial feature summary' },
             author: { type: 'string', description: 'Submitting author name' },
           },
-          required: ['title', 'category'],
+          required: ['title'],
         },
       },
       {
         name: 'esedre_update_ticket',
-        description: 'Update an existing ticket state (status, title, active planning flag, or feature flag).',
+        description: 'Update an existing ticket state (status, type, title, complexity, effort, active planning flag, or feature flag).',
         inputSchema: {
           type: 'object',
           properties: {
-            ticketId: { type: 'integer', description: 'Numeric ticket ID' },
+            ticketId: { type: ['integer', 'string'], description: 'Numeric ticket ID or compound key' },
             status: { type: 'string', enum: ['Planned', 'In Development', 'Completed', 'Rejected'] },
+            type: { type: 'string', enum: ['Feature', 'Platform', 'Tools', 'Idea', 'Bug'] },
+            category: { type: 'string', enum: ['Feature', 'Platform', 'Tools', 'Idea', 'Bug'] },
             title: { type: 'string', description: 'New title (max 48 characters)' },
+            complexity: { type: 'string', description: 'Complexity (e.g. Low, Medium, High)' },
+            effort: { type: 'string', description: 'Estimated effort (e.g. 2.0 - 4.0 hours)' },
             inDevelopment: { type: 'boolean', description: 'Active development toggle' },
             featureFlag: { type: 'string', description: 'Feature flag name' },
             lastHash: { type: 'string', description: 'Optimistic concurrency control: last known sha1 hash of the ticket' },
@@ -319,11 +334,11 @@ export class EsedreMcpServer {
       },
       {
         name: 'esedre_add_comment',
-        description: 'Append a developer or companion agent comment to a ticket.',
+        description: 'Append a developer or LLM agent comment to a ticket.',
         inputSchema: {
           type: 'object',
           properties: {
-            ticketId: { type: 'integer', description: 'Numeric ticket ID' },
+            ticketId: { type: ['integer', 'string'], description: 'Numeric ticket ID or compound key' },
             text: { type: 'string', description: 'Comment message' },
             author: { type: 'string', description: 'Author name (e.g. Antigravity, Developer)' },
           },
@@ -337,16 +352,19 @@ export class EsedreMcpServer {
     const canonical = name.replace(/^esedre_/, '');
     switch (canonical) {
       case 'list_tickets': {
+        const type = (args.type || args.category) as TicketType | undefined;
         const tickets = await this.storage.listTickets({
           project: args.project,
           status: args.status,
-          category: args.category,
+          type,
+          category: type,
           search: args.search,
         });
         return tickets.map((t) => ({
           id: t.meta.id,
           title: t.meta.title,
-          category: t.meta.category,
+          type: t.meta.type || (t.meta as any).category,
+          category: t.meta.type || (t.meta as any).category,
           status: t.meta.status,
           complexity: t.meta.complexity,
           effort: t.meta.estimatedEffort,
@@ -356,29 +374,30 @@ export class EsedreMcpServer {
       }
 
       case 'get_ticket': {
-        const id = parseInt(String(args.ticketId), 10);
+        const id = this.parseTicketId(args.ticketId);
         const ticket = await this.storage.getTicket(id);
         if (!ticket) throw new Error(`Ticket #${id} not found`);
         return ticket;
       }
 
       case 'get_plan': {
-        const id = parseInt(String(args.ticketId), 10);
+        const id = this.parseTicketId(args.ticketId);
         const plan = await this.storage.getPlan(id);
         return { ticketId: id, planMarkdown: plan || null };
       }
 
       case 'save_plan': {
-        const id = parseInt(String(args.ticketId), 10);
+        const id = this.parseTicketId(args.ticketId);
         await this.storage.savePlan(id, args.planMarkdown, args.lastHash);
         return { success: true, message: `Implementation plan saved for Ticket #${id}` };
       }
 
       case 'create_ticket': {
+        const type = (args.type || args.category || 'Feature') as TicketType;
         const created = await this.storage.createTicket({
           title: args.title,
-          type: (args.type || args.category) as TicketType,
-            category: (args.type || args.category) as TicketType,
+          type,
+          category: type,
           projectCode: args.project,
           complexity: args.complexity,
           estimatedEffort: args.effort,
@@ -389,10 +408,17 @@ export class EsedreMcpServer {
       }
 
       case 'update_ticket': {
-        const id = parseInt(String(args.ticketId), 10);
+        const id = this.parseTicketId(args.ticketId);
         const updates: any = {};
+        const type = (args.type || args.category) as TicketType | undefined;
+        if (type) {
+          updates.type = type;
+          updates.category = type;
+        }
         if (args.status) updates.status = args.status as TicketStatus;
         if (args.title) updates.title = args.title;
+        if (args.complexity) updates.complexity = args.complexity;
+        if (args.effort) updates.estimatedEffort = args.effort;
         if (args.inDevelopment !== undefined) updates.isActivePlanning = Boolean(args.inDevelopment);
         if (args.featureFlag) updates.featureFlag = args.featureFlag;
 
@@ -401,7 +427,7 @@ export class EsedreMcpServer {
       }
 
       case 'add_comment': {
-        const id = parseInt(String(args.ticketId), 10);
+        const id = this.parseTicketId(args.ticketId);
         const comment = await this.storage.addComment(id, {
           text: args.text,
           author: args.author || 'Agent',

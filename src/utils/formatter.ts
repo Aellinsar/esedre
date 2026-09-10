@@ -22,25 +22,25 @@ export function formatTicketListTable(tickets: EsedreTicket[]): string {
   const rows = tickets.map((t) => {
     const id = t.projectDescriptor?.code ? `${t.projectDescriptor.code}-${t.meta.id}` : `#${t.meta.id}`;
     const project = t.projectDescriptor?.code || 'CORE';
-    const category = t.meta.category;
+    const type = t.meta.type || t.meta.category || 'Feature';
     const status = t.meta.status;
     const title = t.meta.title;
-    return { id, project, category, status, title };
+    return { id, project, type, status, title };
   });
 
   const idWidth = Math.max(4, ...rows.map((r) => r.id.length));
   const projWidth = Math.max(7, ...rows.map((r) => r.project.length));
-  const catWidth = Math.max(8, ...rows.map((r) => r.category.length));
+  const typeWidth = Math.max(8, ...rows.map((r) => r.type.length));
   const statusWidth = Math.max(14, ...rows.map((r) => r.status.length));
 
-  const header = `${colors.bold}${pad('ID', idWidth)}  ${pad('Project', projWidth)}  ${pad('Category', catWidth)}  ${pad('Status', statusWidth)}  Title${colors.reset}`;
-  const divider = `${colors.dim}${'-'.repeat(idWidth)}  ${'-'.repeat(projWidth)}  ${'-'.repeat(catWidth)}  ${'-'.repeat(statusWidth)}  ${'-'.repeat(40)}${colors.reset}`;
+  const header = `${colors.bold}${pad('ID', idWidth)}  ${pad('Project', projWidth)}  ${pad('Type', typeWidth)}  ${pad('Status', statusWidth)}  Title${colors.reset}`;
+  const divider = `${colors.dim}${'-'.repeat(idWidth)}  ${'-'.repeat(projWidth)}  ${'-'.repeat(typeWidth)}  ${'-'.repeat(statusWidth)}  ${'-'.repeat(40)}${colors.reset}`;
 
   const formattedRows = rows.map((r) => {
     const statusColored = colorStatus(r.status);
-    const catColored = colorCategory(r.category);
+    const typeColored = colorType(r.type);
     const projColored = `${colors.magenta}${r.project}${colors.reset}`;
-    return `${colors.bold}${pad(r.id, idWidth)}${colors.reset}  ${pad(projColored, projWidth + (isColorSupported ? colors.magenta.length + colors.reset.length : 0))}  ${pad(catColored, catWidth + (isColorSupported ? 9 : 0))}  ${pad(statusColored, statusWidth + (isColorSupported ? 9 : 0))}  ${r.title}`;
+    return `${colors.bold}${pad(r.id, idWidth)}${colors.reset}  ${pad(projColored, projWidth + (isColorSupported ? colors.magenta.length + colors.reset.length : 0))}  ${pad(typeColored, typeWidth + (isColorSupported ? 9 : 0))}  ${pad(statusColored, statusWidth + (isColorSupported ? 9 : 0))}  ${r.title}`;
   });
 
   return [header, divider, ...formattedRows].join('\n');
@@ -54,7 +54,7 @@ export function formatTicketDetail(ticket: EsedreTicket): string {
   lines.push(`${colors.dim}${'='.repeat(60)}${colors.reset}`);
 
   lines.push(`${colors.bold}Project:${colors.reset}     ${projectDescriptor ? `${projectDescriptor.code} - ${projectDescriptor.name}` : 'Default'}`);
-  lines.push(`${colors.bold}Category:${colors.reset}    ${colorCategory(meta.category)}`);
+  lines.push(`${colors.bold}Type:${colors.reset}        ${colorType(meta.type || meta.category || 'Feature')}`);
   lines.push(`${colors.bold}Status:${colors.reset}      ${colorStatus(meta.status)}`);
   lines.push(`${colors.bold}Complexity:${colors.reset}  ${meta.complexity || 'Medium'}`);
   lines.push(`${colors.bold}Effort:${colors.reset}      ${meta.estimatedEffort || 'N/A'}`);
@@ -93,10 +93,13 @@ export function formatTicketDetail(ticket: EsedreTicket): string {
     }
   }
 
-  lines.push('');
-  lines.push(`${colors.bold}Implementation Plan:${colors.reset} ${planMarkdown ? `${colors.green}Available (${planMarkdown.split('\n').length} lines)${colors.reset}` : `${colors.dim}None recorded${colors.reset}`}`);
+  if (planMarkdown) {
+    lines.push('');
+    lines.push(`${colors.bold}Implementation Plan:${colors.reset}`);
+    lines.push(planMarkdown.trim());
+  }
 
-  if (comments.length > 0) {
+  if (comments && comments.length > 0) {
     lines.push('');
     lines.push(`${colors.bold}Comments (${comments.length}):${colors.reset}`);
     for (const c of comments) {
@@ -120,13 +123,13 @@ function colorStatus(status: string): string {
   }
 }
 
-function colorCategory(category: string): string {
-  switch (category) {
-    case 'Feature': return `${colors.blue}${category}${colors.reset}`;
-    case 'Platform': return `${colors.magenta}${category}${colors.reset}`;
-    case 'Tools': return `${colors.yellow}${category}${colors.reset}`;
-    case 'Bug': return `${colors.red}${category}${colors.reset}`;
-    case 'Idea': return `${colors.green}${category}${colors.reset}`;
-    default: return category;
+function colorType(type: string): string {
+  switch (type) {
+    case 'Feature': return `${colors.blue}${type}${colors.reset}`;
+    case 'Platform': return `${colors.magenta}${type}${colors.reset}`;
+    case 'Tools': return `${colors.yellow}${type}${colors.reset}`;
+    case 'Bug': return `${colors.red}${type}${colors.reset}`;
+    case 'Idea': return `${colors.green}${type}${colors.reset}`;
+    default: return type;
   }
 }

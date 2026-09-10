@@ -1,7 +1,13 @@
 import { ConfirmationModal } from './ConfirmationModal.js';
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { X, FolderKanban, Plus, FileText, Palette } from 'lucide-react';
-import { ProjectDescriptor, ALL_PROJECT_CODES, ALL_PROJECTS } from './types';
+import {
+  ProjectDescriptor,
+  ALL_PROJECT_CODES,
+  ALL_PROJECTS,
+  MAX_PROJECT_CODE_LENGTH,
+  MAX_PROJECT_NAME_LENGTH,
+} from './types';
 
 interface CreateProjectModalProps {
   isOpen: boolean;
@@ -66,16 +72,21 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
       setErrorMsg('Project code is required.');
       return;
     }
-    if (!/^[a-zA-Z0-9]{1,5}$/.test(cleanCode)) {
-      setErrorMsg('Project code must be 1 to 5 alphanumeric characters (e.g. CORE, WEB, DOCS).');
+    if (!new RegExp(`^[a-zA-Z0-9]{1,${MAX_PROJECT_CODE_LENGTH}}$`).test(cleanCode)) {
+      setErrorMsg(`Project code must be 1 to ${MAX_PROJECT_CODE_LENGTH} alphanumeric characters (e.g. CORE, ALCE, WEB).`);
       return;
     }
     if (ALL_PROJECT_CODES.some((c) => c.toLowerCase() === cleanCode.toLowerCase())) {
       setErrorMsg(`Project code '${cleanCode}' collides with an existing project (case-insensitive).`);
       return;
     }
-    if (!name.trim()) {
+    const cleanName = name.trim();
+    if (!cleanName) {
       setErrorMsg('Project name is required.');
+      return;
+    }
+    if (cleanName.length > MAX_PROJECT_NAME_LENGTH) {
+      setErrorMsg(`Project name cannot exceed ${MAX_PROJECT_NAME_LENGTH} characters.`);
       return;
     }
 
@@ -89,8 +100,8 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           code: cleanCode,
-          name: name.trim(),
-          description: description.trim() || `${name.trim()} Project`,
+          name: cleanName,
+          description: description.trim() || `${cleanName} Project`,
           colors,
         }),
       });
@@ -112,9 +123,9 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
       const fallbackProj: ProjectDescriptor = {
         id: nextId,
         code: cleanCode,
-        slug: name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-        name: name.trim(),
-        description: description.trim() || `${name.trim()} Project`,
+        slug: cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+        name: cleanName,
+        description: description.trim() || `${cleanName} Project`,
         colors,
       };
       ALL_PROJECTS.push(fallbackProj);
@@ -142,7 +153,7 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
             </div>
             <div>
               <h2 className="text-sm font-bold text-[var(--text-primary)]">Add New Project</h2>
-              <p className="text-[11px] text-[var(--text-muted)]">Register a project with a 1–4 char code</p>
+              <p className="text-[11px] text-[var(--text-muted)]">Register a project with a 1-{MAX_PROJECT_CODE_LENGTH} char code</p>
             </div>
           </div>
           <button
@@ -168,30 +179,33 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
               <label className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
                 <FolderKanban size={13} className="text-[var(--accent-primary)]" /> Project Code *
               </label>
-              <span className="text-[10px] font-mono text-[var(--text-muted)]">{code.length}/4</span>
+              <span className="text-[10px] font-mono text-[var(--text-muted)]">{code.length}/{MAX_PROJECT_CODE_LENGTH}</span>
             </div>
             <input
               type="text"
               value={code}
-              maxLength={4}
+              maxLength={MAX_PROJECT_CODE_LENGTH}
               onChange={(e) => setCode(e.target.value.replace(/[^a-zA-Z0-9]/g, ''))}
-              placeholder="e.g. CORE, WEB, DOCS"
+              placeholder="e.g. CORE, ALCE, WEB"
               className="w-full p-2 bg-[var(--bg-input)] border border-[var(--border-subtle)] focus:border-[var(--border-accent)] rounded-xl text-xs font-mono font-bold text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none"
               required
               autoFocus
             />
-            <p className="text-[10px] text-[var(--text-muted)]">Strictly 1 to 4 alphanumeric characters.</p>
+            <p className="text-[10px] text-[var(--text-muted)]">Strictly 1 to {MAX_PROJECT_CODE_LENGTH} alphanumeric characters.</p>
           </div>
 
           {/* Project Name */}
           <div className="space-y-1">
-            <label className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
-              <FileText size={13} className="text-[var(--accent-primary)]" /> Project Name *
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+                <FileText size={13} className="text-[var(--accent-primary)]" /> Project Name *
+              </label>
+              <span className="text-[10px] font-mono text-[var(--text-muted)]">{name.length}/{MAX_PROJECT_NAME_LENGTH}</span>
+            </div>
             <input
               type="text"
               value={name}
-              maxLength={64}
+              maxLength={MAX_PROJECT_NAME_LENGTH}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Hablaster Video Game"
               className="w-full p-2 bg-[var(--bg-input)] border border-[var(--border-subtle)] focus:border-[var(--border-accent)] rounded-xl text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none"

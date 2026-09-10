@@ -38,7 +38,7 @@ describe('Esedre Agent Project Allow-List (SecurityFilter)', () => {
         JSON.stringify({
           id,
           title,
-          category: 'Feature',
+          type: 'Feature',
           projectId,
           project: projectCode,
           status: 'Planned',
@@ -99,7 +99,7 @@ describe('Esedre Agent Project Allow-List (SecurityFilter)', () => {
     await expect(
       adapter.createTicket({
         title: 'Unauthorized Create',
-        category: 'Feature',
+        type: 'Feature',
         projectCode: 'Web',
       })
     ).rejects.toThrow(EsedreAuthorizationError);

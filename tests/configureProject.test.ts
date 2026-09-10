@@ -221,16 +221,20 @@ describe('Project Registration & Configure Onboarding', () => {
 
       const output = execFileSync(
         process.execPath,
-        [cliPath, 'configure', '--project', 'ALCE', '--name', 'Alce Reader', '--no-mcp', '--no-proxy', '-y'],
+        [cliPath, 'init', '--project', 'ALCE', '--name', 'Alce Reader', '--no-mcp', '--no-proxy', '-y'],
         {
           cwd: tempDir,
           encoding: 'utf-8',
+          env: {
+            ...process.env,
+            ESEDRE_GLOBAL_DIR: path.join(tempDir, 'global-store'),
+          },
         }
       );
 
-      expect(output).toContain('Esedre workspace configured successfully');
+      expect(output).toContain('Esedre workspace initialized successfully');
       expect(output).toContain('Registered new project \'ALCE\' (Alce Reader) in Esedre');
-      expect(output).toContain('Start the background daemon:');
+      expect(output).toContain('Start the background server:');
       expect(output).toContain('ese start');
       expect(output).toContain('http://localhost:5674/app?project=ALCE');
       expect(output).toContain('ese create --title "First feature" --type Feature --project ALCE');
