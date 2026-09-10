@@ -200,4 +200,74 @@ describe('Esedre Daemon Integration & CLI Lifecycle', () => {
       await new Promise((resolve) => child.on('exit', resolve));
     }
   });
+
+  it('reports version via -v, --version, --version --json, and version command', async () => {
+    const vShort = await runCli(['-v']);
+    expect(vShort.code).toBe(0);
+    expect(vShort.stdout).toBe('esedre v0.1.6');
+
+    const vLong = await runCli(['--version']);
+    expect(vLong.code).toBe(0);
+    expect(vLong.stdout).toBe('esedre v0.1.6');
+
+    const vCmd = await runCli(['version']);
+    expect(vCmd.code).toBe(0);
+    expect(vCmd.stdout).toBe('esedre v0.1.6');
+
+    const vJson = await runCli(['--version', '--json']);
+    expect(vJson.code).toBe(0);
+    const parsed = JSON.parse(vJson.stdout);
+    expect(parsed.version).toBe('0.1.6');
+  });
+
+  it('outputs warning on ese status when running daemon version is stale', async () => {
+    const STALE_PORT = 5978;
+    const server = http.createServer((req, res) => {
+      if (req.url === '/api/planning/projects') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('[]');
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(STALE_PORT, '127.0.0.1', () => resolve()));
+
+    const stateFile = getDaemonStateFile(STALE_PORT, workspaceRoot);
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+
+    fs.writeFileSync(
+      stateFile,
+      JSON.stringify({
+        pid: process.pid,
+        port: STALE_PORT,
+        startedAt: new Date().toISOString(),
+        version: '0.1.0',
+        workspaceRoot,
+        logFile: 'stale.log',
+      }),
+      'utf-8'
+    );
+
+    try {
+      const jsonRes = await runCli(['status', '--port', String(STALE_PORT), '--json']);
+      expect(jsonRes.code).toBe(0);
+      const jsonStatus = JSON.parse(jsonRes.stdout);
+      expect(jsonStatus.running).toBe(true);
+      expect(jsonStatus.version).toBe('0.1.0');
+      expect(jsonStatus.staleVersion).toBe(true);
+      expect(jsonStatus.installedVersion).toBe('0.1.6');
+
+      const textRes = await runCli(['status', '--port', String(STALE_PORT)]);
+      expect(textRes.code).toBe(0);
+      expect(textRes.stdout).toContain('Warning: Daemon is running v0.1.0, but v0.1.6 is installed.');
+      expect(textRes.stdout).toContain('ese stop && ese start');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      if (fs.existsSync(stateFile)) {
+        fs.unlinkSync(stateFile);
+      }
+    }
+  });
 });
+

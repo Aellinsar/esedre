@@ -12,6 +12,7 @@ import {
   stopDaemon,
   getDaemonStatus,
 } from '../src/server/daemon.js';
+import { CURRENT_ESEDRE_VERSION } from '../src/types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -94,4 +95,30 @@ describe('Esedre Daemon & Global Runtime Store', () => {
     const stoppedAgain = await stopDaemon({ port: TEST_PORT, quiet: true, workspaceRoot });
     expect(stoppedAgain).toBe(false);
   }, 15000);
+
+  it('correctly detects stale daemon version when running daemon version does not match installed version', async () => {
+    const stateFile = getDaemonStateFile(TEST_PORT, workspaceRoot);
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.writeFileSync(
+      stateFile,
+      JSON.stringify({
+        pid: process.pid,
+        port: TEST_PORT,
+        startedAt: new Date().toISOString(),
+        version: '0.1.0',
+        workspaceRoot,
+        logFile: 'dummy.log',
+      }),
+      'utf-8'
+    );
+
+    const status = await getDaemonStatus({ port: TEST_PORT, workspaceRoot });
+    expect(status.version).toBe('0.1.0');
+    expect(status.staleVersion).toBe(true);
+    expect(status.installedVersion).toBe(CURRENT_ESEDRE_VERSION);
+
+    if (fs.existsSync(stateFile)) {
+      fs.unlinkSync(stateFile);
+    }
+  });
 });

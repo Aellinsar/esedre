@@ -208,4 +208,47 @@ describe('Central Configuration & Init Engine', () => {
     writeGlobalVersion('0.1.6');
     expect(readGlobalVersion()).toBe('0.1.6');
   });
+
+  it('executes CLI ese configure set, get, and list commands end-to-end', async () => {
+    const { execFile } = await import('node:child_process');
+    const cliScript = path.resolve(__dirname, '..', 'dist', 'esedre.mjs');
+
+    const runCli = (args: string[]) =>
+      new Promise<{ stdout: string; stderr: string; code: number }>((resolve) => {
+        execFile(
+          process.execPath,
+          [cliScript, ...args],
+          {
+            cwd: tempRoot,
+            env: {
+              ...process.env,
+              ESEDRE_GLOBAL_DIR: fakeGlobalDir,
+            },
+          },
+          (err, stdout, stderr) => {
+            resolve({
+              stdout: stdout.trim(),
+              stderr: stderr.trim(),
+              code: err ? (err as any).code || 1 : 0,
+            });
+          }
+        );
+      });
+
+    const setRes = await runCli(['configure', 'set', 'port', '5690']);
+    expect(setRes.code).toBe(0);
+    expect(setRes.stdout).toContain('port = 5690');
+
+    const getRes = await runCli(['configure', 'get', 'port']);
+    expect(getRes.code).toBe(0);
+    expect(getRes.stdout).toBe('5690');
+
+    const listRes = await runCli(['configure', 'list', '--json']);
+    expect(listRes.code).toBe(0);
+    const parsed = JSON.parse(listRes.stdout);
+    expect(parsed.config.port).toBe(5690);
+    expect(parsed.configPath).toBeTruthy();
+  });
 });
+
+

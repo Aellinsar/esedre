@@ -242,9 +242,34 @@ describe('Project Registration & Configure Onboarding', () => {
       const config = JSON.parse(fs.readFileSync(path.join(tempDir, '.esedre', 'esedre.json'), 'utf-8'));
       expect(config.projectCode).toBe('ALCE');
       expect(config.projectName).toBe('Alce Reader');
+      expect(config.port).toBeUndefined();
 
       const snapshot = JSON.parse(fs.readFileSync(path.join(tempDir, '.esedre', 'snapshot.json'), 'utf-8'));
       expect(snapshot.projectCode).toBe('ALCE');
     });
+
+    it('preserves explicit --port override in .esedre/esedre.json when provided', () => {
+      const cliPath = path.resolve(__dirname, '..', 'dist', 'esedre.mjs');
+      const customDir = path.join(tempDir, 'custom-port');
+      fs.mkdirSync(customDir, { recursive: true });
+
+      execFileSync(
+        process.execPath,
+        [cliPath, 'init', '--project', 'BETA', '--port', '5780', '--no-mcp', '--no-proxy', '-y'],
+        {
+          cwd: customDir,
+          encoding: 'utf-8',
+          env: {
+            ...process.env,
+            ESEDRE_GLOBAL_DIR: path.join(tempDir, 'global-store'),
+          },
+        }
+      );
+
+      const config = JSON.parse(fs.readFileSync(path.join(customDir, '.esedre', 'esedre.json'), 'utf-8'));
+      expect(config.projectCode).toBe('BETA');
+      expect(config.port).toBe(5780);
+    });
   });
 });
+
