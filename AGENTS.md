@@ -145,10 +145,17 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
    - `npm run net`: Cloudflare tunnel targeting port 5674 for `dev.esedre.com` (with `planner.arwam.com` as alias) with IP whitelist protection.
    - `npm run net:all`: Public open tunnel mode for external access.
 
-8. **Trailing Newline at EOF**:
+8. **Smart Release & Package Publishing Workflow (`npm run pub`)**:
+   - **Publishing Command**: Always use `npm run pub` (or `npm run pub -- <args>`) instead of bare `npm publish`.
+   - **Upfront Auth Pre-Check**: `scripts/publish.js` runs a fast `npm whoami` check (~100ms) before invoking any builds or tests.
+   - **Auto-Login**: If unauthenticated, it automatically launches an interactive `npm login` prompt in local terminal sessions instead of waiting through minutes of compilation only to fail with a registry 404/403.
+   - **Lifecycle Chain**: Once authenticated, it triggers `prepublishOnly` (`npm run lint`, `npm run test`, `npm run build`) and publishes with `--access public`.
+   - **Strict Agent Invariant (Dry Run Only)**: Autonomous LLM coding agents are STRICTLY FORBIDDEN from executing live package publication (`npm run pub` or `npm publish`). Agents may ONLY run dry run verification (`npm run pub -- --dry-run`). Live package publishing to the npm registry is exclusively executed manually by the human developer.
+
+9. **Trailing Newline at EOF**:
    - All code, JSON, Markdown, and config files must end with a single trailing newline (`\n`).
 
-9. **First-Class Antigravity Tool Usage Over Scripting (No Ad-Hoc Scripts for Simple Edits)**:
+10. **First-Class Antigravity Tool Usage Over Scripting (No Ad-Hoc Scripts for Simple Edits)**:
    - You MUST strictly prioritize and use proper first-class Antigravity tools (`replace_file_content`, `multi_replace_file_content`, `write_to_file`, `view_file`, `grep_search`) whenever available and reasonable for code and file modifications.
    - NEVER execute ad-hoc Node, Python, or PowerShell scripts/one-liners (e.g. `node -e "fs.writeFileSync(...)"` or temporary scratch scripts) for simple edits, 1-line changes, or file replacements.
    - Scripting is strictly reserved for tasks where it is genuinely beneficial, such as bulk migrations, repo-wide codemods, or complex data transformations.

@@ -40,6 +40,7 @@
     "build:ui": "vite build --config vite.config.ts",
     "build": "npm run lint && npm run build:ui && npm run build:cli",
     "bridge": "node scripts/bridge.js",
+    "pub": "node scripts/publish.js",
     "prepublishOnly": "npm run lint && npm run test && npm run build"
   },
   "engines": {

@@ -14,16 +14,23 @@ This skill establishes the mandatory verification standards, testing practices, 
 You are strictly and absolutely required to execute test and build checks whenever modifying code:
 
 ```bash
-# Run complete test suite (16 test files, 145+ unit and integration tests)
+# Run complete test suite (20 test files, 208+ unit and integration tests)
 npm test
 
 # Run full production build verification (lint + UI build + CLI bundling)
 npm run build
+
+# Package release and publishing (runs npm whoami check, lint, test, build, and publish)
+npm run pub
+# Dry run verification:
+npm run pub -- --dry-run
 ```
 
 - Confirm zero TypeScript compilation errors (`tsc --noEmit`).
 - Confirm zero test assertion failures.
 - Confirm clean bundling to `dist/esedre.mjs`, `dist/web/embed.js`, and `dist/web/`.
+- For releases, developers run `npm run pub` (via `scripts/publish.js`), which performs a fast 100ms `npm whoami` check and triggers interactive login if unauthenticated before executing the `prepublishOnly` lifecycle suite and publishing.
+- **Strict Agent Invariant (Dry Run Only)**: Autonomous LLM coding agents are strictly forbidden from executing live package publication (`npm run pub` or `npm publish`). Agents may ONLY run dry run verification (`npm run pub -- --dry-run`). Live publishing is reserved exclusively for the human developer.
 
 ---
 
