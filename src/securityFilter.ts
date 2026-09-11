@@ -1,5 +1,5 @@
 import { EsedreTicket, TicketMeta, ProjectDescriptor, TicketComment } from './types.js';
-import { StorageAdapter, CreateTicketInput, ListTicketsFilter, RegisterProjectInput } from './storage/adapter.js';
+import { StorageAdapter, CreateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './storage/adapter.js';
 import { EsedreConfig, isProjectAuthorized, EsedreAuthorizationError } from './config.js';
 
 export class SecurityFilter implements StorageAdapter {
@@ -7,6 +7,10 @@ export class SecurityFilter implements StorageAdapter {
     private readonly target: StorageAdapter,
     private readonly config: EsedreConfig = {}
   ) {}
+
+  public getDuplicateProjectWarnings(): DuplicateProjectWarning[] {
+    return this.target.getDuplicateProjectWarnings ? this.target.getDuplicateProjectWarnings() : [];
+  }
 
   public async getProjects(): Promise<ProjectDescriptor[]> {
     const projs = await this.target.getProjects();

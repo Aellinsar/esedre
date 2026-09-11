@@ -101,13 +101,13 @@ describe('Esedre Config Discovery & Hierarchy Crawl', () => {
 });
 
 describe('Project Code & Name Validation Constants', () => {
-  it('enforces 5674 as default Esedre port, 7 as max code length, and 48 as max name length', () => {
+  it('enforces 5674 as default Esedre port, 8 as max code length, and 48 as max name length', () => {
     expect(DEFAULT_ESEDRE_PORT).toBe(5674);
-    expect(MAX_PROJECT_CODE_LENGTH).toBe(7);
+    expect(MAX_PROJECT_CODE_LENGTH).toBe(8);
     expect(MAX_PROJECT_NAME_LENGTH).toBe(48);
   });
 
-  it('accepts valid 1 to 7 alphanumeric project codes', () => {
+  it('accepts valid 1 to 8 alphanumeric project codes', () => {
     expect(validateProjectCode('Core').valid).toBe(true);
     expect(validateProjectCode('Esedre').valid).toBe(true);
     expect(validateProjectCode('AlceWeb').valid).toBe(true);
@@ -115,10 +115,12 @@ describe('Project Code & Name Validation Constants', () => {
     expect(validateProjectCode('Docs').valid).toBe(true);
     expect(validateProjectCode('A').valid).toBe(true);
     expect(validateProjectCode('1234567').valid).toBe(true);
+    expect(validateProjectCode('12345678').valid).toBe(true);
+    expect(validateProjectCode('Personal').valid).toBe(true);
   });
 
-  it('rejects invalid project codes longer than 7 chars or containing special characters', () => {
-    expect(validateProjectCode('TOOLONG8').valid).toBe(false);
+  it('rejects invalid project codes longer than 8 chars or containing special characters', () => {
+    expect(validateProjectCode('TOOLONG99').valid).toBe(false);
     expect(validateProjectCode('NINE99999').valid).toBe(false);
     expect(validateProjectCode('P-1').valid).toBe(false);
     expect(validateProjectCode('').valid).toBe(false);

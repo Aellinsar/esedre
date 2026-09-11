@@ -39,7 +39,7 @@ describe('Multi-Manifest Project Detection', () => {
     const res = detectProjectManifest(tempDir);
     expect(res.manifestType).toBe('gradle');
     expect(res.candidateName).toBe('ReaderApp');
-    expect(res.candidateCode).toBe('ReaderA');
+    expect(res.candidateCode).toBe('ReaderAp');
   });
 
   it('detects Android project from app/build.gradle.kts namespace', () => {
@@ -65,7 +65,7 @@ describe('Multi-Manifest Project Detection', () => {
     const res = detectProjectManifest(tempDir);
     expect(res.manifestType).toBe('maven');
     expect(res.candidateName).toBe('Alce Reader');
-    expect(res.candidateCode).toBe('AlceRea');
+    expect(res.candidateCode).toBe('AlceRead');
     expect(res.manifestFile).toBe('pom.xml');
   });
 
@@ -87,7 +87,7 @@ describe('Multi-Manifest Project Detection', () => {
     const res = detectProjectManifest(tempDir);
     expect(res.manifestType).toBe('maven');
     expect(res.candidateName).toBe('esedre-service');
-    expect(res.candidateCode).toBe('esedres');
+    expect(res.candidateCode).toBe('esedrese');
     expect(res.manifestFile).toBe('pom.xml');
   });
 
@@ -100,7 +100,7 @@ describe('Multi-Manifest Project Detection', () => {
     const res = detectProjectManifest(tempDir);
     expect(res.manifestType).toBe('node');
     expect(res.candidateName).toBe('sleep-center');
-    expect(res.candidateCode).toBe('sleepce');
+    expect(res.candidateCode).toBe('sleepcen');
     expect(res.manifestFile).toBe('package.json');
   });
 
@@ -113,7 +113,7 @@ describe('Multi-Manifest Project Detection', () => {
     const res = detectProjectManifest(tempDir);
     expect(res.manifestType).toBe('rust');
     expect(res.candidateName).toBe('fastreader');
-    expect(res.candidateCode).toBe('fastrea');
+    expect(res.candidateCode).toBe('fastread');
     expect(res.manifestFile).toBe('Cargo.toml');
   });
 
@@ -126,7 +126,7 @@ describe('Multi-Manifest Project Detection', () => {
     const res = detectProjectManifest(tempDir);
     expect(res.manifestType).toBe('python');
     expect(res.candidateName).toBe('analytics-engine');
-    expect(res.candidateCode).toBe('analyti');
+    expect(res.candidateCode).toBe('analytic');
     expect(res.manifestFile).toBe('pyproject.toml');
   });
 
@@ -139,7 +139,7 @@ describe('Multi-Manifest Project Detection', () => {
     const res = detectProjectManifest(tempDir);
     expect(res.manifestType).toBe('go');
     expect(res.candidateName).toBe('microservice');
-    expect(res.candidateCode).toBe('microse');
+    expect(res.candidateCode).toBe('microser');
     expect(res.manifestFile).toBe('go.mod');
   });
 
@@ -150,18 +150,18 @@ describe('Multi-Manifest Project Detection', () => {
     const res = detectProjectManifest(target);
     expect(res.manifestType).toBe('directory');
     expect(res.candidateName).toBe('custom-tool');
-    expect(res.candidateCode).toBe('customt');
+    expect(res.candidateCode).toBe('customto');
     expect(res.manifestFile).toBeUndefined();
   });
 
-  it('enforces 7-character limit for project codes (e.g. AlceWeb)', () => {
+  it('enforces 8-character limit for project codes (e.g. LongProj)', () => {
     fs.writeFileSync(
       path.join(tempDir, 'package.json'),
-      JSON.stringify({ name: 'AlceWeb' })
+      JSON.stringify({ name: 'LongProjectName' })
     );
 
     const res = detectProjectManifest(tempDir);
-    expect(res.candidateCode.length).toBeLessThanOrEqual(7);
-    expect(res.candidateCode).toBe('AlceWeb');
+    expect(res.candidateCode.length).toBeLessThanOrEqual(8);
+    expect(res.candidateCode).toBe('LongProj');
   });
 });

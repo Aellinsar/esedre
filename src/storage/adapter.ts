@@ -25,12 +25,19 @@ export interface RegisterProjectInput {
   code: string;
   name?: string;
   description?: string;
+  hub?: string;
   colors?: {
     name?: string;
     badge?: string;
     dot?: string;
     border?: string;
   };
+}
+
+export interface DuplicateProjectWarning {
+  code: string;
+  firstHub: string;
+  duplicateHub: string;
 }
 
 export interface StorageAdapter {
@@ -43,5 +50,6 @@ export interface StorageAdapter {
   addComment(id: number | string, comment: { author: string; text: string }): Promise<TicketComment>;
   getProjects(): Promise<ProjectDescriptor[]>;
   registerProject(input: RegisterProjectInput): Promise<ProjectDescriptor>;
+  getDuplicateProjectWarnings?(): DuplicateProjectWarning[];
 }
 

@@ -8,6 +8,7 @@ import { FilesystemStorageAdapter } from '../src/storage/filesystem.js';
 import { SecurityFilter } from '../src/securityFilter.js';
 import { configureWorkspace } from '../src/upgrade.js';
 import { startApiServer } from '../src/server/apiServer.js';
+import { validateProjectCode, validateProjectName, MAX_PROJECT_CODE_LENGTH } from '../src/config.js';
 
 function request(
   url: string,
@@ -139,6 +140,159 @@ describe('Project Registration & Configure Onboarding', () => {
       const saved = JSON.parse(fs.readFileSync(path.join(tempDir, '.esedre', 'project.json'), 'utf-8'));
       expect(saved.name).toBe('Alce Updated Display Name');
     });
+
+    it('is case-remembering on disk and case-insensitive on lookups and updates', async () => {
+      const hubDir = path.join(tempDir, 'case-hub');
+      fs.mkdirSync(path.join(hubDir, 'projects'), { recursive: true });
+      fs.writeFileSync(path.join(hubDir, 'projects.json'), '[]', 'utf-8');
+
+      const adapter = new FilesystemStorageAdapter(tempDir, {
+        dataDir: hubDir,
+      });
+
+      // 1. Initial registration with mixed case 'Personal'
+      const initial = await adapter.registerProject({
+        code: 'Personal',
+        name: 'Personal Projects',
+      });
+      expect(initial.code).toBe('Personal');
+      expect(fs.existsSync(path.join(hubDir, 'projects', 'Personal'))).toBe(true);
+
+      // 2. Re-registering with all-lowercase 'personal' preserves 'Personal' casing and reuses existing directory
+      const updated = await adapter.registerProject({
+        code: 'personal',
+        name: 'Personal Projects Updated',
+      });
+      expect(updated.code).toBe('Personal');
+      expect(updated.name).toBe('Personal Projects Updated');
+
+      // Verify no duplicate directory was created on disk
+      const dirEntries = fs.readdirSync(path.join(hubDir, 'projects'));
+      const matchingDirs = dirEntries.filter((d) => d.toLowerCase() === 'personal');
+      expect(matchingDirs.length).toBe(1);
+      expect(matchingDirs[0]).toBe('Personal');
+
+      // 3. Create ticket with lowercase 'personal'
+      const ticket = await adapter.createTicket({
+        title: 'Case sensitivity test',
+        projectCode: 'personal',
+      });
+      expect(ticket.meta.project).toBe('Personal');
+      expect(fs.existsSync(path.join(hubDir, 'projects', 'Personal', 'tickets', '1', 'meta.json'))).toBe(true);
+
+      // 4. Case-insensitive lookups across Personal-1, personal-1, PERSONAL-1
+      const t1 = await adapter.getTicket('Personal-1');
+      const t2 = await adapter.getTicket('personal-1');
+      const t3 = await adapter.getTicket('PERSONAL-1');
+      expect(t1?.meta.id).toBe(1);
+      expect(t2?.meta.id).toBe(1);
+      expect(t3?.meta.id).toBe(1);
+      expect(t1?.projectDescriptor?.code).toBe('Personal');
+
+      // 5. Update ticket using uppercase lookup key: preserves canonical project code
+      const updatedTicket = await adapter.updateTicket('PERSONAL-1', {
+        status: 'In Development',
+      });
+      expect(updatedTicket.meta.status).toBe('In Development');
+      expect(updatedTicket.meta.project).toBe('Personal');
+    });
+
+    it('handles multi-hub disambiguation by basename, warns when omitted, and handles collisions', async () => {
+      const hub1 = path.join(tempDir, 'team-hub');
+      fs.mkdirSync(path.join(hub1, 'projects'), { recursive: true });
+      fs.writeFileSync(path.join(hub1, 'projects.json'), '[]', 'utf-8');
+
+      const hub2 = path.join(tempDir, 'personal-hub');
+      fs.mkdirSync(path.join(hub2, 'projects'), { recursive: true });
+      fs.writeFileSync(path.join(hub2, 'projects.json'), '[]', 'utf-8');
+
+      const adapter = new FilesystemStorageAdapter(tempDir, {
+        dataDir: [hub1, hub2],
+      });
+
+      // 1. Omitted hub when multiple hubs exist throws informative error listing hubs
+      await expect(
+        adapter.registerProject({
+          code: 'PERS',
+          name: 'Personal Project',
+        })
+      ).rejects.toThrow(/Multiple data hubs configured.*Please specify --hub/);
+
+      // 2. Disambiguate by basename
+      const proj = await adapter.registerProject({
+        code: 'PERS',
+        name: 'Personal Project',
+        hub: 'personal-hub',
+      });
+      expect(proj.code).toBe('PERS');
+      expect(fs.existsSync(path.join(hub2, 'projects', 'PERS', 'project.json'))).toBe(true);
+      expect(fs.existsSync(path.join(hub1, 'projects', 'PERS', 'project.json'))).toBe(false);
+
+      // 3. Collision handling when two hubs have the same basename
+      const nestedDir = path.join(tempDir, 'nested');
+      const hub3 = path.join(nestedDir, 'personal-hub');
+      fs.mkdirSync(path.join(hub3, 'projects'), { recursive: true });
+      fs.writeFileSync(path.join(hub3, 'projects.json'), '[]', 'utf-8');
+
+      const collidingAdapter = new FilesystemStorageAdapter(tempDir, {
+        dataDir: [hub2, hub3],
+      });
+
+      await expect(
+        collidingAdapter.registerProject({
+          code: 'COLL',
+          name: 'Colliding Hub Project',
+          hub: 'personal-hub',
+        })
+      ).rejects.toThrow(/Hub name collision.*Please specify by unambiguous path/);
+
+      // Resolving with exact path succeeds
+      const exactProj = await collidingAdapter.registerProject({
+        code: 'COLL',
+        name: 'Colliding Hub Project',
+        hub: hub3,
+      });
+      expect(exactProj.code).toBe('COLL');
+      expect(fs.existsSync(path.join(hub3, 'projects', 'COLL', 'project.json'))).toBe(true);
+    });
+
+    it('rejects when specified hub does not match any configured hub', async () => {
+      const hub1 = path.join(tempDir, 'hub-one');
+      fs.mkdirSync(path.join(hub1, 'projects'), { recursive: true });
+      fs.writeFileSync(path.join(hub1, 'projects.json'), '[]', 'utf-8');
+
+      const adapter = new FilesystemStorageAdapter(tempDir, {
+        dataDir: hub1,
+      });
+
+      await expect(
+        adapter.registerProject({
+          code: 'FOO',
+          name: 'Foo Project',
+          hub: 'non-existent-hub',
+        })
+      ).rejects.toThrow(/Hub "non-existent-hub" not found/);
+    });
+
+    it('validates project code up to MAX_PROJECT_CODE_LENGTH (8 characters)', () => {
+      expect(MAX_PROJECT_CODE_LENGTH).toBe(8);
+
+      // Valid 1 to 8 character codes
+      expect(validateProjectCode('P').valid).toBe(true);
+      expect(validateProjectCode('CORE').valid).toBe(true);
+      expect(validateProjectCode('Personal').valid).toBe(true);
+      expect(validateProjectCode('12345678').valid).toBe(true);
+
+      // Invalid: 9 or more characters
+      const overLimit = validateProjectCode('PersonalX');
+      expect(overLimit.valid).toBe(false);
+      expect(overLimit.error).toContain('1 to 8 alphanumeric characters');
+
+      // Invalid characters
+      expect(validateProjectCode('Pers-1').valid).toBe(false);
+      expect(validateProjectCode('Pers_1').valid).toBe(false);
+      expect(validateProjectCode('Pers 1').valid).toBe(false);
+    });
   });
 
   describe('configureWorkspace', () => {
@@ -269,6 +423,297 @@ describe('Project Registration & Configure Onboarding', () => {
       const config = JSON.parse(fs.readFileSync(path.join(customDir, '.esedre', 'esedre.json'), 'utf-8'));
       expect(config.projectCode).toBe('BETA');
       expect(config.port).toBe(5780);
+    });
+
+    it('registers workspaceless project into configured dataDir without overwriting active workspace', () => {
+      const cliPath = path.resolve(__dirname, '..', 'dist', 'esedre.mjs');
+
+      // 1. Create a data hub
+      const hubDir = path.join(tempDir, 'central-hub');
+      fs.mkdirSync(path.join(hubDir, 'projects'), { recursive: true });
+      fs.writeFileSync(path.join(hubDir, 'projects.json'), '[]', 'utf-8');
+
+      // 2. Create an active workspace initialized as "MAIN"
+      const mainWorkspace = path.join(tempDir, 'main-repo');
+      fs.mkdirSync(path.join(mainWorkspace, '.esedre'), { recursive: true });
+      fs.writeFileSync(
+        path.join(mainWorkspace, '.esedre', 'esedre.json'),
+        JSON.stringify({
+          version: '0.1.0',
+          projectCode: 'MAIN',
+          projectName: 'Main Engine',
+          dataDir: '../central-hub',
+        }, null, 2) + '\n',
+        'utf-8'
+      );
+
+      // 3. Run ese init from inside main-repo targeting new project PERS
+      const output = execFileSync(
+        process.execPath,
+        [cliPath, 'init', '--project', 'PERS', '--name', 'Personal Projects', '-y'],
+        {
+          cwd: mainWorkspace,
+          encoding: 'utf-8',
+          env: {
+            ...process.env,
+            ESEDRE_GLOBAL_DIR: path.join(tempDir, 'global-store'),
+          },
+        }
+      );
+
+      expect(output).toContain("Registered project 'PERS' (Personal Projects) in Esedre data hub");
+
+      // 4. Verify main-repo's workspace config was NOT overwritten
+      const mainConfig = JSON.parse(
+        fs.readFileSync(path.join(mainWorkspace, '.esedre', 'esedre.json'), 'utf-8')
+      );
+      expect(mainConfig.projectCode).toBe('MAIN');
+      expect(mainConfig.projectName).toBe('Main Engine');
+
+      // 5. Verify PERS was registered in central-hub
+      const persProjectJson = path.join(hubDir, 'projects', 'PERS', 'project.json');
+      expect(fs.existsSync(persProjectJson)).toBe(true);
+      const persData = JSON.parse(fs.readFileSync(persProjectJson, 'utf-8'));
+      expect(persData.code).toBe('PERS');
+      expect(persData.name).toBe('Personal Projects');
+
+      expect(fs.existsSync(path.join(hubDir, 'projects', 'PERS', 'tickets'))).toBe(true);
+
+      const hubProjects = JSON.parse(fs.readFileSync(path.join(hubDir, 'projects.json'), 'utf-8'));
+      expect(hubProjects.some((p: any) => p.code === 'PERS')).toBe(true);
+    });
+
+    it('CLI disambiguates multi-hub project creation via --hub flag', () => {
+      const cliPath = path.resolve(__dirname, '..', 'dist', 'esedre.mjs');
+
+      // Create two distinct hubs
+      const hub1 = path.join(tempDir, 'team-hub');
+      const hub2 = path.join(tempDir, 'personal-hub');
+      fs.mkdirSync(path.join(hub1, 'projects'), { recursive: true });
+      fs.writeFileSync(path.join(hub1, 'projects.json'), '[]', 'utf-8');
+      fs.mkdirSync(path.join(hub2, 'projects'), { recursive: true });
+      fs.writeFileSync(path.join(hub2, 'projects.json'), '[]', 'utf-8');
+
+      // Create workspace configured with both hubs
+      const repo = path.join(tempDir, 'multi-hub-repo');
+      fs.mkdirSync(path.join(repo, '.esedre'), { recursive: true });
+      fs.writeFileSync(
+        path.join(repo, '.esedre', 'esedre.json'),
+        JSON.stringify({
+          version: '0.1.0',
+          projectCode: 'MREPO',
+          projectName: 'Multi Hub Repo',
+          dataDir: [hub1, hub2],
+        }, null, 2) + '\n',
+        'utf-8'
+      );
+
+      // Execute ese init targeting personal-hub
+      const output = execFileSync(
+        process.execPath,
+        [cliPath, 'init', '--project', 'PHUB', '--name', 'Personal Hub Project', '--hub', 'personal-hub', '-y'],
+        {
+          cwd: repo,
+          encoding: 'utf-8',
+          env: {
+            ...process.env,
+            ESEDRE_GLOBAL_DIR: path.join(tempDir, 'global-store-multi'),
+          },
+        }
+      );
+
+      expect(output).toContain("Registered project 'PHUB' (Personal Hub Project) in Esedre data hub");
+      expect(fs.existsSync(path.join(hub2, 'projects', 'PHUB', 'project.json'))).toBe(true);
+      expect(fs.existsSync(path.join(hub1, 'projects', 'PHUB', 'project.json'))).toBe(false);
+    });
+
+    it('CLI rejects multi-hub project creation when --hub flag is omitted and lists available hubs', () => {
+      const cliPath = path.resolve(__dirname, '..', 'dist', 'esedre.mjs');
+
+      const hub1 = path.join(tempDir, 'hub-alpha');
+      const hub2 = path.join(tempDir, 'hub-beta');
+      fs.mkdirSync(path.join(hub1, 'projects'), { recursive: true });
+      fs.writeFileSync(path.join(hub1, 'projects.json'), '[]', 'utf-8');
+      fs.mkdirSync(path.join(hub2, 'projects'), { recursive: true });
+      fs.writeFileSync(path.join(hub2, 'projects.json'), '[]', 'utf-8');
+
+      const repo = path.join(tempDir, 'ambiguous-repo');
+      fs.mkdirSync(path.join(repo, '.esedre'), { recursive: true });
+      fs.writeFileSync(
+        path.join(repo, '.esedre', 'esedre.json'),
+        JSON.stringify({
+          version: '0.1.0',
+          projectCode: 'AMBIG',
+          dataDir: [hub1, hub2],
+        }, null, 2) + '\n',
+        'utf-8'
+      );
+
+      let threw = false;
+      try {
+        execFileSync(
+          process.execPath,
+          [cliPath, 'init', '--project', 'FAILP', '-y'],
+          {
+            cwd: repo,
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: {
+              ...process.env,
+              ESEDRE_GLOBAL_DIR: path.join(tempDir, 'global-store-fail'),
+            },
+          }
+        );
+      } catch (err: any) {
+        threw = true;
+        expect(err.status).toBe(1);
+        const stderr = err.stderr ? err.stderr.toString() : '';
+        expect(stderr).toContain('Multiple data hubs configured. Please specify --hub');
+        expect(stderr).toContain('hub-alpha');
+        expect(stderr).toContain('hub-beta');
+      }
+      expect(threw).toBe(true);
+    });
+
+    it('CLI inside a data hub directory registers project without creating .esedre/esedre.json in hub', () => {
+      const cliPath = path.resolve(__dirname, '..', 'dist', 'esedre.mjs');
+
+      const standaloneHub = path.join(tempDir, 'standalone-hub');
+      fs.mkdirSync(path.join(standaloneHub, 'projects'), { recursive: true });
+      fs.writeFileSync(path.join(standaloneHub, 'projects.json'), '[]', 'utf-8');
+
+      const output = execFileSync(
+        process.execPath,
+        [cliPath, 'init', '--project', 'INDIR', '--name', 'Inside Hub Project', '-y'],
+        {
+          cwd: standaloneHub,
+          encoding: 'utf-8',
+          env: {
+            ...process.env,
+            ESEDRE_GLOBAL_DIR: path.join(tempDir, 'global-store-hub'),
+          },
+        }
+      );
+
+      expect(output).toContain("Registered project 'INDIR' (Inside Hub Project) in Esedre data hub");
+      expect(fs.existsSync(path.join(standaloneHub, 'projects', 'INDIR', 'project.json'))).toBe(true);
+      // Ensure .esedre/esedre.json was NOT created in the hub root
+      expect(fs.existsSync(path.join(standaloneHub, '.esedre', 'esedre.json'))).toBe(false);
+    });
+
+    it('CLI supports --json mode for workspaceless project registration', () => {
+      const cliPath = path.resolve(__dirname, '..', 'dist', 'esedre.mjs');
+
+      const jsonHub = path.join(tempDir, 'json-hub');
+      fs.mkdirSync(path.join(jsonHub, 'projects'), { recursive: true });
+      fs.writeFileSync(path.join(jsonHub, 'projects.json'), '[]', 'utf-8');
+
+      const output = execFileSync(
+        process.execPath,
+        [cliPath, 'init', '--project', 'JSONP', '--name', 'JSON Project', '--hub', jsonHub, '-y', '--json'],
+        {
+          cwd: tempDir,
+          encoding: 'utf-8',
+          env: {
+            ...process.env,
+            ESEDRE_GLOBAL_DIR: path.join(tempDir, 'global-store-json'),
+          },
+        }
+      );
+
+      const parsed = JSON.parse(output.trim());
+      expect(parsed.project.code).toBe('JSONP');
+      expect(parsed.project.name).toBe('JSON Project');
+      expect(parsed.registeredInHub).toBe(true);
+      expect(parsed.commands.create).toContain('ese create');
+      expect(parsed.commands.list).toContain('ese list');
+    });
+
+    it('storage adapter detects and warns on duplicate project codes across hubs', async () => {
+      const hub1 = path.join(tempDir, 'warn-hub-1');
+      const hub2 = path.join(tempDir, 'warn-hub-2');
+      fs.mkdirSync(path.join(hub1, 'projects', 'DUP', 'tickets'), { recursive: true });
+      fs.writeFileSync(path.join(hub1, 'projects.json'), '[]', 'utf-8');
+      fs.mkdirSync(path.join(hub2, 'projects', 'DUP', 'tickets'), { recursive: true });
+      fs.writeFileSync(path.join(hub2, 'projects.json'), '[]', 'utf-8');
+
+      const adapter = new FilesystemStorageAdapter(tempDir, {
+        dataDir: [hub1, hub2],
+      });
+
+      const warnings = adapter.getDuplicateProjectWarnings();
+      expect(warnings.length).toBe(1);
+      expect(warnings[0].code.toUpperCase()).toBe('DUP');
+      expect(warnings[0].firstHub).toBe(hub1);
+      expect(warnings[0].duplicateHub).toBe(hub2);
+    });
+
+    it('rejects registering a project code that already exists in another hub', async () => {
+      const hub1 = path.join(tempDir, 'exist-hub-1');
+      const hub2 = path.join(tempDir, 'exist-hub-2');
+      fs.mkdirSync(path.join(hub1, 'projects'), { recursive: true });
+      fs.writeFileSync(path.join(hub1, 'projects.json'), '[]', 'utf-8');
+      fs.mkdirSync(path.join(hub2, 'projects'), { recursive: true });
+      fs.writeFileSync(path.join(hub2, 'projects.json'), '[]', 'utf-8');
+
+      const adapter = new FilesystemStorageAdapter(tempDir, {
+        dataDir: [hub1, hub2],
+      });
+
+      // Register CODE in hub1
+      await adapter.registerProject({
+        code: 'UNIQUE',
+        name: 'Unique Project',
+        hub: hub1,
+      });
+
+      // Attempt to register same CODE in hub2
+      await expect(
+        adapter.registerProject({
+          code: 'UNIQUE',
+          name: 'Conflicting Project',
+          hub: hub2,
+        })
+      ).rejects.toThrow(/already exists in another data hub \(exist-hub-1\).*Duplicate project codes across hubs are not supported/);
+    });
+
+    it('CLI warns on duplicate project codes across hubs during ese projects', () => {
+      const cliPath = path.resolve(__dirname, '..', 'dist', 'esedre.mjs');
+
+      const hub1 = path.join(tempDir, 'cli-warn-hub-1');
+      const hub2 = path.join(tempDir, 'cli-warn-hub-2');
+      fs.mkdirSync(path.join(hub1, 'projects', 'CLIDUP', 'tickets'), { recursive: true });
+      fs.writeFileSync(path.join(hub1, 'projects.json'), '[]', 'utf-8');
+      fs.mkdirSync(path.join(hub2, 'projects', 'CLIDUP', 'tickets'), { recursive: true });
+      fs.writeFileSync(path.join(hub2, 'projects.json'), '[]', 'utf-8');
+
+      const repo = path.join(tempDir, 'cli-warn-repo');
+      fs.mkdirSync(path.join(repo, '.esedre'), { recursive: true });
+      fs.writeFileSync(
+        path.join(repo, '.esedre', 'esedre.json'),
+        JSON.stringify({
+          version: '0.1.0',
+          projectCode: 'WARNREPO',
+          dataDir: [hub1, hub2],
+        }, null, 2) + '\n',
+        'utf-8'
+      );
+
+      const output = execFileSync(
+        process.execPath,
+        [cliPath, 'projects'],
+        {
+          cwd: repo,
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: {
+            ...process.env,
+            ESEDRE_GLOBAL_DIR: path.join(tempDir, 'global-store-cli-warn'),
+          },
+        }
+      );
+
+      expect(output).toContain('CLIDUP');
     });
   });
 });

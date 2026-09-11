@@ -13,7 +13,7 @@
 
 ---
 
-## 2. Per-Project Sequential Numbering Convention
+## 2. Per-Project Sequential Numbering & Case-Remembering Convention
 
 1. **Per-Project Numbering Space (Starts at #1)**:
    - Ticket numbers are sequential per project (e.g. `Profe-1..105`, `Esedre-1..8`, `Alce-1..`).
@@ -23,6 +23,11 @@
    - **Cross-Project & All-Projects View**: Formatted with the project code prefix: `<ProjectCode>-<id>` (e.g. `Prof-35`, `Esedre-1`, `Alce-1`).
    - **Project-Scoped View**: Inside a single project view or CLI run with `--project <Code>`, formatted as `#<id>` (e.g. `#35`, `#1`).
    - **CLI & MCP Tool Lookups**: The CLI (`ese get`, `ese plan`, `ese update`, `ese comment`) and MCP tools accept both prefixed keys (`ese get Prof-35`, `ese get Esedre-1`) and numeric IDs (`ese get 1 --project Esedre`, or `ese get 1` when scoped to the active workspace project).
+
+3. **Case-Remembering Casing & Case-Insensitive Matching Invariant**:
+   - **Case-Remembering on Registration & Storage**: Project codes are up to 8 alphanumeric characters (`^[a-zA-Z0-9]{1,8}$`). The original casing provided at project registration (e.g. `Personal`, `Esedre`, `Prof`) is canonical. Storage directories (e.g. `projects/Personal/`) and metadata manifests (`project.json`, `projects.json`, `meta.json`) permanently preserve this canonical casing. Re-registering or configuring a project preserves the existing remembered casing instead of overwriting it with different casing. Ticket metadata (`meta.project`) always stamps the canonical remembered casing.
+   - **Case-Insensitive on Lookups, Matching & Security**: All ticket lookups, project queries, CLI arguments, MCP tool calls, filters, and Agent Project Allow-List checks (`allowedProjects`) are strictly case-insensitive. Lookups such as `ese get personal-1`, `ese get PERSONAL-1`, and `ese get Personal-1` resolve identically to ticket `#1` in `Personal`.
+   - **Linux & Cross-Platform Filesystem Normalization**: When resolving project directories on disk, the storage engine inspects existing entries in `projects/` case-insensitively and reuses the existing directory name. This prevents creating split duplicate directories (e.g. `projects/Personal/` vs `projects/personal/`) on case-sensitive filesystems like Linux ext4/XFS and Docker containers.
 
 ---
 
@@ -82,7 +87,7 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
    - **Upward Resolution & Merging**: The CLI and MCP server crawl upward from `cwd` for `.esedre/esedre.json`. Local workspace settings take precedence, while infrastructure defaults (`dataDir`, `projects`, `port`) automatically inherit from `~/.esedre/config.json` when omitted locally. Outside any workspace, the central global configuration is used directly.
 
 2. **Command Split: `ese init` vs `ese configure`**:
-   - `ese init [path]`: Brings a project repository online (creates `.esedre/esedre.json`, wrappers, initial snapshot) or bootstraps a data hub repository (`ese init --hub`).
+   - `ese init [path]`: Brings a project repository online (creates `.esedre/esedre.json`, wrappers, initial snapshot) or bootstraps a data hub repository (`ese init --hub`). Also supports workspaceless or data hub-targeted project creation via `ese init --project <Code> [--name <Name>] [--hub <hub>]`. When a single `dataDir` is configured, `--hub` is automatically resolved; when multiple hubs are configured, `--hub` disambiguates the target hub by directory basename or path without overwriting existing workspace configurations.
    - `ese configure`: Inspects and mutates the central configuration in `~/.esedre/config.json` (`ese configure add <path>`, `ese configure remove <target>`, `ese configure set <k> <v>`).
 
 3. **Multi-Project Agent Isolation (Zero Cross-Project Leaks)**:

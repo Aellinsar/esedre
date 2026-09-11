@@ -28,7 +28,7 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 
 | Command | Syntax | Description |
 |---|---|---|
-| `init` | `esedre init [path] [--hub] [--project <code>] [--name "<name>"]` | Brings a repository online (creates `.esedre/esedre.json`, wrappers, initial snapshot) or bootstraps a data hub (`--hub`). |
+| `init` | `esedre init [path] [--hub <name\|path>] [--project <code>] [--name "<name>"]` | Brings a repository online (creates `.esedre/esedre.json`, wrappers, initial snapshot), bootstraps a data hub (`--hub`), or registers a project directly into a data hub (`--project <code> [--hub <name\|path>]`). |
 | `configure` | `esedre configure [add <path> \| remove <code\|path> \| set <k> <v>]` | Inspects or mutates central configuration in `~/.esedre/config.json`. |
 | `start` | `esedre start [--port <n>] [--foreground | -f] [--quiet] [--json]` | Starts the background server daemon (or foreground with `-f`). |
 | `stop` | `esedre stop [--port <n>] [--quiet] [--json]` | Stops the running background server daemon. |

@@ -564,7 +564,10 @@ export function configureWorkspace(targetDir: string, options: ConfigureOptions 
   }
 
   let config: EsedreConfig;
-  const projectCode = options.projectCode || existingRaw?.projectCode;
+  let projectCode = options.projectCode || existingRaw?.projectCode;
+  if (existingRaw?.projectCode && options.projectCode && existingRaw.projectCode.toLowerCase() === options.projectCode.toLowerCase()) {
+    projectCode = existingRaw.projectCode;
+  }
   const projectName = options.projectName || existingRaw?.projectName || (projectCode ? projectCode : undefined);
   const dataDir = options.dataDir !== undefined ? options.dataDir : existingRaw?.dataDir;
 

@@ -296,4 +296,25 @@ describe('Esedre REST API Server', () => {
     expect(res.status).toBe(200);
     expect(res.json().projectCode).toBe('Core');
   });
+
+  it('POST /api/planning/create-project registers a project with 8-character code', async () => {
+    const res = await request(`${baseUrl}/api/planning/create-project`, 'POST', {
+      code: 'Personal',
+      name: 'Personal Projects',
+      description: 'Personal tasks and goals',
+    });
+    expect(res.status).toBe(201);
+    const body = res.json();
+    expect(body.code).toBe('Personal');
+    expect(body.name).toBe('Personal Projects');
+  });
+
+  it('POST /api/planning/create-project rejects project codes longer than 8 characters', async () => {
+    const res = await request(`${baseUrl}/api/planning/create-project`, 'POST', {
+      code: 'PersonalX',
+      name: 'Personal Projects Extra',
+    });
+    expect(res.status).toBe(400);
+    expect(res.json().error).toContain('1 to 8 alphanumeric characters');
+  });
 });

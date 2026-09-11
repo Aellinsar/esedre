@@ -12,7 +12,7 @@ function isProjectMatch(code: string, slug: string, filter: string): boolean {
 import fs from 'node:fs';
 import path from 'node:path';
 import { EsedreTicket, TicketMeta, ProjectDescriptor, TicketComment, TicketDetail, TicketType, TicketCategory, EsedreConflictError } from '../types.js';
-import { StorageAdapter, CreateTicketInput, ListTicketsFilter, RegisterProjectInput } from './adapter.js';
+import { StorageAdapter, CreateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './adapter.js';
 import { EsedreConfig, findEsedreConfig, expandHome } from '../config.js';
 import { computeTicketHash, verifyTicketHash } from '../snapshot.js';
 
@@ -45,6 +45,12 @@ export interface ResolvedProjectLocation {
 export class FilesystemStorageAdapter implements StorageAdapter {
   private workspaceRoot: string;
   private config: EsedreConfig;
+  private duplicateProjectWarnings: DuplicateProjectWarning[] = [];
+
+  public getDuplicateProjectWarnings(): DuplicateProjectWarning[] {
+    this.resolveProjectLocations();
+    return [...this.duplicateProjectWarnings];
+  }
 
   constructor(workspaceRoot?: string, config?: EsedreConfig) {
     this.workspaceRoot = workspaceRoot || this.resolveWorkspaceRoot();
@@ -85,6 +91,8 @@ export class FilesystemStorageAdapter implements StorageAdapter {
   public resolveProjectLocations(): ResolvedProjectLocation[] {
     const locations: ResolvedProjectLocation[] = [];
     const seenCodes = new Set<string>();
+    const codeToSource = new Map<string, string>();
+    this.duplicateProjectWarnings = [];
 
     // 1. Hub Directories from config.dataDir or auto-detected in-workspace hub
     const rawDataDirs = Array.isArray(this.config.dataDir)
@@ -165,14 +173,27 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           }
 
           const codeKey = desc.code.toLowerCase();
+          const sourceName = resolvedHub;
           if (!seenCodes.has(codeKey)) {
             seenCodes.add(codeKey);
+            codeToSource.set(codeKey, sourceName);
             locations.push({
               project: desc,
               ticketsDir: projectTicketsDir,
               sourceType: 'hub',
               hubDir: resolvedHub,
             });
+          } else {
+            const firstSource = codeToSource.get(codeKey) || 'configured location';
+            if (firstSource.toLowerCase() !== sourceName.toLowerCase()) {
+              if (!this.duplicateProjectWarnings.some((w) => w.code.toLowerCase() === codeKey && w.duplicateHub.toLowerCase() === sourceName.toLowerCase())) {
+                this.duplicateProjectWarnings.push({
+                  code: desc.code,
+                  firstHub: firstSource,
+                  duplicateHub: sourceName,
+                });
+              }
+            }
           }
         }
       } else {
@@ -208,8 +229,10 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         const isShared = descs.length > 1;
         for (const desc of descs) {
           const codeKey = desc.code.toLowerCase();
+          const sourceName = resolvedHub;
           if (!seenCodes.has(codeKey)) {
             seenCodes.add(codeKey);
+            codeToSource.set(codeKey, sourceName);
             locations.push({
               project: desc,
               ticketsDir: actualTicketsDir,
@@ -217,6 +240,17 @@ export class FilesystemStorageAdapter implements StorageAdapter {
               hubDir: resolvedHub,
               isSharedDir: isShared,
             });
+          } else {
+            const firstSource = codeToSource.get(codeKey) || 'configured location';
+            if (firstSource.toLowerCase() !== sourceName.toLowerCase()) {
+              if (!this.duplicateProjectWarnings.some((w) => w.code.toLowerCase() === codeKey && w.duplicateHub.toLowerCase() === sourceName.toLowerCase())) {
+                this.duplicateProjectWarnings.push({
+                  code: desc.code,
+                  firstHub: firstSource,
+                  duplicateHub: sourceName,
+                });
+              }
+            }
           }
         }
       }
@@ -265,13 +299,26 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         }
 
         const codeKey = desc.code.toLowerCase();
+        const sourceName = projectDir;
         if (!seenCodes.has(codeKey)) {
           seenCodes.add(codeKey);
+          codeToSource.set(codeKey, sourceName);
           locations.push({
             project: desc,
             ticketsDir: actualTicketsDir,
             sourceType: 'federated',
           });
+        } else {
+          const firstSource = codeToSource.get(codeKey) || 'configured location';
+          if (firstSource.toLowerCase() !== sourceName.toLowerCase()) {
+            if (!this.duplicateProjectWarnings.some((w) => w.code.toLowerCase() === codeKey && w.duplicateHub.toLowerCase() === sourceName.toLowerCase())) {
+              this.duplicateProjectWarnings.push({
+                code: desc.code,
+                firstHub: firstSource,
+                duplicateHub: sourceName,
+              });
+            }
+          }
         }
       }
     }
@@ -387,18 +434,98 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       }
     }
 
-    let targetHub: string | null = null;
+    const existingHubs: string[] = [];
     for (const dDir of rawDataDirs) {
       const resolved = path.resolve(this.workspaceRoot, expandHome(dDir));
-      if (fs.existsSync(resolved)) {
-        targetHub = resolved;
-        break;
+      if (fs.existsSync(resolved) && !existingHubs.includes(resolved)) {
+        existingHubs.push(resolved);
+      }
+    }
+
+    let targetHub: string | null = null;
+    if (input.hub) {
+      const targetQuery = input.hub.trim();
+      const resolvedQuery = path.resolve(this.workspaceRoot, expandHome(targetQuery)).toLowerCase();
+      const isPathLike = targetQuery.includes('/') || targetQuery.includes('\\');
+      const basenameMatches = existingHubs.filter(
+        (h) => path.basename(h).toLowerCase() === targetQuery.toLowerCase()
+      );
+
+      if (!isPathLike && basenameMatches.length > 1) {
+        const list = basenameMatches.map((h) => `  • ${h}`).join('\n');
+        throw new Error(
+          `Hub name collision: Multiple configured data hubs share basename "${targetQuery}". Please specify by unambiguous path:\n${list}`
+        );
+      } else if (basenameMatches.length === 1 && !isPathLike) {
+        targetHub = basenameMatches[0];
+      } else {
+        const exactPathMatch = existingHubs.find((h) => h.toLowerCase() === resolvedQuery);
+        if (exactPathMatch) {
+          targetHub = exactPathMatch;
+        } else if (basenameMatches.length === 1) {
+          targetHub = basenameMatches[0];
+        } else {
+          const directHubPath = path.resolve(this.workspaceRoot, expandHome(targetQuery));
+          if (
+            fs.existsSync(directHubPath) &&
+            (fs.existsSync(path.join(directHubPath, 'projects')) || fs.existsSync(path.join(directHubPath, 'projects.json')))
+          ) {
+            targetHub = directHubPath;
+          } else {
+            const available = existingHubs.map((h) => `${path.basename(h)} (${h})`).join(', ');
+            throw new Error(
+              `Hub "${targetQuery}" not found. Configured data hubs: ${available || '(none)'}`
+            );
+          }
+        }
+      }
+    } else {
+      if (existingHubs.length === 1) {
+        targetHub = existingHubs[0];
+      } else if (existingHubs.length > 1) {
+        const basenames = existingHubs.map((h) => path.basename(h));
+        const hasCollision = new Set(basenames.map((b) => b.toLowerCase())).size < basenames.length;
+        const formattedList = existingHubs.map((h) => `  • ${path.basename(h)} (${h})`).join('\n');
+        throw new Error(
+          `Multiple data hubs configured. Please specify --hub <name${hasCollision ? '|path' : ''}>:\n${formattedList}`
+        );
       }
     }
 
     if (targetHub) {
+      const normalizedTargetHub = path.resolve(targetHub).toLowerCase();
+      const existingLocations = this.resolveProjectLocations();
+      const existingConflict = existingLocations.find((l) => {
+        if (l.project.code.toLowerCase() !== slug) return false;
+        if (l.sourceType === 'hub' && l.hubDir) {
+          return path.resolve(l.hubDir).toLowerCase() !== normalizedTargetHub;
+        }
+        return false;
+      });
+      if (existingConflict && existingConflict.hubDir) {
+        const conflictLoc = path.basename(existingConflict.hubDir);
+        throw new Error(
+          `Project code "${cleanCode}" already exists in another data hub (${conflictLoc}). Duplicate project codes across hubs are not supported.`
+        );
+      }
+
       const hubProjectsDir = path.join(targetHub, 'projects');
-      const projectDir = path.join(hubProjectsDir, cleanCode);
+      let resolvedDirName = cleanCode;
+
+      // Case-remembering directory resolution: match existing directory case-insensitively
+      if (fs.existsSync(hubProjectsDir)) {
+        try {
+          const entries = fs.readdirSync(hubProjectsDir, { withFileTypes: true });
+          const matchedDir = entries.find(
+            (e) => e.isDirectory() && e.name.toLowerCase() === slug
+          );
+          if (matchedDir) {
+            resolvedDirName = matchedDir.name;
+          }
+        } catch {}
+      }
+
+      const projectDir = path.join(hubProjectsDir, resolvedDirName);
       const ticketsDir = path.join(projectDir, 'tickets');
       if (!fs.existsSync(ticketsDir)) {
         fs.mkdirSync(ticketsDir, { recursive: true });
@@ -410,12 +537,15 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         try { existingPJson = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8')); } catch {}
       }
 
+      // Case-remembering code resolution: preserve original code casing if project already exists
+      const resolvedCode = existingPJson?.code || resolvedDirName || cleanCode;
+
       const existingProjects = await this.getProjects();
       const maxId = existingProjects.reduce((max, p) => Math.max(max, p.id || 0), 0);
       const id = existingPJson?.id || (maxId + 1);
       const projectDesc: ProjectDescriptor = {
         id,
-        code: cleanCode,
+        code: resolvedCode,
         slug,
         name: cleanName,
         description: cleanDesc,
@@ -454,10 +584,14 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       try { existingPJson = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8')); } catch {}
     }
 
+    const resolvedCode = (existingPJson?.code && existingPJson.code.toLowerCase() === slug)
+      ? existingPJson.code
+      : cleanCode;
+
     const id = existingPJson?.id || 1;
     const projectDesc: ProjectDescriptor = {
       id,
-      code: cleanCode,
+      code: resolvedCode,
       slug,
       name: cleanName,
       description: cleanDesc,
@@ -490,7 +624,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     const strId = String(id).trim();
 
     // Check if prefixed with project code (e.g. "Prof-35", "Esedre-1", "Prof_35", "Prof:35")
-    const prefixMatch = strId.match(/^([a-zA-Z0-9]{1,7})[-_:](\d+)$/i);
+    const prefixMatch = strId.match(/^([a-zA-Z0-9]{1,8})[-_:](\d+)$/i);
     if (prefixMatch) {
       const code = prefixMatch[1].toLowerCase();
       const num = parseInt(prefixMatch[2], 10);
@@ -923,6 +1057,7 @@ ${input.summary || 'Summary to be defined.'}
       ...existing.meta,
       ...updates,
       id: locInfo.id,
+      project: locInfo.loc.project.code,
       updatedAt: now,
       completedAt,
       revision,

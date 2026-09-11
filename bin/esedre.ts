@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { FilesystemStorageAdapter } from '../src/storage/filesystem.js';
+import { StorageAdapter } from '../src/storage/adapter.js';
 import { SecurityFilter } from '../src/securityFilter.js';
 import { formatTicketListTable, formatTicketDetail, colors } from '../src/utils/formatter.js';
 import { EsedreMcpServer } from '../src/mcp/server.js';
@@ -96,12 +97,14 @@ ${colors.bold}SERVICE DAEMON COMMANDS:${colors.reset}
   ${colors.bold}mcp${colors.reset}         Start the Model Context Protocol (MCP) JSON-RPC 2.0 stdio server for autonomous LLM coding agents.
 
 ${colors.bold}DEVELOPER ADMINISTRATION (Human Setup & Configuration):${colors.reset}
-  ${colors.bold}init${colors.reset}        [<path>] [--project <code>] [-n|--name <name>] [--allow <c1,c2>] [--port <n>] [--hub] [--proxy] [--no-proxy] [-y|--yes] [--json]
-               Bring a project repository online (.esedre footprint, wrappers, snapshot) or bootstrap a data hub (--hub).
+  ${colors.bold}init${colors.reset}        [<path>] [--project <code>] [-n|--name <name>] [--hub <name|path>] [--allow <c1,c2>] [--port <n>] [-y|--yes] [--json]
+               Bring a project repository online (.esedre footprint, wrappers, snapshot), bootstrap a data hub (--hub), or register a project directly into an Esedre ticket data hub (--project <code>).
+               • In-repo workspace: ese init (creates .esedre/esedre.json in current directory)
+               • Data hub project:  ese init --project <code> --name "<name>" (creates project in configured dataDir hub)
 
   ${colors.bold}configure${colors.reset}   [add <path> | remove <code|path> | set <key> <val> | get <key>] [--json]
                Inspect or mutate central Esedre configuration (~/.esedre/config.json).
-               • add <path>       Smart-detect and link a data hub or project repository
+               • add <path>       Link an external project repository (federated projects map) or register a data hub (dataDir)
                • remove <target>  Unlink a project or data hub
                • set <key> <val>  Update a central configuration setting
 
@@ -188,6 +191,16 @@ function parseArgs(rawArgs: string[]): { command: string; positionals: string[];
   return { command, positionals, flags };
 }
 
+function printDuplicateProjectWarnings(storage: StorageAdapter, isJson: boolean): void {
+  if (isJson) return;
+  const warnings = storage.getDuplicateProjectWarnings ? storage.getDuplicateProjectWarnings() : [];
+  for (const warn of warnings) {
+    console.error(
+      `${colors.yellow}⚠️  Warning: Duplicate project code '${warn.code}' detected across multiple data hubs (${path.basename(warn.firstHub)} and ${path.basename(warn.duplicateHub)}). Duplicate project codes across hubs are not supported; only '${path.basename(warn.firstHub)}' is active.${colors.reset}`
+    );
+  }
+}
+
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   const { command, positionals, flags } = parseArgs(rawArgs);
@@ -221,10 +234,13 @@ async function main(): Promise<void> {
   try {
     switch (command) {
       case 'init': {
-        const targetDir = positionals[0] ? path.resolve(positionals[0]) : discovered.workspaceRoot;
-        const isHub = Boolean(flags['hub']);
+        const rawTarget = positionals[0];
+        const targetDir = rawTarget ? path.resolve(rawTarget) : discovered.workspaceRoot;
+        const rawHubFlag = flags['hub'];
+        const hubArg = typeof rawHubFlag === 'string' ? rawHubFlag : undefined;
+        const isHubRequested = Boolean(rawHubFlag);
 
-        if (isHub) {
+        if (isHubRequested && !flags['project'] && !flags['p']) {
           const hubRes = initHub(targetDir);
           try {
             addLocationToGlobalConfig(targetDir);
@@ -309,27 +325,73 @@ async function main(): Promise<void> {
           process.exit(1);
         }
 
-        // Register project in Esedre if not already registered (or update display name)
-        const existingProjects = await storage.getProjects();
-        const existing = existingProjects.find(
-          (p) => p.code.toLowerCase() === projectCode!.toLowerCase()
-        );
+        // Detect workspaceless project registration into a data hub
+        const isTargetHub =
+          fs.existsSync(path.join(targetDir, 'projects.json')) ||
+          (fs.existsSync(path.join(targetDir, 'projects')) && !fs.existsSync(path.join(targetDir, '.esedre', 'esedre.json')));
+        const isWorkspaceless =
+          isHubRequested ||
+          isTargetHub ||
+          (Boolean(discovered.config?.projectCode) && !rawTarget && discovered.config?.projectCode?.toLowerCase() !== projectCode.toLowerCase());
+
         let projectNewlyRegistered = false;
         let registeredProj: ProjectDescriptor;
-        if (!existing) {
-          registeredProj = await rawStorage.registerProject({
-            code: projectCode!,
-            name: projectName,
-          });
-          projectNewlyRegistered = true;
-        } else {
-          registeredProj = existing;
-          if (flags['name'] || flags['n']) {
+        try {
+          const existingProjects = await storage.getProjects();
+          const existing = existingProjects.find(
+            (p) => p.code.toLowerCase() === projectCode!.toLowerCase()
+          );
+          if (!existing) {
             registeredProj = await rawStorage.registerProject({
               code: projectCode!,
               name: projectName,
+              hub: hubArg,
             });
+            projectNewlyRegistered = true;
+          } else {
+            registeredProj = existing;
+            if (flags['name'] || flags['n']) {
+              registeredProj = await rawStorage.registerProject({
+                code: projectCode!,
+                name: projectName,
+                hub: hubArg,
+              });
+            }
           }
+        } catch (err: any) {
+          console.error(`${colors.red}Error: ${err.message}${colors.reset}`);
+          process.exit(1);
+        }
+
+        if (isWorkspaceless) {
+          if (isJson) {
+            console.log(JSON.stringify({
+              project: registeredProj,
+              projectNewlyRegistered,
+              registeredInHub: true,
+              commands: {
+                create: `ese create --title "..." --project ${registeredProj.code}`,
+                list: `ese list --project ${registeredProj.code}`,
+              },
+            }, null, 2));
+          } else {
+            if (projectNewlyRegistered) {
+              console.log(`${colors.bold}${colors.green}✔ Registered project '${registeredProj.code}' (${registeredProj.name}) in Esedre data hub!${colors.reset}`);
+            } else {
+              console.log(`${colors.bold}${colors.green}✔ Verified project '${registeredProj.code}' (${registeredProj.name}) in Esedre data hub!${colors.reset}`);
+            }
+            console.log(`  • Code: ${registeredProj.code}`);
+            console.log(`  • Name: ${registeredProj.name}`);
+            if (registeredProj.description) {
+              console.log(`  • Description: ${registeredProj.description}`);
+            }
+            console.log(`\n${colors.bold}Next Steps:${colors.reset}`);
+            console.log(`  1. Create your first ticket:`);
+            console.log(`     ${colors.cyan}ese create --title "First feature" --type Feature --project ${registeredProj.code}${colors.reset}`);
+            console.log(`  2. Inspect roadmap & tickets:`);
+            console.log(`     ${colors.cyan}ese list --project ${registeredProj.code}${colors.reset}`);
+          }
+          return;
         }
 
         const allowedProjects = allowArg
@@ -579,10 +641,12 @@ async function main(): Promise<void> {
         }
 
         console.log(`\n${colors.bold}Commands:${colors.reset}`);
-        console.log(`  • Link a hub or project:   ${colors.cyan}ese configure add <path>${colors.reset}`);
-        console.log(`  • Unlink a project or hub: ${colors.cyan}ese configure remove <code|path>${colors.reset}`);
-        console.log(`  • Set setting value:       ${colors.cyan}ese configure set <key> <value>${colors.reset}`);
-        console.log(`  • Bring new repo online:   ${colors.cyan}ese init [path]${colors.reset}`);
+        console.log(`  • Link external repository: ${colors.cyan}ese configure add <repoPath>${colors.reset}`);
+        console.log(`  • Register a data hub:      ${colors.cyan}ese configure add <hubPath>${colors.reset}`);
+        console.log(`  • Create hub project:       ${colors.cyan}ese init --project <code> --name "<name>"${colors.reset}`);
+        console.log(`  • Unlink a project or hub:  ${colors.cyan}ese configure remove <code|path>${colors.reset}`);
+        console.log(`  • Set setting value:        ${colors.cyan}ese configure set <key> <value>${colors.reset}`);
+        console.log(`  • Bring new repo online:    ${colors.cyan}ese init [path]${colors.reset}`);
         return;
       }
 
@@ -651,6 +715,7 @@ async function main(): Promise<void> {
       }
 
       case 'start': {
+        printDuplicateProjectWarnings(storage, isJson);
         const flagPort = flags['port'] ? parseInt(String(flags['port']), 10) : undefined;
         const ports = resolvePorts(discovered.config, { port: flagPort });
         const port = ports.gateway;
@@ -700,6 +765,7 @@ async function main(): Promise<void> {
       }
 
       case 'status': {
+        printDuplicateProjectWarnings(storage, isJson);
         const flagPort = flags['port'] ? parseInt(String(flags['port']), 10) : undefined;
         const port = resolvePorts(discovered.config, { port: flagPort }).gateway;
         const status = await getDaemonStatus({ port, workspaceRoot: discovered.workspaceRoot });
@@ -739,6 +805,7 @@ async function main(): Promise<void> {
       }
 
       case 'projects': {
+        printDuplicateProjectWarnings(storage, isJson);
         const projects = await storage.getProjects();
         if (isJson) {
           console.log(JSON.stringify(projects, null, 2));
@@ -752,6 +819,7 @@ async function main(): Promise<void> {
       }
 
       case 'list': {
+        printDuplicateProjectWarnings(storage, isJson);
         const rawProject = flags['project'] as string;
         const project = rawProject === 'all' ? undefined : (rawProject || discovered.config?.projectCode || undefined);
         const status = (flags['status'] as TicketStatus) || undefined;

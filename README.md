@@ -137,11 +137,31 @@ Commands for repository onboarding, central machine linking, and maintenance:
 
 | Command | Usage | Description |
 |---|---|---|
-| `init` | `ese init [<path>] [--project <code>] [--name <name>] [--hub] [-y]` | Bring a project repository online or bootstrap a dedicated data hub. |
-| `configure` | `ese configure [add <path> \| remove <target> \| set <k> <v>]` | Inspect or mutate central Esedre configuration (`~/.esedre/config.json`). |
+| `init` | `ese init [<path>] [--project <code>] [--name <name>] [--hub <name\|path>] [-y]` | Bring a project repository online, bootstrap a dedicated data hub (`--hub`), or create a project directly in a data hub (`--project <code>`). |
+| `configure` | `ese configure [add <path> \| remove <code\|path> \| set <k> <v>]` | Inspect or mutate central configuration (`~/.esedre/config.json`). Link external project repositories or data hubs. |
 | `upgrade` | `ese upgrade [<path>] [--force \| -f]` | Upgrade workspace configuration schema, in-repo wrappers, and agent skills. |
 
 > **Human vs LLM Agent Workflows**: Developer Administration commands (`init`, `configure`, `upgrade`) manage system-level repository linking and central machine configuration. They are intended for human developers during initial setup. Autonomous LLM coding partners operate within the authorized workspace scope using Roadmap and Service Daemon commands (`list`, `get`, `plan`, `create`, `update`, `comment`, `snapshot`, `start`, `status`).
+
+#### Linking External Repositories vs Data Hub Projects
+
+Esedre cleanly separates external repository linking from centralized data hub projects:
+* **Link Existing Repositories (`ese configure add <repoPath>`)**: Registers an external code repository in your central `projects` map (`~/.esedre/config.json`) for federated multi-repo workflows.
+* **Create Data Hub Projects (`ese init --project <code> [--name "<name>"] [--hub <hub>]`)**: Registers a non-development or standalone project directly inside your configured ticket data hub (`dataDir`). When multiple data hubs exist, pass `--hub <name|path>` to disambiguate.
+
+#### Unique Project Codes Across Data Hubs
+
+Project codes must be unique across all configured data hubs. Esedre does not support duplicate project codes across data hubs. If duplicate project codes are detected across multiple hubs:
+* The storage engine loads only the first registered location.
+* The CLI issues a warning notifying you of the collision (`⚠️ Warning: Duplicate project code '<CODE>' detected across multiple data hubs...`).
+* Registering a new project that matches a code already present in another hub is rejected.
+
+#### Case-Remembering Casing & Case-Insensitive Matching
+
+Esedre follows a strict **case-remembering but case-insensitive on matches** design across all storage, CLI, MCP, and configuration layers:
+* **Case-Remembering Storage**: Project codes preserve their original registered casing (e.g. `Personal`, `Esedre`, `Prof`) in directory names on disk (`projects/Personal/`) and in all metadata manifests (`project.json`, `meta.json`). Ticket metadata always records the canonical remembered casing. Re-registering or re-configuring a project preserves the existing remembered casing.
+* **Case-Insensitive Lookups & Access**: All queries, CLI flags, MCP tool calls, ticket lookups (`ese get personal-1`, `ese get PERSONAL-1`, `ese get Personal-1`), and Agent Project Allow-List permissions (`allowedProjects`) match case-insensitively.
+* **Cross-Platform Filesystem Normalization**: To prevent split directory fragmentation on case-sensitive filesystems (such as Linux ext4 or Docker), directory resolution matches existing parent directory entries case-insensitively, automatically reusing existing directory casing regardless of input variation.
 
 ---
 
@@ -164,7 +184,7 @@ To connect Esedre to **Google Antigravity**, **Claude Code**, **Cursor**, or any
 - `esedre_list_tickets`: List tickets with optional project, status, category, or search filter.
 - `esedre_get_ticket`: Retrieve full specification, summary, comments, revision, and content hash (`sha1`).
 - `esedre_get_plan` & `esedre_save_plan`: Inspect and update implementation plans with optimistic concurrency (`lastHash`).
-- `esedre_create_ticket`: Mint new roadmap tickets with project code validation (up to 6 chars).
+- `esedre_create_ticket`: Mint new roadmap tickets with project code validation (up to 8 chars).
 - `esedre_update_ticket`: Modify status, title, complexity, or effort with optimistic concurrency (`lastHash`).
 - `esedre_add_comment`: Append developer or LLM agent verification notes.
 

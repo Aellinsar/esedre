@@ -76,7 +76,7 @@ export function getRuntimeProjects(): ProjectDescriptor[] {
 export const ALL_PROJECT_IDS: number[] = ALL_PROJECTS.map((p) => p.id);
 export const ALL_PROJECT_NAMES: string[] = ALL_PROJECTS.map((p) => p.name);
 export const ALL_PROJECT_CODES: string[] = ALL_PROJECTS.map((p) => p.code);
-export const MAX_PROJECT_CODE_LENGTH: number = 7;
+export const MAX_PROJECT_CODE_LENGTH: number = 8;
 export const MAX_PROJECT_NAME_LENGTH: number = 48;
 
 export const UNASSIGNED_PROJECT_COLORS: ProjectColors = {

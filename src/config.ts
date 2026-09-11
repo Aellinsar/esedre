@@ -4,8 +4,8 @@ import os from 'node:os';
 import { CURRENT_ESEDRE_VERSION } from './types.js';
 
 export const DEFAULT_ESEDRE_PORT = 5674;
-export const MAX_PROJECT_CODE_LENGTH = 7;
-export const PROJECT_CODE_REGEX = /^[a-zA-Z0-9]{1,7}$/;
+export const MAX_PROJECT_CODE_LENGTH = 8;
+export const PROJECT_CODE_REGEX = /^[a-zA-Z0-9]{1,8}$/;
 export const MAX_PROJECT_NAME_LENGTH = 48;
 
 export interface EsedrePortsConfig {
@@ -316,9 +316,11 @@ export function removeLocationFromGlobalConfig(identifier: string): { removed: b
   if (current.dataDir) {
     const currentDataDirs = Array.isArray(current.dataDir) ? current.dataDir : [current.dataDir];
     const initialLen = currentDataDirs.length;
-    const remaining = currentDataDirs.filter(
-      (d) => path.resolve(expandHome(d)).toLowerCase() !== path.resolve(expandHome(trimmed)).toLowerCase()
-    );
+    const remaining = currentDataDirs.filter((d) => {
+      const matchPath = path.resolve(expandHome(d)).toLowerCase() === path.resolve(expandHome(trimmed)).toLowerCase();
+      const matchBasename = path.basename(d).toLowerCase() === trimmed.toLowerCase();
+      return !matchPath && !matchBasename;
+    });
     if (remaining.length !== initialLen) {
       current.dataDir = remaining.length === 0 ? undefined : (remaining.length === 1 ? remaining[0] : remaining);
       writeGlobalConfig(current);

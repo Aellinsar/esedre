@@ -102,7 +102,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
 
         if (pathname.startsWith('/api/planning/ticket/')) {
           const idStr = pathname.slice('/api/planning/ticket/'.length);
-          if (!idStr || !/^([a-zA-Z0-9]{1,7}-)?\d+$/.test(idStr)) {
+          if (!idStr || !/^([a-zA-Z0-9]{1,8}-)?\d+$/.test(idStr)) {
             sendJson(res, 400, { error: 'Invalid ticket ID' });
             return true;
           }
@@ -263,7 +263,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
         }
 
         if (pathname === '/api/planning/create-project') {
-          const { code, name, description, colors } = body;
+          const { code, name, description, colors, hub } = body;
           if (!code || !name) {
             sendJson(res, 400, { error: 'Both code and name are required to register a project.' });
             return true;
@@ -284,6 +284,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
             name,
             description,
             colors,
+            hub,
           });
           sendJson(res, 201, project);
           return true;
