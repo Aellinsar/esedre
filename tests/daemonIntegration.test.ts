@@ -9,6 +9,7 @@ import {
   pingDaemon,
   stopDaemon,
 } from '../src/server/daemon.js';
+import { CURRENT_ESEDRE_VERSION } from '../src/types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -204,20 +205,20 @@ describe('Esedre Daemon Integration & CLI Lifecycle', () => {
   it('reports version via -v, --version, --version --json, and version command', async () => {
     const vShort = await runCli(['-v']);
     expect(vShort.code).toBe(0);
-    expect(vShort.stdout).toBe('esedre v0.1.6');
+    expect(vShort.stdout).toBe(`esedre v${CURRENT_ESEDRE_VERSION}`);
 
     const vLong = await runCli(['--version']);
     expect(vLong.code).toBe(0);
-    expect(vLong.stdout).toBe('esedre v0.1.6');
+    expect(vLong.stdout).toBe(`esedre v${CURRENT_ESEDRE_VERSION}`);
 
     const vCmd = await runCli(['version']);
     expect(vCmd.code).toBe(0);
-    expect(vCmd.stdout).toBe('esedre v0.1.6');
+    expect(vCmd.stdout).toBe(`esedre v${CURRENT_ESEDRE_VERSION}`);
 
     const vJson = await runCli(['--version', '--json']);
     expect(vJson.code).toBe(0);
     const parsed = JSON.parse(vJson.stdout);
-    expect(parsed.version).toBe('0.1.6');
+    expect(parsed.version).toBe(CURRENT_ESEDRE_VERSION);
   });
 
   it('outputs warning on ese status when running daemon version is stale', async () => {
@@ -256,11 +257,11 @@ describe('Esedre Daemon Integration & CLI Lifecycle', () => {
       expect(jsonStatus.running).toBe(true);
       expect(jsonStatus.version).toBe('0.1.0');
       expect(jsonStatus.staleVersion).toBe(true);
-      expect(jsonStatus.installedVersion).toBe('0.1.6');
+      expect(jsonStatus.installedVersion).toBe(CURRENT_ESEDRE_VERSION);
 
       const textRes = await runCli(['status', '--port', String(STALE_PORT)]);
       expect(textRes.code).toBe(0);
-      expect(textRes.stdout).toContain('Warning: Daemon is running v0.1.0, but v0.1.6 is installed.');
+      expect(textRes.stdout).toContain(`Warning: Daemon is running v0.1.0, but v${CURRENT_ESEDRE_VERSION} is installed.`);
       expect(textRes.stdout).toContain('ese stop && ese start');
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));

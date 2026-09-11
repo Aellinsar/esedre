@@ -205,8 +205,8 @@ describe('Central Configuration & Init Engine', () => {
   });
 
   it('records and reads global version file (~/.esedre/version)', () => {
-    writeGlobalVersion('0.1.6');
-    expect(readGlobalVersion()).toBe('0.1.6');
+    writeGlobalVersion(CURRENT_ESEDRE_VERSION);
+    expect(readGlobalVersion()).toBe(CURRENT_ESEDRE_VERSION);
   });
 
   it('executes CLI ese configure set, get, and list commands end-to-end', async () => {
