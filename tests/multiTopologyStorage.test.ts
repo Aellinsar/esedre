@@ -8,7 +8,6 @@ function seedProject(dir: string, project: { id: number; code: string; name: str
   const pJson = {
     id: project.id,
     code: project.code,
-    slug: project.code.toLowerCase(),
     name: project.name,
     description: `${project.name} test project`,
   };
@@ -313,8 +312,8 @@ describe('Multi-Topology Storage Engine', () => {
     fs.writeFileSync(
       path.join(monoDir, 'projects.json'),
       JSON.stringify([
-        { id: 1, code: 'AppA', slug: 'appa', name: 'Monorepo App A', description: 'App A' },
-        { id: 2, code: 'AppB', slug: 'appb', name: 'Monorepo App B', description: 'App B' },
+        { id: 1, code: 'AppA', name: 'Monorepo App A', description: 'App A' },
+        { id: 2, code: 'AppB', name: 'Monorepo App B', description: 'App B' },
       ], null, 2) + '\n',
       'utf-8'
     );

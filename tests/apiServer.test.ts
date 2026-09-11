@@ -66,8 +66,8 @@ describe('Esedre REST API Server', () => {
     fs.writeFileSync(
       path.join(projectsDir, 'projects.json'),
       JSON.stringify([
-        { id: 1, code: 'Core', slug: 'core', name: 'Core Application', description: 'Main App' },
-        { id: 2, code: 'Esedre', slug: 'esedre', name: 'Esedre', description: 'Platform' },
+        { id: 1, code: 'Core', name: 'Core Application', description: 'Main App' },
+        { id: 2, code: 'Esedre', name: 'Esedre', description: 'Platform' },
       ])
     );
 

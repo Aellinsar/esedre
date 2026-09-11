@@ -99,10 +99,11 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 3. **Multi-Project Agent Isolation (Zero Cross-Project Leaks)**:
    - Each agent or tool execution is strictly informed and scoped only to the projects declared in its workspace's `allowedProjects`. Neither the CLI tool nor the MCP server may expose, list, query, create, update, or mutate tickets, plans, or comments belonging to projects outside `allowedProjects`.
-   - Unauthorized requests MUST throw `EsedreAuthorizationError` immediately:
-     - **MCP Protocol**: Caught and returned as standard JSON-RPC 2.0 error code `-32603` with message `Access Denied: Project '<code>' is outside this workspace's authorized scope.`
-     - **CLI Tool**: Exits cleanly with status code `1` and prints `Access Denied: ...`.
-   - Wildcard `"*"` in `allowedProjects` permits all registered projects (used in multi-project umbrella workspaces or administrative environments).
+    - Unauthorized requests MUST throw `EsedreAuthorizationError` immediately:
+      - **MCP Protocol**: Caught and returned as standard JSON-RPC 2.0 error code `-32603` with message `Access Denied: Project '<code>' is outside this workspace's authorized scope.`
+      - **CLI Tool**: Exits cleanly with status code `1` and prints `Access Denied: ...`.
+      - **REST API**: Returns standard HTTP status code `403 Forbidden` with `{ "error": "Access Denied: ..." }`.
+    - Wildcard `"*"` in `allowedProjects` permits all registered projects (used in multi-project umbrella workspaces or administrative environments).
 
 4. **Approved Terminology: "Agent Project Allow-List" (Strictly NO "Firewall")**:
    - The term "Firewall" is **NOT** approved terminology anywhere in documentation, descriptions, CLI output, commit messages, or code comments.
@@ -170,6 +171,9 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
      - `ese stop`: Shuts down the running background server daemon.
      - `ese status`: Checks health, PID, uptime, and diagnostics.
      - `ese logs`: Tails recent server output logs.
+   - **Gateway Portfolio Storage Decoupling**: The background server and gateway cluster (`ese start`) instantiate unconstrained portfolio storage. This guarantees the developer Web UI has complete visibility across all registered data hubs and projects, regardless of the folder from which the server was launched.
+   - **Dynamic Filesystem & Configuration Reloading**: The storage engine polls configuration and project manifests with a 3-second TTL (`ensureFreshConfig`), ensuring external data hubs and projects update in real time without server daemon restarts.
+   - **Windows Readiness Watchdog**: To eliminate cold-start race condition aborts on Windows, `pingDaemon` uses a 10,000ms watchdog timeout with 500ms ping timeouts and 150ms polling intervals.
    - **Background Spawning Pattern**: Background daemons are spawned with `child_process.spawn(..., { detached: true, stdio: ['ignore', outFd, errFd] })` and detached with `child.unref()`.
    - **Windows File Descriptor Cleanup Pattern**: Immediately after `child.unref()`, the parent launcher process must explicitly close parent file handles (`fs.closeSync(outFd)`, `fs.closeSync(errFd)`). Omitting this holds Windows file locks on `.esedre/daemon.log`, preventing clean restarts or log truncation.
    - **Dual Liveness Check**: Daemon status detection and shutdown commands must verify HTTP endpoint liveness (`GET /api/ping`) alongside PID liveness (`process.kill(pid, 0)`) to protect against PID recycling false positives.

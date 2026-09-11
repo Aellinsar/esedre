@@ -615,7 +615,6 @@ export function configureWorkspace(targetDir: string, options: ConfigureOptions 
       const projDesc = {
         id: 1,
         code: projectCode.toUpperCase(),
-        slug: projectCode.toLowerCase(),
         name: projectName || projectCode.toUpperCase(),
         description: `${projectName || projectCode.toUpperCase()} project`,
         colors: {

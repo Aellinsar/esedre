@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { StorageAdapter } from '../storage/adapter.js';
 import { SecurityFilter } from '../securityFilter.js';
 import { generateProjectSnapshot } from '../snapshot.js';
 import { validateProjectCode, validateProjectName } from '../config.js';
@@ -26,21 +27,41 @@ function sendJson(res: http.ServerResponse, status: number, data: any) {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-esedre-allowed-projects',
   });
   res.end(JSON.stringify(data));
 }
 
-let cachedAllData: any = null;
-let cachedAllTimestamp = 0;
+interface CacheEntry {
+  data: any;
+  timestamp: number;
+}
+const cachedAllData = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 5000;
 
 export function invalidateApiCache(): void {
-  cachedAllData = null;
-  cachedAllTimestamp = 0;
+  cachedAllData.clear();
 }
 
-export function createApiHandler(storage: SecurityFilter, workspaceRoot: string) {
+function getRequestStorage(baseStorage: StorageAdapter, req: http.IncomingMessage, url: URL): { storage: StorageAdapter; cacheKey: string } {
+  const headerAllowed = req.headers['x-esedre-allowed-projects'];
+  const queryAllowed = url.searchParams.get('allowedProjects');
+  const rawAllowed = (typeof headerAllowed === 'string' ? headerAllowed : Array.isArray(headerAllowed) ? headerAllowed[0] : null) || queryAllowed;
+
+  if (rawAllowed && typeof rawAllowed === 'string') {
+    const list = rawAllowed.split(',').map((s) => s.trim()).filter(Boolean);
+    if (list.length > 0 && !list.includes('*')) {
+      const sortedKey = [...list].sort().join(',');
+      return {
+        storage: new SecurityFilter(baseStorage, { allowedProjects: list }),
+        cacheKey: sortedKey,
+      };
+    }
+  }
+  return { storage: baseStorage, cacheKey: '*' };
+}
+
+export function createApiHandler(storage: StorageAdapter, workspaceRoot: string) {
   return async (req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> => {
     const rawUrl = req.url || '/';
     const parsedPath = rawUrl.split('?')[0];
@@ -69,6 +90,8 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
       pathname = pathname.slice('/esedre'.length);
     }
 
+    const { storage: reqStorage, cacheKey } = getRequestStorage(storage, req, url);
+
     try {
       if (req.method === 'GET') {
         if (pathname === '/api/ping') {
@@ -77,7 +100,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
         }
 
         if (pathname === '/api/planning/projects') {
-          const projects = await storage.getProjects();
+          const projects = await reqStorage.getProjects();
           sendJson(res, 200, projects);
           return true;
         }
@@ -89,7 +112,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
           const category = type;
           const search = url.searchParams.get('search') || undefined;
 
-          const tickets = await storage.listTickets({
+          const tickets = await reqStorage.listTickets({
             project: project === 'all' ? undefined : project,
             status,
             type,
@@ -106,7 +129,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
             sendJson(res, 400, { error: 'Invalid ticket ID' });
             return true;
           }
-          const ticket = await storage.getTicket(idStr);
+          const ticket = await reqStorage.getTicket(idStr);
           if (!ticket) {
             sendJson(res, 400, { error: 'Ticket not found' });
             return true;
@@ -117,12 +140,13 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
 
         if (pathname === '/api/planning/all') {
           const now = Date.now();
-          if (cachedAllData && now - cachedAllTimestamp < CACHE_TTL_MS) {
-            sendJson(res, 200, cachedAllData);
+          const cached = cachedAllData.get(cacheKey);
+          if (cached && now - cached.timestamp < CACHE_TTL_MS) {
+            sendJson(res, 200, cached.data);
             return true;
           }
 
-          const tickets = await storage.listTickets({});
+          const tickets = await reqStorage.listTickets({});
           const metasMap: Record<string, any> = {};
           const detailsMap: Record<string, string> = {};
           const plansMap: Record<string, string> = {};
@@ -156,7 +180,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
             }
           }
 
-          const projects = await storage.getProjects();
+          const projects = await reqStorage.getProjects();
           const responsePayload = {
             success: true,
             projects,
@@ -170,14 +194,13 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
             ticketHistory: {},
           };
 
-          cachedAllData = responsePayload;
-          cachedAllTimestamp = now;
+          cachedAllData.set(cacheKey, { data: responsePayload, timestamp: now });
           sendJson(res, 200, responsePayload);
           return true;
         }
 
         if (pathname === '/api/planning/metas') {
-          const tickets = await storage.listTickets({});
+          const tickets = await reqStorage.listTickets({});
           const metasMap: Record<string, any> = {};
           for (const t of tickets) {
             metasMap[String(t.meta.id)] = t.meta;
@@ -187,7 +210,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
         }
 
         if (pathname === '/api/planning/details') {
-          const tickets = await storage.listTickets({});
+          const tickets = await reqStorage.listTickets({});
           const detailsMap: Record<string, string> = {};
           for (const t of tickets) {
             if (t.detail?.raw) {
@@ -199,7 +222,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
         }
 
         if (pathname === '/api/planning/plans') {
-          const tickets = await storage.listTickets({});
+          const tickets = await reqStorage.listTickets({});
           const plansMap: Record<string, string> = {};
           for (const t of tickets) {
             if (t.planMarkdown) {
@@ -211,7 +234,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
         }
 
         if (pathname === '/api/planning/comments') {
-          const tickets = await storage.listTickets({});
+          const tickets = await reqStorage.listTickets({});
           const commentsMap: Record<string, any[]> = {};
           for (const t of tickets) {
             commentsMap[String(t.meta.id)] = t.comments || [];
@@ -246,7 +269,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
             sendJson(res, 400, { error: 'Project query parameter is required for snapshot generation (no default fallback).' });
             return true;
           }
-          const snapshot = await generateProjectSnapshot(storage, projectCode, workspaceRoot);
+          const snapshot = await generateProjectSnapshot(reqStorage, projectCode, workspaceRoot);
           sendJson(res, 200, snapshot);
           return true;
         }
@@ -257,7 +280,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
 
         if (pathname === '/api/planning/tickets') {
           invalidateApiCache();
-          const created = await storage.createTicket(body);
+          const created = await reqStorage.createTicket(body);
           sendJson(res, 201, { ticketId: String(created.meta.id), meta: created.meta });
           return true;
         }
@@ -279,7 +302,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
             return true;
           }
           invalidateApiCache();
-          const project = await storage.registerProject({
+          const project = await reqStorage.registerProject({
             code,
             name,
             description,
@@ -293,7 +316,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
         if (pathname === '/api/planning/plans') {
           const { ticketId, planMarkdown, lastHash } = body;
           invalidateApiCache();
-          await storage.savePlan(ticketId, planMarkdown, lastHash);
+          await reqStorage.savePlan(ticketId, planMarkdown, lastHash);
           sendJson(res, 200, { success: true });
           return true;
         }
@@ -301,22 +324,22 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
         if (pathname === '/api/planning/comments') {
           const { ticketId, text, author } = body;
           invalidateApiCache();
-          await storage.addComment(ticketId, { author: author || 'Developer', text });
-          const ticket = await storage.getTicket(ticketId);
+          await reqStorage.addComment(ticketId, { author: author || 'Developer', text });
+          const ticket = await reqStorage.getTicket(ticketId);
           sendJson(res, 200, { comments: ticket?.comments || [] });
           return true;
         }
 
         if (pathname === '/api/planning/update-meta') {
           const { ticketId, updates, lastHash } = body;
-          const updated = await storage.updateTicket(ticketId, updates, lastHash);
+          const updated = await reqStorage.updateTicket(ticketId, updates, lastHash);
           sendJson(res, 200, { meta: updated.meta });
           return true;
         }
 
         if (pathname === '/api/planning/toggle-flag') {
           const { ticketId, flagged } = body;
-          const updated = await storage.updateTicket(ticketId, {
+          const updated = await reqStorage.updateTicket(ticketId, {
             featureFlag: flagged ? 'chat_enhanced' : '',
           });
           sendJson(res, 200, { meta: updated.meta });
@@ -326,7 +349,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
         if (pathname === '/api/planning/details') {
           const { ticketId, detailMarkdown, metaUpdates } = body;
           if (metaUpdates) {
-            await storage.updateTicket(ticketId, metaUpdates);
+            await reqStorage.updateTicket(ticketId, metaUpdates);
           }
           sendJson(res, 200, { success: true, detail: detailMarkdown });
           return true;
@@ -336,6 +359,10 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
       sendJson(res, 404, { error: `Endpoint not found: ${pathname}` });
       return true;
     } catch (err: any) {
+      if (err.name === 'EsedreAuthorizationError' || err.message?.includes('outside this workspace\'s authorized scope') || err.message?.includes('Access Denied')) {
+        sendJson(res, 403, { error: err.message });
+        return true;
+      }
       console.error('[Esedre API Error]:', err);
       sendJson(res, 500, { error: err.message });
       return true;
@@ -343,7 +370,7 @@ export function createApiHandler(storage: SecurityFilter, workspaceRoot: string)
   };
 }
 
-export function startApiServer(port: number, storage: SecurityFilter, workspaceRoot: string): http.Server {
+export function startApiServer(port: number, storage: StorageAdapter, workspaceRoot: string): http.Server {
   const handler = createApiHandler(storage, workspaceRoot);
 
   const server = http.createServer(async (req, res) => {

@@ -1,9 +1,9 @@
-function isProjectMatch(code: string, slug: string, filter: string): boolean {
+function isProjectMatch(code?: string, filter?: string): boolean {
+  if (!code || !filter) return false;
   const f = filter.trim().toLowerCase();
   const c = code.trim().toLowerCase();
-  const s = slug.trim().toLowerCase();
-  if (c === f || s === f) return true;
-  if ((f === 'prof' || f === 'core' || f === 'pasrc') && (c === 'prof' || c === 'core')) return true;
+  if (c === f) return true;
+  if ((f === 'profe' || f === 'prof' || f === 'core' || f === 'pasrc') && (c === 'profe' || c === 'prof' || c === 'core')) return true;
   if ((f === 'esedre' || f === 'ese' || f === 'docs') && (c === 'esedre' || c === 'docs')) return true;
   if ((f === 'alce' || f === 'web') && (c === 'alce' || c === 'web')) return true;
   return false;
@@ -45,6 +45,9 @@ export interface ResolvedProjectLocation {
 export class FilesystemStorageAdapter implements StorageAdapter {
   private workspaceRoot: string;
   private config: EsedreConfig;
+  private isConfigExplicit = false;
+  private lastConfigCheck = 0;
+  private configTtlMs = 3000;
   private duplicateProjectWarnings: DuplicateProjectWarning[] = [];
 
   public getDuplicateProjectWarnings(): DuplicateProjectWarning[] {
@@ -56,13 +59,41 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     this.workspaceRoot = workspaceRoot || this.resolveWorkspaceRoot();
     if (config) {
       this.config = config;
+      this.isConfigExplicit = true;
+      this.lastConfigCheck = Date.now();
     } else {
-      try {
-        const discovered = findEsedreConfig(this.workspaceRoot);
-        this.config = discovered.config || {};
-      } catch {
-        this.config = {};
+      this.config = {};
+      this.refreshConfig();
+    }
+  }
+
+  public refreshConfig(): void {
+    try {
+      const discovered = findEsedreConfig(this.workspaceRoot);
+      this.config = discovered.config || {};
+    } catch {
+      this.config = {};
+    }
+    this.lastConfigCheck = Date.now();
+  }
+
+  public ensureFreshConfig(): void {
+    if (this.isConfigExplicit && this.config.allowedProjects?.includes('*')) {
+      if (Date.now() - this.lastConfigCheck > this.configTtlMs) {
+        try {
+          const discovered = findEsedreConfig(this.workspaceRoot, { fallbackToGlobal: true });
+          this.config = {
+            ...discovered.config,
+            allowedProjects: ['*'],
+          };
+        } catch {}
+        this.lastConfigCheck = Date.now();
       }
+      return;
+    }
+
+    if (!this.isConfigExplicit && Date.now() - this.lastConfigCheck > this.configTtlMs) {
+      this.refreshConfig();
     }
   }
 
@@ -89,6 +120,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
   }
 
   public resolveProjectLocations(): ResolvedProjectLocation[] {
+    this.ensureFreshConfig();
     const locations: ResolvedProjectLocation[] = [];
     const seenCodes = new Set<string>();
     const codeToSource = new Map<string, string>();
@@ -140,9 +172,6 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           if (fs.existsSync(pJsonPath)) {
             try {
               desc = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8'));
-              if (desc && !desc.slug) {
-                desc.slug = (desc.code || ent.name).toLowerCase();
-              }
             } catch {}
           }
 
@@ -154,7 +183,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
                 try {
                   const hubProjs: ProjectDescriptor[] = JSON.parse(fs.readFileSync(f, 'utf-8'));
                   desc = hubProjs.find(
-                    (p) => p.code.toLowerCase() === ent.name.toLowerCase() || p.slug.toLowerCase() === ent.name.toLowerCase()
+                    (p) => p.code.toLowerCase() === ent.name.toLowerCase()
                   );
                   if (desc) break;
                 } catch {}
@@ -166,7 +195,6 @@ export class FilesystemStorageAdapter implements StorageAdapter {
             desc = {
               id: locations.length + 1,
               code: ent.name,
-              slug: ent.name.toLowerCase(),
               name: ent.name,
               description: `${ent.name} project`,
             };
@@ -220,7 +248,6 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           descs = [{
             id: 1,
             code: pCode,
-            slug: pCode.toLowerCase(),
             name: pCode,
             description: `${pCode} project`,
           }];
@@ -280,9 +307,6 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           if (fs.existsSync(cand)) {
             try {
               desc = JSON.parse(fs.readFileSync(cand, 'utf-8'));
-              if (desc && !desc.slug) {
-                desc.slug = (desc.code || code).toLowerCase();
-              }
               break;
             } catch {}
           }
@@ -292,7 +316,6 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           desc = {
             id: locations.length + 1,
             code,
-            slug: code.toLowerCase(),
             name: code,
             description: `${code} project`,
           };
@@ -366,7 +389,6 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           descs = [{
             id: 1,
             code: this.config.projectCode,
-            slug: this.config.projectCode.toLowerCase(),
             name: pName,
             description: `${pName} project`,
           }];
@@ -402,7 +424,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     const cleanCode = rawCode;
     const cleanName = input.name?.trim() || cleanCode;
     const cleanDesc = input.description?.trim() || `${cleanName} project`;
-    const slug = cleanCode.toLowerCase();
+    const cleanLower = cleanCode.toLowerCase();
 
     const colors = input.colors || {
       badge: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300',
@@ -496,7 +518,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       const normalizedTargetHub = path.resolve(targetHub).toLowerCase();
       const existingLocations = this.resolveProjectLocations();
       const existingConflict = existingLocations.find((l) => {
-        if (l.project.code.toLowerCase() !== slug) return false;
+        if (l.project.code.toLowerCase() !== cleanLower) return false;
         if (l.sourceType === 'hub' && l.hubDir) {
           return path.resolve(l.hubDir).toLowerCase() !== normalizedTargetHub;
         }
@@ -517,7 +539,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         try {
           const entries = fs.readdirSync(hubProjectsDir, { withFileTypes: true });
           const matchedDir = entries.find(
-            (e) => e.isDirectory() && e.name.toLowerCase() === slug
+            (e) => e.isDirectory() && e.name.toLowerCase() === cleanLower
           );
           if (matchedDir) {
             resolvedDirName = matchedDir.name;
@@ -546,7 +568,6 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       const projectDesc: ProjectDescriptor = {
         id,
         code: resolvedCode,
-        slug,
         name: cleanName,
         description: cleanDesc,
         colors,
@@ -558,7 +579,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       if (fs.existsSync(hubProjectsFile)) {
         try {
           const arr: ProjectDescriptor[] = JSON.parse(fs.readFileSync(hubProjectsFile, 'utf-8'));
-          const idx = arr.findIndex((p) => p.code.toLowerCase() === slug);
+          const idx = arr.findIndex((p) => p.code.toLowerCase() === cleanLower);
           if (idx >= 0) {
             arr[idx] = projectDesc;
           } else {
@@ -584,7 +605,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       try { existingPJson = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8')); } catch {}
     }
 
-    const resolvedCode = (existingPJson?.code && existingPJson.code.toLowerCase() === slug)
+    const resolvedCode = (existingPJson?.code && existingPJson.code.toLowerCase() === cleanLower)
       ? existingPJson.code
       : cleanCode;
 
@@ -592,7 +613,6 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     const projectDesc: ProjectDescriptor = {
       id,
       code: resolvedCode,
-      slug,
       name: cleanName,
       description: cleanDesc,
       colors,
@@ -604,7 +624,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     if (fs.existsSync(projectsJsonPath)) {
       try {
         const arr: ProjectDescriptor[] = JSON.parse(fs.readFileSync(projectsJsonPath, 'utf-8'));
-        const idx = arr.findIndex((p) => p.code.toLowerCase() === slug);
+        const idx = arr.findIndex((p) => p.code.toLowerCase() === cleanLower);
         if (idx >= 0) {
           arr[idx] = projectDesc;
         } else {
@@ -628,7 +648,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     if (prefixMatch) {
       const code = prefixMatch[1].toLowerCase();
       const num = parseInt(prefixMatch[2], 10);
-      const loc = locations.find((l) => isProjectMatch(l.project.code, l.project.slug, code));
+      const loc = locations.find((l) => isProjectMatch(l.project.code, code));
       if (!loc) return null;
       const ticketDir = path.join(loc.ticketsDir, String(num));
       const metaPath = path.join(ticketDir, 'meta.json');
@@ -640,7 +660,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       meta.type = meta.type || meta.category || 'Feature';
       meta.category = meta.type;
             const mProj = (meta.project || '').toLowerCase();
-            if (mProj && mProj !== code && mProj !== loc.project.slug.toLowerCase()) {
+            if (mProj && mProj !== code && mProj !== loc.project.code.toLowerCase()) {
               return null;
             }
           } catch {}
@@ -673,7 +693,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
             locations.find(
               (l) =>
                 (meta.projectId !== undefined && l.project.id === meta.projectId) ||
-                (meta.project && (l.project.code.toLowerCase() === meta.project.toLowerCase() || l.project.slug.toLowerCase() === meta.project.toLowerCase()))
+                (meta.project && l.project.code.toLowerCase() === meta.project.toLowerCase())
             ) || loc;
           matches.push({ loc: matchedLoc, ticketDir, id: num });
         } catch {
@@ -687,7 +707,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     if (this.config.projectCode) {
       const prefLower = this.config.projectCode.toLowerCase();
       const preferredMatch = matches.find(
-        (m) => m.loc.project.code.toLowerCase() === prefLower || m.loc.project.slug.toLowerCase() === prefLower
+        (m) => m.loc.project.code.toLowerCase() === prefLower
       );
       if (preferredMatch) return preferredMatch;
     }
@@ -713,7 +733,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     for (const loc of locations) {
       if (filter?.project && filter.project !== 'all') {
         const pLower = filter.project.toLowerCase();
-        if (!isProjectMatch(loc.project.code, loc.project.slug, filter.project)) {
+        if (!isProjectMatch(loc.project.code, filter.project)) {
           continue;
         }
       }
@@ -754,7 +774,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
             const found = locations.find(
               (l) =>
                 (meta.projectId !== undefined && l.project.id === meta.projectId) ||
-                (meta.project && (l.project.code.toLowerCase() === meta.project.toLowerCase() || l.project.slug.toLowerCase() === meta.project.toLowerCase()))
+                (meta.project && l.project.code.toLowerCase() === meta.project.toLowerCase())
             );
             if (found) effectiveLoc = found;
           }
@@ -764,7 +784,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
 
           if (filter?.project && filter.project !== 'all') {
             const pLower = filter.project.toLowerCase();
-            if (!isProjectMatch(meta.project, effectiveLoc.project.slug, filter.project)) {
+            if (!isProjectMatch(meta.project, filter.project)) {
               continue;
             }
           }
@@ -955,7 +975,6 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       targetLoc = locations.find(
         (l) =>
           l.project.code?.toLowerCase() === lower ||
-          l.project.slug?.toLowerCase() === lower ||
           String(l.project.id) === lower ||
           l.project.name?.toLowerCase() === lower
       );

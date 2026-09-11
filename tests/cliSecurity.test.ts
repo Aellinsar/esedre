@@ -36,9 +36,9 @@ describe('Esedre CLI Security & Project Isolation Integration', () => {
     fs.writeFileSync(
       path.join(projectsDir, 'projects.json'),
       JSON.stringify([
-        { id: 1, code: 'Core', slug: 'core', name: 'Core Application' },
-        { id: 2, code: 'Web', slug: 'web', name: 'Web Client' },
-        { id: 3, code: 'Docs', slug: 'docs', name: 'Documentation' },
+        { id: 1, code: 'Core', name: 'Core Application' },
+        { id: 2, code: 'Web', name: 'Web Client' },
+        { id: 3, code: 'Docs', name: 'Documentation' },
       ], null, 2)
     );
 

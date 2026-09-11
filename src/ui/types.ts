@@ -4,7 +4,6 @@ export type TicketStatus = 'Planned' | 'In Development' | 'Completed' | 'Rejecte
 
 export const DEFAULT_ESEDRE_PORT = 5674;
 
-export type ProjectSlug = string;
 export type ProjectName = string;
 
 export interface ProjectColors {
@@ -16,7 +15,6 @@ export interface ProjectColors {
 export interface ProjectDescriptor {
   id: number;
   code: string;
-  slug: ProjectSlug;
   name: string;
   description: string;
   colors: ProjectColors;
@@ -26,7 +24,6 @@ export const ALL_PROJECTS: ProjectDescriptor[] = [
   {
     id: 1,
     code: 'Profe',
-    slug: 'professor-arwam',
     name: 'Professor Arwam',
     description: "Professor Arwam's Sleep Research Center web application",
     colors: {
@@ -38,7 +35,6 @@ export const ALL_PROJECTS: ProjectDescriptor[] = [
   {
     id: 2,
     code: 'Alce',
-    slug: 'alce',
     name: 'Alce',
     description: 'Alce offline e-reader application and ecosystem',
     colors: {
@@ -50,7 +46,6 @@ export const ALL_PROJECTS: ProjectDescriptor[] = [
   {
     id: 3,
     code: 'Esedre',
-    slug: 'esedre',
     name: 'Esedre',
     description: 'Esedre developer roadmap, ticketing, and LLM agent coordination platform',
     colors: {
@@ -98,7 +93,7 @@ export function getProjectByName(name?: string): ProjectDescriptor | undefined {
   const lower = name.trim().toLowerCase();
   const list = dynamicProjects.length > 0 ? dynamicProjects : ALL_PROJECTS;
   const match = list.find(
-    (p) => p.name.toLowerCase() === lower || p.slug.toLowerCase() === lower || p.code.toLowerCase() === lower
+    (p) => p.name.toLowerCase() === lower || p.code.toLowerCase() === lower
   );
   if (match) return match;
 
@@ -114,7 +109,7 @@ export function getProjectByName(name?: string): ProjectDescriptor | undefined {
   }
 
   return ALL_PROJECTS.find(
-    (p) => p.name.toLowerCase() === lower || p.slug.toLowerCase() === lower || p.code.toLowerCase() === lower
+    (p) => p.name.toLowerCase() === lower || p.code.toLowerCase() === lower
   );
 }
 

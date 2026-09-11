@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startUiServer } from './uiServer.js';
 import { startApiServer } from './apiServer.js';
-import { SecurityFilter } from '../securityFilter.js';
+import { StorageAdapter } from '../storage/adapter.js';
 import { resolvePorts } from '../config.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -48,7 +48,7 @@ export interface GatewayOptions {
   uiPort?: number;
   apiPort?: number;
   webDir?: string;
-  storage: SecurityFilter;
+  storage: StorageAdapter;
   workspaceRoot: string;
 }
 

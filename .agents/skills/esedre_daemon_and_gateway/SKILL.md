@@ -73,6 +73,12 @@ fs.closeSync(outFd);
 fs.closeSync(errFd);
 ```
 
+### Windows Readiness Watchdog
+Cold starts on Windows (especially under Antigravity / WSL / security scans) require sufficient initialization time. The readiness probe (`pingDaemon`) uses a 10,000ms watchdog timeout on Windows (5,000ms on Linux/macOS) with 500ms socket timeouts and 150ms polling intervals, preventing false startup aborts.
+
+### Dynamic Filesystem & Configuration Reloading
+The filesystem storage adapter automatically polls configuration files (`esedre.json` and `~/.esedre/config.json`) with a 3-second TTL (`ensureFreshConfig`). Project registrations, data hub additions, and ticket changes on disk are immediately reflected across the API and Web UI without requiring daemon restarts.
+
 ---
 
 ## 4. Standalone Mode vs Embedded View & Theme Contract

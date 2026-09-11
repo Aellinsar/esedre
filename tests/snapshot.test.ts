@@ -28,9 +28,9 @@ describe('.esedre/snapshot.json Comprehensive Test Suite', () => {
     fs.writeFileSync(
       projectsFile,
       JSON.stringify([
-        { id: 1, code: 'Core', slug: 'core', name: 'Core Application', description: '' },
-        { id: 2, code: 'Docs', slug: 'docs', name: 'Documentation', description: '' },
-        { id: 3, code: 'Web', slug: 'web', name: 'Web Client', description: '' },
+        { id: 1, code: 'Core', name: 'Core Application', description: '' },
+        { id: 2, code: 'Docs', name: 'Documentation', description: '' },
+        { id: 3, code: 'Web', name: 'Web Client', description: '' },
       ])
     );
 

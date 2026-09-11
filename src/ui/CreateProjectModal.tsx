@@ -123,7 +123,6 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
       const fallbackProj: ProjectDescriptor = {
         id: nextId,
         code: cleanCode,
-        slug: cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
         name: cleanName,
         description: description.trim() || `${cleanName} Project`,
         colors,

@@ -16,9 +16,9 @@ describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
     fs.mkdirSync(ticketsDir, { recursive: true });
 
     const projects = [
-      { id: 1, code: 'Core', slug: 'core', name: 'Core Application', description: 'Main App' },
-      { id: 2, code: 'Web', slug: 'web', name: 'Web Client', description: 'Web Client' },
-      { id: 3, code: 'Docs', slug: 'docs', name: 'Documentation', description: 'Docs' },
+      { id: 1, code: 'Core', name: 'Core Application', description: 'Main App' },
+      { id: 2, code: 'Web', name: 'Web Client', description: 'Web Client' },
+      { id: 3, code: 'Docs', name: 'Documentation', description: 'Docs' },
     ];
     fs.writeFileSync(
       path.join(tempDir, 'src', 'data', 'planning', 'projects.json'),

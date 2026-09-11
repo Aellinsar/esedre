@@ -1,4 +1,4 @@
-export const CURRENT_ESEDRE_VERSION = '0.1.7';
+export const CURRENT_ESEDRE_VERSION = '0.1.8';
 
 export type TicketType = 'Feature' | 'Platform' | 'Tools' | 'Idea' | 'Bug';
 export type TicketCategory = TicketType; // Back-compat alias
@@ -7,7 +7,6 @@ export type TicketStatus = 'Planned' | 'In Development' | 'Completed' | 'Rejecte
 export interface ProjectDescriptor {
   id: number;
   code: string;
-  slug: string;
   name: string;
   description: string;
   colors?: {

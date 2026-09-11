@@ -88,6 +88,8 @@ ese start
 # Open dashboard: http://localhost:5674/app
 ```
 
+The server launches with unconstrained portfolio visibility across all registered data hubs and projects, allowing the main Esedre Web UI (as opposed to embedded component and LLM agent project-scoped behavior) to manage them seamlessly. Incoming agent requests enforce project scoping dynamically via the `x-esedre-allowed-projects` header or `?allowedProjects=...` query parameter.
+
 ### 4. Create Your First Ticket
 
 ```bash
@@ -260,6 +262,7 @@ Esedre enforces clean project isolation so each LLM agent is informed only of th
 - Unauthorized requests throw `EsedreAuthorizationError`:
   - **CLI**: Prints `Access Denied: ...` and exits with status code 1.
   - **MCP**: Responds with standard JSON-RPC error `-32603`.
+  - **REST API**: Responds with HTTP status code `403 Forbidden`.
 
 ---
 

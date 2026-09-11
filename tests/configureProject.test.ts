@@ -79,7 +79,6 @@ describe('Project Registration & Configure Onboarding', () => {
 
       expect(proj.code).toBe('ALCE');
       expect(proj.name).toBe('Alce Web Reader');
-      expect(proj.slug).toBe('alce');
 
       // Verify files written
       const pJsonPath = path.join(tempDir, '.esedre', 'project.json');

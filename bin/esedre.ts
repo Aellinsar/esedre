@@ -715,18 +715,26 @@ async function main(): Promise<void> {
       }
 
       case 'start': {
-        printDuplicateProjectWarnings(storage, isJson);
         const flagPort = flags['port'] ? parseInt(String(flags['port']), 10) : undefined;
         const ports = resolvePorts(discovered.config, { port: flagPort });
         const port = ports.gateway;
         const isForeground = Boolean(flags['foreground'] || flags['f']);
+
+        // The gateway server hosts the developer's Web UI and portfolio view.
+        // It must possess unconstrained visibility across all registered data hubs and projects.
+        const serverConfig = {
+          ...discovered.config,
+          allowedProjects: ['*'],
+        };
+        const serverStorage = new FilesystemStorageAdapter(discovered.workspaceRoot, serverConfig);
+        printDuplicateProjectWarnings(serverStorage, isJson);
 
         if (isForeground) {
           const cluster = startGatewayCluster({
             gatewayPort: ports.gateway,
             uiPort: ports.ui,
             apiPort: ports.api,
-            storage,
+            storage: serverStorage,
             workspaceRoot: discovered.workspaceRoot,
           });
 

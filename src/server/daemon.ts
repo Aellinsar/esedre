@@ -303,12 +303,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     throw new Error('Failed to spawn Esedre daemon background process.');
   }
 
-  // 6. Poll for daemon readiness (up to 3500ms timeout)
+  // 6. Poll for daemon readiness (up to 10000ms timeout on Windows, 5000ms elsewhere)
+  const timeoutMs = process.platform === 'win32' ? 10000 : 5000;
+  const pingTimeout = process.platform === 'win32' ? 500 : 300;
   const startTime = Date.now();
   let ready = false;
-  while (Date.now() - startTime < 3500) {
-    await new Promise((r) => setTimeout(r, 100));
-    const ping = await pingDaemon(port, 150);
+  while (Date.now() - startTime < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 150));
+    const ping = await pingDaemon(port, pingTimeout);
     if (ping.responding && ping.isEsedre) {
       ready = true;
       break;

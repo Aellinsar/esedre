@@ -1,4 +1,4 @@
-﻿import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -15,9 +15,9 @@ describe('FilesystemStorageAdapter', () => {
 
     // Seed projects.json
     const projects = [
-      { id: 1, code: 'Core', slug: 'core', name: 'Core Application', description: 'Main App' },
-      { id: 2, code: 'Web', slug: 'web', name: 'Web Client', description: 'Web Client' },
-      { id: 3, code: 'Docs', slug: 'docs', name: 'Documentation', description: 'Docs' },
+      { id: 1, code: 'Core', name: 'Core Application', description: 'Main App' },
+      { id: 2, code: 'Web', name: 'Web Client', description: 'Web Client' },
+      { id: 3, code: 'Docs', name: 'Documentation', description: 'Docs' },
     ];
     fs.writeFileSync(
       path.join(tempDir, 'src', 'data', 'planning', 'projects.json'),
@@ -152,7 +152,7 @@ describe('FilesystemStorageAdapter', () => {
     fs.mkdirSync(ticketsDir, { recursive: true });
 
     const projects = [
-      { id: 10, code: 'DataP', slug: 'datap', name: 'Data Project', description: 'Data' },
+      { id: 10, code: 'DataP', name: 'Data Project', description: 'Data' },
     ];
     fs.writeFileSync(
       path.join(customDataDir, 'projects.json'),
