@@ -82,3 +82,8 @@ Methods accept both numeric IDs (`96`) and compound project keys (`Profe-96`, `E
 - **Canonical Remembered Casing**: The original casing at registration time (e.g. `Personal`, `Esedre`) is preserved on disk in directory names (`projects/Personal/`) and metadata manifests (`project.json`, `meta.json`).
 - **Directory Casing Re-use**: To avoid split duplicate directories on case-sensitive filesystems (Linux ext4/XFS, Docker), `registerProject` scans existing directory entries case-insensitively and reuses the existing directory name.
 - **Case-Insensitive Queries & Lookups**: Lookups (`getTicket`, `listTickets`), CLI commands, and MCP tools match project codes case-insensitively (`personal-1`, `PERSONAL-1`, `Personal-1`).
+
+## 7. Per-Project Grounding Context & Authoritative Guidelines
+
+- **Project Grounding Manifests**: Per-project metadata in `project.json` (for hubs) or `.esedre/project.json` (for in-repo/federated repos) stores high-level architectural mission statements, technology stack constraints, and guidelines references.
+- **Authoritative Source of Truth**: User-maintained agent guidelines (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`) are strictly the primary source of truth. Esedre references and anchors to them rather than duplicating rules that can become stale.

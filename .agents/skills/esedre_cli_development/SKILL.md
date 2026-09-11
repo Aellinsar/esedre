@@ -56,3 +56,7 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 - **Code 0**: Successful execution.
 - **Code 1**: Handled user or validation error (e.g. missing required flags, ticket not found).
 - **Access Denied**: When a `EsedreAuthorizationError` is caught, the CLI writes `Access Denied: <message>` to `stderr` in bold red and exits with code 1.
+
+## 5. Automated Diagnostic & Repair Invariants
+
+- **Mandatory Pre-Edit Backup Invariant**: Any diagnostic, repair, or automated fix operation (such as future `ese doctor` or `ese fix` routines) that mutates, rewrites, or repairs configuration files, manifests, tickets, plans, or source code MUST create an atomic timestamped backup (`.bak` or `.esedre/backups/<timestamp>/`) before modifying any file on disk.

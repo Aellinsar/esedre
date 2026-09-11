@@ -77,6 +77,13 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
    - In a multi-project workspace, if there is ANY ambiguity regarding which repositories, projects, or modified files are intended to be committed or pushed, you MUST ask the user for explicit clarification before staging, committing, or pushing.
    - Never assume all modified repositories or workspaces should be committed or pushed together. Erroneous commits or pushes across projects are strictly prohibited.
 
+6. **Mandatory Documentation Currency Pre-Flight Check (Zero Stale Docs)**
+   - Whenever the user mentions commit, push, or package publishing, you are STRICTLY REQUIRED to halt and double-check all Esedre documentation: `README.md`, `AGENTS.md`, and the agent skills in `.agents/skills/`.
+   - **Expected Behavior (Halt & Warn, Never Silent Auto-Changes)**:
+     - If ANY documentation is stale, out-of-date, or missing newly added commands, flags, schema fields, or architectural invariants, you MUST **HALT** and **WARN** the user of the stale documentation, explicitly presenting the suggested fixes.
+     - You are STRICTLY FORBIDDEN from automatically changing files or silently bundling unreviewed doc edits into the commit to hide the issue.
+     - Wait for explicit user review and approval of the proposed documentation updates before proceeding to stage, commit, push, or publish.
+
 ---
 
 ## 6. Multi-Project Agent Isolation & Two-Tier Configuration
@@ -251,6 +258,14 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 3. **Continuous Real-Time Alignment via MCP & CLI**:
    - Through the Model Context Protocol (MCP) server and CLI commands, LLM agents continuously query project priorities (`esedre_list_tickets`), inspect specifications (`esedre_get_ticket`), and update plans (`esedre_save_plan`) with optimistic concurrency checks (`sha1`), eliminating hallucinated project direction and preventing drift.
 
+4. **Per-Project Grounding Context & Conflict-Free Guidelines Invariant**:
+   - **Per-Project Grounding Parameters**: Projects configure high-level architectural mission statements, technology stack constraints (languages, runtime targets, framework versions), and grounding rules in `project.json` (or `.esedre/project.json`).
+   - **Authoritative Source of Truth**: User-maintained agent guidelines (such as `AGENTS.md`, `CLAUDE.md`, or `.cursorrules`) are strictly the primary source of truth. Esedre grounding context references and anchors to them rather than duplicating rules that can become stale.
+   - **Zero-Latency Snapshot Projection**: The `ese snapshot` projection engine embeds project mission and technology stack parameters directly into `.esedre/snapshot.json`. LLM agents query this lean snapshot instantly upon session start or after context compactions.
+
+5. **Mandatory Pre-Edit Backup Invariant for Automated Mutations (Zero Exceptions)**:
+   - Any automated tool, CLI diagnostic repair, or LLM-driven fix operation (such as `ese doctor`, `ese fix`, or smart repair routines) that modifies, rewrites, or repairs configuration files, manifests, tickets, plans, or source code MUST create an atomic timestamped backup (`.bak` or `.esedre/backups/<timestamp>/`) before modifying any file on disk.
+
 ---
 
 ## 15. Planning Mode, Change Authorization & Problem Solving Philosophy
@@ -268,3 +283,21 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
    - Fix underlying issues at their architectural source in parser, database, storage, or state logic; avoid superficial band-aids or downstream string patches.
    - **Pave the Desire Paths**: When the LLM agent naturally gravitates toward a pattern, officially support and structure it rather than fighting it.
    - Preserve all existing comments, docstrings, and type annotations that are unrelated to your immediate changes.
+
+---
+
+## 16. Package Distribution, Versioning & Release Workflow
+
+1. **Dual Version Synchronization**:
+   - Package version numbers must strictly stay synchronized across `package.json` (`"version"`) and `src/types.ts` (`CURRENT_ESEDRE_VERSION`).
+   - Tests dynamically import `CURRENT_ESEDRE_VERSION` to ensure version checks remain evergreen across releases.
+
+2. **Standard Native npm Publishing**:
+   - Publishing relies on standard `npm publish` with `prepublishOnly` executing `npm run lint && npm run test && npm run build`.
+   - The `"bin"` map in `package.json` must use normalized paths without leading `./` (e.g. `"dist/esedre.mjs"` instead of `"./dist/esedre.mjs"`) to satisfy npm package validation without warnings.
+
+3. **Future CI Automation via npm Trusted Publishing (OIDC)**:
+   - Automated publishing from GitHub Actions uses OIDC Trusted Publishing (`permissions: id-token: write`, `npm publish --provenance`) to generate verifiable package provenance with zero stored secret tokens.
+
+4. **Pre-Publish Documentation Currency Check**:
+   - The mandatory pre-flight check defined in Section 5.6 strictly applies before publishing any package release. Never initiate or assist with a package release if documentation is stale. Halt and present suggested fixes for user review.

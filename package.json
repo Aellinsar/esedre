@@ -21,8 +21,8 @@
   "type": "module",
   "main": "./dist/esedre.mjs",
   "bin": {
-    "esedre": "./dist/esedre.mjs",
-    "ese": "./dist/esedre.mjs"
+    "esedre": "dist/esedre.mjs",
+    "ese": "dist/esedre.mjs"
   },
   "files": [
     "dist",
