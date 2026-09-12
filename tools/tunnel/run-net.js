@@ -7,7 +7,7 @@ import { DEFAULT_ALLOW_LIST, GAMEDAY_ALLOW_LIST } from './constants.js';
 // 1. Parse Mode (npm run net:all passes --all)
 const isAllMode = process.argv.includes('--all');
 
-console.log('\nðŸš€ [Professor Arwam] Starting Vite Dev Server & Cloudflare Tunnel (dev.arwam.com)...\n');
+console.log('\n🚀 [Esedre] Starting Vite Dev Server & Cloudflare Tunnel (esedre.aroomwithamoose.com)...\n');
 
 // 2. Locate cloudflared binary
 function getCloudflaredPath() {
@@ -155,7 +155,17 @@ async function main() {
   });
 
   // 5. Start Tunnel with HTTP/2 transport protocol (avoids UDP QUIC hairpin/NAT drops on LAN)
-  const tunnel = spawn(cloudflaredPath, ['tunnel', 'run', '--protocol', 'http2', 'arwam-beta'], {
+  const tokenFile = path.resolve(import.meta.dirname, 'token.txt');
+  const token =
+    process.env.CLOUDFLARE_TUNNEL_TOKEN ||
+    (fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf-8').trim() : null);
+
+  const configFile = path.resolve(import.meta.dirname, 'config.yml');
+  const tunnelArgs = token
+    ? ['tunnel', 'run', '--protocol', 'http2', '--token', token]
+    : ['--config', configFile, 'tunnel', 'run', '--protocol', 'http2', 'esedre-dev'];
+
+  const tunnel = spawn(cloudflaredPath, tunnelArgs, {
     stdio: 'inherit',
     shell: false,
   });
@@ -166,7 +176,7 @@ async function main() {
     process.env.NO_ESEDRE === 'true';
 
   const esedrePathCandidates = [
-    path.resolve(import.meta.dirname, '../../tools/esedre.mjs'),
+    path.resolve(import.meta.dirname, '../../dist/esedre.mjs'),
   ];
   const esedreConfigCandidates = [
     path.resolve(import.meta.dirname, '../../.esedre/esedre.json'),
@@ -197,7 +207,7 @@ async function main() {
   const cleanup = () => {
     if (isShuttingDown) return;
     isShuttingDown = true;
-    console.log('\nðŸ›‘ [Professor Arwam] Shutting down Vite, Esedre, and Cloudflare Tunnel...');
+    console.log('\n🛑 [Esedre] Shutting down Vite, Esedre, and Cloudflare Tunnel...');
     try {
       if (process.platform === 'win32') {
         if (vite.pid) spawn('taskkill', ['/pid', String(vite.pid), '/f', '/t'], { shell: false });

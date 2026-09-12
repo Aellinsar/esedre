@@ -8,3 +8,4 @@ coverage/
 .env.*
 !.env.example
 .esedre/snapshot.json
+tools/tunnel/token.txt

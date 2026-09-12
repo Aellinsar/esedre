@@ -142,8 +142,17 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 7. **Local Dev & Cloudflare Tunnel Workflows**:
    - `npm run dev`: Runs local Vite development server on port 5674.
-   - `npm run net`: Cloudflare tunnel targeting port 5674 for `dev.esedre.com` (with `planner.arwam.com` as alias) with IP whitelist protection.
+   - `npm run net`: Cloudflare tunnel targeting port 5674 for `esedre.aroomwithamoose.com` (with `planner.arwam.com` as alias) with IP whitelist protection.
    - `npm run net:all`: Public open tunnel mode for external access.
+   - **Vite `server.allowedHosts`**: Configured in `vite.config.ts` with `['esedre.aroomwithamoose.com', 'planner.arwam.com', 'localhost', '127.0.0.1']` to prevent Vite 6/8 host header rejection (`403 Forbidden`).
+   - **Global `--config` Flag Order**: In `cloudflared`, `--config` must precede the subcommand: `cloudflared --config tools/tunnel/config.yml tunnel run ...`.
+   - **Remote vs Local Ingress Configuration**: Tunnels created or managed in the Cloudflare Zero Trust dashboard receive ingress configuration remotely, overriding local `config.yml`. When routing new hostnames (`cloudflared tunnel route dns`), remote ingress configuration must be updated via Cloudflare API (`PUT /accounts/:id/cfd_tunnel/:id/configurations`) or the Zero Trust dashboard.
+   - **Private Domain Separation**: Standalone Esedre planning hub and local filesystem data endpoints are strictly hosted under the private domain `esedre.aroomwithamoose.com`. Public documentation and marketing previews run on `dev.esedre.com` (under `esedre-web`), ensuring zero external discovery of private local data hubs.
+   - **Cloudflare Origin Certificate Scoping Invariant (`~/.cloudflared/`)**:
+     * Runtime tunnels (`npm run net` / `cloudflared tunnel run`) authenticate via JSON credentials or tunnel tokens; they never read `.pem` certificates.
+     * Administrative CLI routing (`cloudflared tunnel route dns`) uses Origin CA certificates (`.pem`), which are strictly bound to a single Cloudflare Zone ID.
+     * To prevent accidental zone contamination (such as minting `.arwam.com` subdomains on external targets), dedicated certificates are preserved with distinct names (`cert-arwam.pem`, `cert-aroomwithamoose.pem`, `cert-esedre.pem`). CLI route commands must pass `--origincert` explicitly.
+
 
 8. **Smart Release & Package Publishing Workflow (`npm run pub`)**:
    - **Publishing Command**: Always use `npm run pub` (or `npm run pub -- <args>`) instead of bare `npm publish`.
