@@ -8,7 +8,7 @@
 
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-blue.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-100%25%20Passing-emerald.svg)](tests/)
-[![Website: www.arwam.com](https://img.shields.io/badge/Website-www.arwam.com-cyan.svg)](https://www.arwam.com)
+[![Website: arwam.com](https://img.shields.io/badge/Website-arwam.com-cyan.svg)](https://arwam.com)
 
 ---
 
@@ -283,4 +283,4 @@ npm run build
 
 ## 📄 License
 
-[Mozilla Public License 2.0 (MPL-2.0)](LICENSE) © [ARWAM](https://www.arwam.com)
+[Mozilla Public License 2.0 (MPL-2.0)](LICENSE) © [ARWAM](https://arwam.com)
