@@ -152,6 +152,7 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
      * Runtime tunnels (`npm run net` / `cloudflared tunnel run`) authenticate via JSON credentials or tunnel tokens; they never read `.pem` certificates.
      * Administrative CLI routing (`cloudflared tunnel route dns`) uses Origin CA certificates (`.pem`), which are strictly bound to a single Cloudflare Zone ID.
      * To prevent accidental zone contamination (such as minting `.arwam.com` subdomains on external targets), dedicated certificates are preserved with distinct names (`cert-arwam.pem`, `cert-aroomwithamoose.pem`, `cert-esedre.pem`). CLI route commands must pass `--origincert` explicitly.
+   - **Multi-Layer Zero-Crawl & Anti-Indexing Invariant**: All dev tunnel responses (`esedre.aroomwithamoose.com`) are strictly protected against search engine and AI spider cataloging via edge-level Cloudflare rules ('Dev Tunnels - Noindex Header'), local Vite `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex`, virtual `GET /robots.txt` (`Disallow: /`), virtual 404s for sitemaps, and dev HTML meta tag injection.
 
 
 8. **Smart Release & Package Publishing Workflow (`npm run pub`)**:

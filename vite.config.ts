@@ -124,12 +124,53 @@ function tunnelSecurityPlugin(): Plugin {
           }
         }
 
+        const hostHeader = (req.headers['x-forwarded-host'] || req.headers['host'] || '') as string;
+        const hostname = hostHeader.split(',')[0].split(':')[0].toLowerCase().trim();
+        const isDevHost =
+          hostname.endsWith('.aroomwithamoose.com') ||
+          hostname === 'localhost' ||
+          hostname === '127.0.0.1' ||
+          hostname === '::1' ||
+          !!tunnelAllowedIps;
+
+        if (isDevHost) {
+          // Zero-Crawl & Anti-Indexing: enforce X-Robots-Tag on all dev responses
+          res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet, noimageindex');
+
+          // Virtual robots.txt with strict zero-crawl disallow
+          if (req.url === '/robots.txt') {
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+            res.end('User-agent: *\nDisallow: /\n');
+            return;
+          }
+
+          // Suppress sitemaps on dev tunnel hosts
+          if (req.url === '/sitemap.xml' || req.url?.startsWith('/sitemap')) {
+            res.statusCode = 404;
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+            res.end('Not Found');
+            return;
+          }
+        }
+
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
 
         next();
       });
+    },
+    transformIndexHtml(html, ctx) {
+      if (ctx.server) {
+        return html.replace(
+          '</head>',
+          '  <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex" />\n  </head>'
+        );
+      }
+      return html;
     },
   };
 }
