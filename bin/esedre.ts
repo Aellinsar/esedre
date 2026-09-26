@@ -5,7 +5,7 @@ import path from 'node:path';
 import { FilesystemStorageAdapter } from '../src/storage/filesystem.js';
 import { StorageAdapter } from '../src/storage/adapter.js';
 import { SecurityFilter } from '../src/securityFilter.js';
-import { formatTicketListTable, formatTicketDetail, colors } from '../src/utils/formatter.js';
+import { formatTicketListTable, formatTicketDetail, colors, normalizeDashesAndMojibake } from '../src/utils/formatter.js';
 import { EsedreMcpServer } from '../src/mcp/server.js';
 import { TicketType, TicketCategory, TicketStatus, ProjectDescriptor, EsedreConflictError } from '../src/types.js';
 import {
@@ -68,7 +68,7 @@ ${colors.bold}ROADMAP COMMANDS (Pair Programming & LLM Agents):${colors.reset}
   ${colors.bold}plan${colors.reset}        <id> [--file <path> | --set "<markdown>"] [--last-hash <sha1>] [--json]
                View or update implementation plan with optimistic concurrency control.
 
-  ${colors.bold}create${colors.reset}      --title "..." [-p|--project <code>] [-t|--type <type>] [--complexity <c>] [--effort "<e>"] [--summary "<s>"] [--json]
+  ${colors.bold}create${colors.reset}      --title "..." [-p|--project <code>] [-t|--type <type>] [--complexity <c>] [--effort "<e>"] [--summary "<s>"] [--detail "<md>"] [--file <path>] [--json]
                Mint a new roadmap ticket with sequential numeric ID.
 
   ${colors.bold}update${colors.reset}      <id> [-s|--status <status>] [-t|--type <type>] [--title "..."] [--complexity <c>] [--effort "<e>"] [--in-dev] [--flag <name>] [--last-hash <sha1>] [--force] [--json]
@@ -77,7 +77,7 @@ ${colors.bold}ROADMAP COMMANDS (Pair Programming & LLM Agents):${colors.reset}
   ${colors.bold}comment${colors.reset}     <id> ["<text>"] [--text "..."] [--author "..."] [--json]
                Append a research finding, test verification, or note to ticket history.
 
-  ${colors.bold}snapshot${colors.reset}    [--project <code>] [--json]
+  ${colors.bold}snapshot, refresh${colors.reset} [--project <code>] [--json]
                Generate lean read-only projection snapshot (.esedre/snapshot.json) for zero-latency agent context.
 
 ${colors.bold}SERVICE DAEMON COMMANDS:${colors.reset}
@@ -121,6 +121,8 @@ ${colors.bold}OPTIONS:${colors.reset}
   -t, --type <type>    Ticket type ('Feature', 'Platform', 'Tools', 'Idea', 'Bug').
   -s, --status <stat>  Ticket status ('Planned', 'In Development', 'Completed', 'Rejected').
   -q, --search <query> Case-insensitive substring search query.
+  --detail "<md>"      Specification markdown for ticket detail during create.
+  --file <path>        Path to markdown file for detail (create) or implementation plan (plan).
   --json              Output raw machine-readable JSON (strongly recommended for autonomous LLM coding agents).
   --last-hash <hash>  Optimistic concurrency control: last known sha1 hash of the ticket from 'get'.
   --force             Bypass optimistic concurrency last-hash conflict checks on writes.
@@ -202,6 +204,14 @@ function printDuplicateProjectWarnings(storage: StorageAdapter, isJson: boolean)
 }
 
 async function main(): Promise<void> {
+  // Ensure UTF-8 output encoding for standard streams
+  if (process.stdout && typeof (process.stdout as any).setDefaultEncoding === 'function') {
+    try { (process.stdout as any).setDefaultEncoding('utf-8'); } catch {}
+  }
+  if (process.stderr && typeof (process.stderr as any).setDefaultEncoding === 'function') {
+    try { (process.stderr as any).setDefaultEncoding('utf-8'); } catch {}
+  }
+
   const rawArgs = process.argv.slice(2);
   const { command, positionals, flags } = parseArgs(rawArgs);
 
@@ -690,6 +700,7 @@ async function main(): Promise<void> {
         return;
       }
 
+      case 'refresh':
       case 'snapshot': {
         const projectCode = (flags['project'] as string) || discovered.config?.projectCode;
         if (!projectCode) {
@@ -839,12 +850,12 @@ async function main(): Promise<void> {
         if (isJson) {
           console.log(JSON.stringify(tickets.map((t) => ({
             id: t.meta.id,
-            title: t.meta.title,
+            title: normalizeDashesAndMojibake(t.meta.title),
             type: t.meta.type || t.meta.category,
             category: t.meta.type || t.meta.category,
             status: t.meta.status,
-            complexity: t.meta.complexity,
-            effort: t.meta.estimatedEffort,
+            complexity: normalizeDashesAndMojibake(t.meta.complexity),
+            effort: normalizeDashesAndMojibake(t.meta.estimatedEffort),
             project: t.projectDescriptor?.code || t.meta.project || 'UNASSIGNED',
             sha1: t.sha1 || t.meta.sha1,
           })), null, 2));
@@ -914,13 +925,28 @@ async function main(): Promise<void> {
             content = fs.readFileSync(filePath, 'utf-8');
           }
           await storage.savePlan(id, content, lastHash);
-          console.log(`${colors.green}✔ Implementation plan saved for Ticket #${id}${colors.reset}`);
+          if (isJson) {
+            const updated = await storage.getTicket(id);
+            console.log(JSON.stringify({
+              success: true,
+              ticketId: id,
+              project: updated?.projectDescriptor?.code || updated?.meta?.project || 'UNASSIGNED',
+              planMarkdown: content,
+              sha1: updated?.sha1 || updated?.meta?.sha1,
+            }, null, 2));
+          } else {
+            console.log(`${colors.green}✔ Implementation plan saved for Ticket #${id}${colors.reset}`);
+          }
           return;
         }
 
         const plan = await storage.getPlan(id);
         if (!plan) {
-          console.log(`${colors.dim}No implementation plan found for Ticket #${id}.${colors.reset}`);
+          if (isJson) {
+            console.log(JSON.stringify({ ticketId: id, planMarkdown: null }, null, 2));
+          } else {
+            console.log(`${colors.dim}No implementation plan found for Ticket #${id}.${colors.reset}`);
+          }
           return;
         }
 
@@ -933,11 +959,12 @@ async function main(): Promise<void> {
       }
 
       case 'create': {
-        const title = flags['title'] as string;
-        if (!title) {
+        const rawTitle = flags['title'] as string;
+        if (!rawTitle) {
           console.error(`${colors.red}Error: --title is required${colors.reset}`);
           process.exit(1);
         }
+        const title = normalizeDashesAndMojibake(rawTitle);
 
         const type = ((flags['type'] as string) || (flags['category'] as string) || 'Feature') as TicketType;
         const category = type;
@@ -947,15 +974,32 @@ async function main(): Promise<void> {
           console.error(`${colors.dim}Tip: Run 'ese init' to initialize this repository.${colors.reset}`);
           process.exit(1);
         }
-        const complexity = (flags['complexity'] as string) || 'Medium';
-        const estimatedEffort = (flags['effort'] as string) || '2.0 - 4.0 hours';
-        const summary = (flags['summary'] as string) || undefined;
+        const complexity = normalizeDashesAndMojibake((flags['complexity'] as string) || 'Medium');
+        const estimatedEffort = normalizeDashesAndMojibake((flags['effort'] as string) || '2.0 - 4.0 hours');
+        const summary = flags['summary'] ? normalizeDashesAndMojibake(flags['summary'] as string) : undefined;
         const submittedBy = (flags['author'] as string) || 'Developer';
 
         const val = validateProjectCode(projectCode);
         if (!val.valid) {
           console.error(`${colors.red}Error: ${val.error}${colors.reset}`);
           process.exit(1);
+        }
+
+        const detailArg = flags['detail'] as string;
+        const fileArg = flags['file'] as string;
+
+        let detailMarkdown: string | undefined = detailArg;
+        if (fileArg) {
+          const filePath = path.resolve(fileArg);
+          if (!fs.existsSync(filePath)) {
+            if (isJson) {
+              console.error(JSON.stringify({ error: `Detail file "${fileArg}" not found` }));
+            } else {
+              console.error(`${colors.red}Error: Detail file "${fileArg}" not found.${colors.reset}`);
+            }
+            process.exit(1);
+          }
+          detailMarkdown = fs.readFileSync(filePath, 'utf-8');
         }
 
         const created = await storage.createTicket({
@@ -967,6 +1011,8 @@ async function main(): Promise<void> {
           estimatedEffort,
           summary,
           submittedBy,
+          detail: detailMarkdown,
+          detailMarkdown,
         });
 
         if (isJson) {
@@ -987,9 +1033,9 @@ async function main(): Promise<void> {
         const lookupKey = projectFlag && /^\d+$/.test(idStr) ? `${projectFlag}-${idStr}` : idStr;
 
         const status = flags['status'] as TicketStatus;
-        const title = flags['title'] as string;
-        const complexity = flags['complexity'] as string;
-        const effort = flags['effort'] as string;
+        const title = flags['title'] ? normalizeDashesAndMojibake(flags['title'] as string) : undefined;
+        const complexity = flags['complexity'] ? normalizeDashesAndMojibake(flags['complexity'] as string) : undefined;
+        const effort = flags['effort'] ? normalizeDashesAndMojibake(flags['effort'] as string) : undefined;
         const inDev = flags['in-dev'] !== undefined ? Boolean(flags['in-dev']) : undefined;
         const flag = flags['flag'] as string;
         const isForce = Boolean(flags['force']);

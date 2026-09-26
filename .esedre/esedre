@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Esedre Autonomous Ticketing & Project Planning Engine Wrapper (POSIX)
+set -e
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+
+if command -v ese >/dev/null 2>&1; then
+  exec ese "$@"
+fi
+if command -v esedre >/dev/null 2>&1; then
+  exec esedre "$@"
+fi
+if [ -f "$DIR/../../esedre/dist/esedre.mjs" ]; then
+  exec node "$DIR/../../esedre/dist/esedre.mjs" "$@"
+fi
+if [ -f "$DIR/../esedre/dist/esedre.mjs" ]; then
+  exec node "$DIR/../esedre/dist/esedre.mjs" "$@"
+fi
+if [ -f "$DIR/../node_modules/.bin/ese" ]; then
+  exec "$DIR/../node_modules/.bin/ese" "$@"
+fi
+if [ -f "$DIR/../node_modules/.bin/esedre" ]; then
+  exec "$DIR/../node_modules/.bin/esedre" "$@"
+fi
+exec npx --yes esedre "$@"

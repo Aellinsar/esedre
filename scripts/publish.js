@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { execSync, spawnSync } from 'node:child_process';
 
 const isInteractive = Boolean(process.stdin.isTTY && !process.env.CI);
@@ -34,7 +35,23 @@ if (authenticated) {
   console.warn('\n⚠️  npm whoami failed, but running in non-interactive / CI environment. Proceeding to npm publish directly...');
 }
 
-// 2. Invoke npm publish (which automatically triggers prepublishOnly tests and build)
+// 2. Pre-check npm registry to prevent duplicate version collision (E403)
+try {
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf-8'));
+  const publishedVersion = execSync(`npm view ${pkg.name}@${pkg.version} version`, {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  }).trim();
+  if (publishedVersion === pkg.version) {
+    console.error(`\n✖ Version Collision Error: Version ${pkg.version} of ${pkg.name} is already published on npm.`);
+    console.error(`  Please bump "version" in package.json (and src/types.ts) before publishing.\n`);
+    process.exit(1);
+  }
+} catch {
+  // Not published yet on registry or network offline: proceed
+}
+
+// 3. Invoke npm publish (which automatically triggers prepublishOnly tests and build)
 console.log('\n🚀 Starting npm publish...\n');
 const publishArgs = ['publish', '--access', 'public', ...extraArgs];
 

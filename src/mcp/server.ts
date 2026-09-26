@@ -307,6 +307,7 @@ export class EsedreMcpServer {
             complexity: { type: 'string', description: 'Complexity (e.g. Low, Medium, High)' },
             effort: { type: 'string', description: 'Estimated effort (e.g. 2.0 - 4.0 hours)' },
             summary: { type: 'string', description: 'Initial feature summary' },
+            detail: { type: 'string', description: 'Initial specification, feature breakdown, or technical detail markdown' },
             author: { type: 'string', description: 'Submitting author name' },
           },
           required: ['title'],
@@ -402,6 +403,8 @@ export class EsedreMcpServer {
           complexity: args.complexity,
           estimatedEffort: args.effort,
           summary: args.summary,
+          detail: args.detail || args.detailMarkdown,
+          detailMarkdown: args.detailMarkdown || args.detail,
           submittedBy: args.author || 'Agent',
         });
         return created;

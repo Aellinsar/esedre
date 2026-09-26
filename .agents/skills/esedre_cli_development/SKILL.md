@@ -37,11 +37,11 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 | `list` | `esedre list [--project <code\|all>] [--status <status>] [--json]` | Lists tickets. Defaults to the active repo's `projectCode` in `esedre.json`. `--project all` lists all permitted tickets. |
 | `get` | `esedre get <id> [--json]` | Displays complete ticket metadata, summary, feature breakdown, and comments. |
 | `plan` | `esedre plan <id> [--json] [--set "<markdown>"] [--file <path>]` | Reads or updates the implementation plan markdown. |
-| `create` | `esedre create --title "..." [--project <code>] [--type <type>] [--effort "..."]` | Creates a new roadmap ticket with sequential ID. Defaults to active project. |
+| `create` | `esedre create --title "..." [--project <code>] [--type <type>] [--effort "..."] [--detail "<md>"] [--file <path>]` | Creates a new roadmap ticket with sequential ID and optional specification markdown. Defaults to active project. |
 | `update` | `esedre update <id> [-p|--project <code>] [-s|--status <status>] [--title "..."] [--flag] [--last-hash <sha1>] [--force]` | Updates ticket status, title, active planning flag, or feature flag. Accepts compound ID (e.g. `Profe-96`) or numeric with `-p`. |
 | `comment` | `esedre comment <id> [-p|--project <code>] --text "..." [--author "..."]` | Appends a developer or agent comment to the ticket's history. Accepts compound ID or numeric with `-p`. |
 | `projects` | `esedre projects [--json]` | Lists registered projects that are within the current authorized scope. |
-| `snapshot` | `esedre snapshot [--project <code>]` | Re-generates `.esedre/snapshot.json` projection for zero-latency agent context. |
+| `snapshot`, `refresh` | `esedre snapshot [--project <code>]` | Re-generates or refreshes `.esedre/snapshot.json` projection for zero-latency agent context. |
 | `upgrade` | `esedre upgrade [--json]` | Upgrades workspace configuration, scripts, wrappers, and agent skills. |
 | `mcp` | `esedre mcp` | Starts the Model Context Protocol stdio server. |
 
@@ -60,3 +60,13 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 ## 5. Automated Diagnostic & Repair Invariants
 
 - **Mandatory Pre-Edit Backup Invariant**: Any diagnostic, repair, or automated fix operation (such as future `ese doctor` or `ese fix` routines) that mutates, rewrites, or repairs configuration files, manifests, tickets, plans, or source code MUST create an atomic timestamped backup (`.bak` or `.esedre/backups/<timestamp>/`) before modifying any file on disk.
+
+## 6. Windows Shell & Batch Wrapper Invariants
+
+1. **Windows CMD Wrapper (`ese.cmd` / `esedre.cmd`)**:
+   - Jump labels MUST reside strictly at the top level (never `goto` within parenthesized `if (...)` blocks).
+   - All internal batch invocations (`ese`, `esedre`, `npx`, and local `.bin\ese.cmd`) MUST use `call` (`call ese %*`).
+   - Terminate with `exit /b %ERRORLEVEL%` to preserve and propagate return codes.
+2. **PowerShell Wrapper (`ese.ps1` / `esedre.ps1`)**:
+   - Set console and output encoding to UTF-8 at startup (`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8`, `$OutputEncoding = [System.Text.Encoding]::UTF8`).
+   - Ensures non-ASCII Unicode characters render cleanly across Windows hosts.

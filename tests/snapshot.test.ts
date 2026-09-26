@@ -395,6 +395,31 @@ describe('.esedre/snapshot.json Comprehensive Test Suite', () => {
       expect(stdout).toContain('.esedre/snapshot.json');
     });
 
+    it('executes ese refresh as a CLI alias for snapshot', () => {
+      fs.mkdirSync(path.join(tempDir, '.esedre'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tempDir, '.esedre', 'esedre.json'),
+        JSON.stringify({ version: CURRENT_ESEDRE_VERSION, projectCode: 'Core' }),
+        'utf-8'
+      );
+
+      const stdout = execFileSync(
+        process.execPath,
+        [cliPath, 'refresh', '--project', 'Core'],
+        {
+          cwd: tempDir,
+          encoding: 'utf-8',
+          env: {
+            ...process.env,
+            ESEDRE_GLOBAL_DIR: path.join(tempDir, 'global-store'),
+          },
+        }
+      );
+
+      expect(stdout).toContain('Generated projection snapshot for project \'Core\'');
+      expect(stdout).toContain('.esedre/snapshot.json');
+    });
+
     it('fails with clean error message when no project code is available', () => {
       const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-empty-test-'));
       try {

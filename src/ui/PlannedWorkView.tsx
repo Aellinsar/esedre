@@ -12,6 +12,7 @@ export interface PlannedWorkViewProps {
   className?: string;
   onClose?: () => void;
   showHeader?: boolean;
+  isEmbedded?: boolean;
   initialProject?: string;
   allowedProjects?: string[];
   readOnly?: boolean;
@@ -177,7 +178,7 @@ export function renderFormattedInlineMarkdown(text: string | undefined): React.R
             <div
               key={cIdx}
               className={`leading-relaxed flex items-start gap-1.5 ${
-                chunk.isSub ? 'pl-4 text-[var(--text-muted)] before:content-["–"] before:text-[var(--accent-primary)] before:font-bold' : 'text-[var(--text-secondary)] before:content-["•"] before:text-[var(--accent-primary)] before:font-bold'
+                chunk.isSub ? 'pl-4 text-[var(--text-muted)] before:content-["-"] before:text-[var(--accent-primary)] before:font-bold' : 'text-[var(--text-secondary)] before:content-["•"] before:text-[var(--accent-primary)] before:font-bold'
               }`}
             >
               <div className="flex-1 min-w-0">{formatInlineTokens(chunk.text)}</div>
@@ -391,10 +392,60 @@ const ESEDRE_THEME_FALLBACK_CSS = `
 }
 `;
 
+export interface DetectIsEmbeddedOptions {
+  isEmbeddedProp?: boolean;
+  showHeader?: boolean;
+  allowedProjects?: string[];
+  search?: string;
+  isIframe?: boolean;
+}
+
+export function detectIsEmbedded(options: DetectIsEmbeddedOptions): boolean {
+  if (typeof options.isEmbeddedProp === 'boolean') {
+    return options.isEmbeddedProp;
+  }
+  if (typeof options.isIframe === 'boolean' && options.isIframe) {
+    return true;
+  }
+  if (options.search) {
+    try {
+      if (new URLSearchParams(options.search).get('embedded') === 'true') {
+        return true;
+      }
+    } catch {}
+  }
+  if (options.showHeader === false) {
+    return true;
+  }
+  if (
+    options.allowedProjects &&
+    options.allowedProjects.length > 0 &&
+    !options.allowedProjects.includes('*')
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function updateProjectUrlSearchParam(val: string, isEmbedded: boolean): void {
+  if (isEmbedded) return;
+  if (typeof window === 'undefined' || !window.location) return;
+  try {
+    const url = new URL(window.location.href);
+    if (val === 'all') {
+      url.searchParams.delete('project');
+    } else {
+      url.searchParams.set('project', val);
+    }
+    window.history.replaceState({}, '', url.toString());
+  } catch (err) {}
+}
+
 export function PlannedWorkView({
   className = '',
   onClose,
   showHeader = true,
+  isEmbedded: isEmbeddedProp,
   initialProject,
   allowedProjects,
   readOnly = false,
@@ -409,13 +460,14 @@ export function PlannedWorkView({
 
   // Autonomous, DNS-agnostic detection of whether Esedre is running in an embedded context
   const isEmbedded = useMemo(() => {
-    if (typeof window === 'undefined') return false;
-    if (window.parent !== window) return true;
-    if (new URLSearchParams(window.location.search).get('embedded') === 'true') return true;
-    if (!showHeader) return true;
-    if (allowedProjects && allowedProjects.length > 0 && !allowedProjects.includes('*')) return true;
-    return false;
-  }, [showHeader, allowedProjects]);
+    return detectIsEmbedded({
+      isEmbeddedProp,
+      showHeader,
+      allowedProjects,
+      search: typeof window !== 'undefined' ? window.location?.search : '',
+      isIframe: typeof window !== 'undefined' ? window.parent !== window : false,
+    });
+  }, [isEmbeddedProp, showHeader, allowedProjects]);
 
   // Standalone dedicated UI theme state (only active when showHeader is true)
   const [dedicatedTheme, setDedicatedTheme] = useState<'day' | 'night'>(() => {
@@ -1241,7 +1293,7 @@ export function PlannedWorkView({
     const title = metasMap[feat.ticketId]?.title || feat.title;
     const cat = metasMap[feat.ticketId]?.category || feat.category;
     const complexity = metasMap[feat.ticketId]?.complexity || feat.complexity;
-    const effort = metasMap[feat.ticketId]?.estimatedEffort || feat.estimatedEffort || '2.0 – 4.0 hours';
+    const effort = metasMap[feat.ticketId]?.estimatedEffort || feat.estimatedEffort || '2.0 - 4.0 hours';
     const rationale = overrideRationale !== undefined ? overrideRationale : (feat.rationale || '');
     const breakdown = overrideBreakdown !== undefined ? overrideBreakdown : (feat.breakdown || []);
     const tech = overrideTech !== undefined ? overrideTech : (feat.technicalDetails || []);
@@ -1805,15 +1857,7 @@ export function PlannedWorkView({
                     try {
                       sessionStorage.setItem('dev_plan_project_filter', val);
                       localStorage.setItem('dev_plan_project_filter', val);
-                      if (typeof window !== 'undefined' && window.location) {
-                        const url = new URL(window.location.href);
-                        if (val === 'all') {
-                          url.searchParams.delete('project');
-                        } else {
-                          url.searchParams.set('project', val);
-                        }
-                        window.history.replaceState({}, '', url.toString());
-                      }
+                      updateProjectUrlSearchParam(val, isEmbedded);
                     } catch (err) {}
                   }}
                   className="bg-transparent text-[var(--text-primary)] text-xs font-semibold focus:outline-none cursor-pointer pr-1 border-0"

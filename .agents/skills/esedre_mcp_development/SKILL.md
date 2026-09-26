@@ -32,8 +32,8 @@ The server registers the following tools in `tools/list`:
    - Parameters: `{ ticketId: number, planMarkdown: string }`
    - Persists updated plan markdown.
 5. `esedre_create_ticket`:
-   - Parameters: `{ title: string, category: string, project?: string, complexity?: string, effort?: string, summary?: string, author?: string }`
-   - Creates a new ticket.
+   - Parameters: `{ title: string, type?: string, category?: string, project?: string, complexity?: string, effort?: string, summary?: string, detail?: string, author?: string }`
+   - Creates a new ticket with optional specification markdown.
 6. `esedre_update_ticket`:
    - Parameters: `{ ticketId: number, status?: string, title?: string, inDevelopment?: boolean, featureFlag?: string }`
    - Modifies ticket attributes.

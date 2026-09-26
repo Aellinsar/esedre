@@ -115,10 +115,10 @@ Core day-to-day workflow commands for scoping, viewing, planning, and verifying 
 | `list` | `ese list [-p\|--project <code\|all>] [-s\|--status <status>] [-t\|--type <type>] [--json]` | List roadmap tickets with optional filters. Defaults to the active project. |
 | `get` | `ese get <id> [--json]` | View ticket specifications, feature breakdown, comments, and SHA-1 hash. |
 | `plan` | `ese plan <id> [--set "<markdown>"] [--file <path>] [--last-hash <h>]` | Read or update the active implementation plan markdown. |
-| `create` | `ese create --title "..." [-p\|--project <code>] [-t\|--type <type>]` | Create a new ticket with auto-sequential ID. Title strictly capped at 48 chars. |
+| `create` | `ese create --title "..." [-p\|--project <code>] [-t\|--type <type>] [--detail "<md>"] [--file <path>]` | Create a new ticket with auto-sequential ID and optional specification markdown. Title strictly capped at 48 chars. |
 | `update` | `ese update <id> [-s\|--status <status>] [-t\|--type <type>] [--title "..."] [--last-hash <h>]` | Update ticket status, type, or title with optimistic concurrency protection. |
 | `comment` | `ese comment <id> ["<text>"] [--text "..."] [--author "..."]` | Append a developer or LLM agent note to ticket history. |
-| `snapshot` | `ese snapshot [--project <code>] [--json]` | Generate lean projection `.esedre/snapshot.json` for zero-latency agent context. |
+| `snapshot`, `refresh` | `ese snapshot [--project <code>] [--json]` | Generate or refresh projection `.esedre/snapshot.json` for zero-latency agent context. |
 | `projects` | `ese projects [--json]` | List registered projects within authorized scope. |
 
 ### Service Daemon Commands
@@ -186,7 +186,7 @@ To connect Esedre to **Google Antigravity**, **Claude Code**, **Cursor**, or any
 - `esedre_list_tickets`: List tickets with optional project, status, category, or search filter.
 - `esedre_get_ticket`: Retrieve full specification, summary, comments, revision, and content hash (`sha1`).
 - `esedre_get_plan` & `esedre_save_plan`: Inspect and update implementation plans with optimistic concurrency (`lastHash`).
-- `esedre_create_ticket`: Mint new roadmap tickets with project code validation (up to 8 chars).
+- `esedre_create_ticket`: Mint new roadmap tickets with project code validation (up to 8 chars) and optional specification detail markdown.
 - `esedre_update_ticket`: Modify status, title, complexity, or effort with optimistic concurrency (`lastHash`).
 - `esedre_add_comment`: Append developer or LLM agent verification notes.
 
@@ -281,6 +281,7 @@ npm run build
 
 ---
 
-## 📄 License
+## 📄 License & Changelog
 
-[Mozilla Public License 2.0 (MPL-2.0)](LICENSE) © [ARWAM](https://arwam.com)
+- **License**: [Mozilla Public License 2.0 (MPL-2.0)](LICENSE) © [ARWAM](https://arwam.com)
+- **Changelog**: See [CHANGELOG.md](CHANGELOG.md) for detailed release notes and version history.

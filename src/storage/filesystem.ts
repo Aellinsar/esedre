@@ -15,6 +15,7 @@ import { EsedreTicket, TicketMeta, ProjectDescriptor, TicketComment, TicketDetai
 import { StorageAdapter, CreateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './adapter.js';
 import { EsedreConfig, findEsedreConfig, expandHome } from '../config.js';
 import { computeTicketHash, verifyTicketHash } from '../snapshot.js';
+import { normalizeDashesAndMojibake, normalizeTicketFields } from '../utils/formatter.js';
 
 function writeSafeFile(filePath: string, content: string): void {
   const dir = path.dirname(filePath);
@@ -832,6 +833,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
             comments,
             projectDescriptor: effectiveLoc.project,
           };
+          normalizeTicketFields(ticketObj);
           ticketObj.sha1 = computeTicketHash(ticketObj);
           ticketObj.lastHash = ticketObj.sha1;
           tickets.push(ticketObj);
@@ -889,6 +891,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         comments,
         projectDescriptor: locInfo.loc.project,
       };
+      normalizeTicketFields(ticket);
       ticket.sha1 = computeTicketHash(ticket);
       ticket.lastHash = ticket.sha1;
       return ticket;
@@ -1002,13 +1005,19 @@ export class FilesystemStorageAdapter implements StorageAdapter {
 
     const now = new Date().toISOString();
     const effectiveType = (input.type || input.category || 'Feature') as TicketType;
+    const cleanTitle = normalizeDashesAndMojibake(input.title).slice(0, 48).trim();
+    const cleanEffort = normalizeDashesAndMojibake(input.estimatedEffort || input.effort || '2.0 - 4.0 hours');
+    const cleanComplexity = normalizeDashesAndMojibake(input.complexity || 'Medium');
+    const cleanSummary = input.summary ? normalizeDashesAndMojibake(input.summary) : undefined;
+    const cleanDetailRaw = (input.detailMarkdown || input.detail) ? normalizeDashesAndMojibake(input.detailMarkdown || input.detail) : undefined;
+
     const meta: TicketMeta = {
       id: nextId,
-      title: input.title.slice(0, 48).trim(),
+      title: cleanTitle,
       type: effectiveType,
       category: effectiveType,
-      complexity: input.complexity || 'Medium',
-      estimatedEffort: input.estimatedEffort || input.effort || '2.0 - 4.0 hours',
+      complexity: cleanComplexity,
+      estimatedEffort: cleanEffort,
       submittedBy: input.submittedBy || 'Developer',
       timestamp: now,
       createdAt: now,
@@ -1020,7 +1029,46 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       project: targetLoc.project.code,
     };
 
-    const detailMd = `# Ticket #${nextId}: ${meta.title}
+    const rawDetail = cleanDetailRaw?.trim();
+    let detailMd: string;
+
+    if (rawDetail) {
+      if (/^#\s+[^\n]+/m.test(rawDetail)) {
+        // Starts with or contains a top-level single-hash heading (# Title)
+        let processed = rawDetail.replace(/^#\s+[^\n]+/m, `# Ticket #${nextId}: ${meta.title}`);
+        if (!/\*\*(?:Type|Category)\*\*:/i.test(processed)) {
+          const metaBlock = `\n**Category**: ${meta.category}  \n**Complexity**: ${meta.complexity}  \n**Estimated Effort**: ${meta.estimatedEffort}  \n`;
+          processed = processed.replace(/^(# Ticket[^\n]+\n)/m, `$1${metaBlock}`);
+        }
+        if (!/(?:##|###)\s*(?:Summary|Rationale)/i.test(processed)) {
+          const summaryBlock = `\n### Summary\n${input.summary || 'Summary to be defined.'}\n`;
+          processed = processed.replace(/^((?:# Ticket[^\n]+\n)(?:\*\*[^\n]+\n)*)/m, `$1${summaryBlock}`);
+        }
+        detailMd = processed.endsWith('\n') ? processed : `${processed}\n`;
+      } else {
+        // Sub-headings (##, ###) or plain body text
+        const hasSummary = /(?:##|###)\s*(?:Summary|Rationale)/i.test(rawDetail);
+        const hasBreakdown = /(?:##|###)\s*Feature Breakdown/i.test(rawDetail);
+
+        let body = '';
+        if (!hasSummary) {
+          body += `### Summary\n${input.summary || 'Summary to be defined.'}\n\n`;
+        }
+        if (!hasBreakdown && !rawDetail.startsWith('#')) {
+          body += `### Feature Breakdown\n${rawDetail}\n\n### Technical Details & Architecture\n- Architecture specifications to be documented.\n\n### Open Questions & Decisions\n- None recorded at initialization.\n`;
+        } else {
+          body += `${rawDetail}\n`;
+        }
+
+        detailMd = `# Ticket #${nextId}: ${meta.title}
+**Category**: ${meta.category}  
+**Complexity**: ${meta.complexity}  
+**Estimated Effort**: ${meta.estimatedEffort}  
+
+${body.trim()}\n`;
+      }
+    } else {
+      detailMd = `# Ticket #${nextId}: ${meta.title}
 **Category**: ${meta.category}  
 **Complexity**: ${meta.complexity}  
 **Estimated Effort**: ${meta.estimatedEffort}  
@@ -1038,6 +1086,7 @@ ${input.summary || 'Summary to be defined.'}
 ### Open Questions & Decisions
 - None recorded at initialization.
 `;
+    }
 
     writeSafeFile(path.join(ticketDir, 'meta.json'), JSON.stringify(meta, null, 2) + '\n');
     writeSafeFile(path.join(ticketDir, 'detail.md'), detailMd);
@@ -1072,9 +1121,14 @@ ${input.summary || 'Summary to be defined.'}
       : (updates.status && updates.status !== 'Completed' ? undefined : existing.meta.completedAt);
     const revision = (existing.meta.revision || 1) + 1;
 
+    const sanitizedUpdates: Partial<TicketMeta> = { ...updates };
+    if (sanitizedUpdates.title) sanitizedUpdates.title = normalizeDashesAndMojibake(sanitizedUpdates.title);
+    if (sanitizedUpdates.estimatedEffort) sanitizedUpdates.estimatedEffort = normalizeDashesAndMojibake(sanitizedUpdates.estimatedEffort);
+    if (sanitizedUpdates.complexity) sanitizedUpdates.complexity = normalizeDashesAndMojibake(sanitizedUpdates.complexity);
+
     const updatedMeta: TicketMeta = {
       ...existing.meta,
-      ...updates,
+      ...sanitizedUpdates,
       id: locInfo.id,
       project: locInfo.loc.project.code,
       updatedAt: now,
@@ -1112,7 +1166,7 @@ ${input.summary || 'Summary to be defined.'}
 
     const planPath = path.join(locInfo.ticketDir, 'implementation_plan.md');
     if (!fs.existsSync(planPath)) return null;
-    return fs.readFileSync(planPath, 'utf-8');
+    return normalizeDashesAndMojibake(fs.readFileSync(planPath, 'utf-8'));
   }
 
   public async savePlan(id: number | string, planMarkdown: string, lastHash?: string): Promise<void> {
@@ -1134,7 +1188,7 @@ ${input.summary || 'Summary to be defined.'}
     }
 
     const planPath = path.join(locInfo.ticketDir, 'implementation_plan.md');
-    writeSafeFile(planPath, planMarkdown);
+    writeSafeFile(planPath, normalizeDashesAndMojibake(planMarkdown));
 
     const metaPath = path.join(locInfo.ticketDir, 'meta.json');
     if (fs.existsSync(metaPath)) {
@@ -1169,8 +1223,8 @@ ${input.summary || 'Summary to be defined.'}
     const newComment: TicketComment = {
       id: `${locInfo.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       timestamp: new Date().toISOString(),
-      author: comment.author || 'User',
-      text: comment.text.trim(),
+      author: normalizeDashesAndMojibake(comment.author || 'User'),
+      text: normalizeDashesAndMojibake(comment.text.trim()),
     };
 
     comments.push(newComment);

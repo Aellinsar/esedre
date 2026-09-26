@@ -76,9 +76,9 @@ const STATUSES = [
 ];
 
 const COMPLEXITIES = [
-  { level: 'Low / Small', hours: '0.5 – 2.0 hrs', desc: 'Single-component tweaks, localized CSS fixes, configuration updates.' },
-  { level: 'Medium', hours: '2.0 – 5.0 hrs', desc: 'New modal dialogs, service integrations, multi-file refactoring.' },
-  { level: 'High / Large', hours: '5.0 – 12.0+ hrs', desc: 'Architectural decoupling, dual-storage engines, major data migrations.' },
+  { level: 'Low / Small', hours: '0.5 - 2.0 hrs', desc: 'Single-component tweaks, localized CSS fixes, configuration updates.' },
+  { level: 'Medium', hours: '2.0 - 5.0 hrs', desc: 'New modal dialogs, service integrations, multi-file refactoring.' },
+  { level: 'High / Large', hours: '5.0 - 12.0+ hrs', desc: 'Architectural decoupling, dual-storage engines, major data migrations.' },
 ];
 
 export const TicketHelpModal: React.FC<TicketHelpModalProps> = ({ isOpen, onClose }) => {
@@ -223,7 +223,7 @@ export const TicketHelpModal: React.FC<TicketHelpModalProps> = ({ isOpen, onClos
             </div>
             <ul className="list-disc list-inside space-y-0.5 text-[var(--text-secondary)] text-[10px] sm:text-[11px]">
               <li><strong>Title Limit</strong>: Keep ticket titles strictly $\le 48$ characters (`MAX_TICKET_TITLE_LENGTH = 48`).</li>
-              <li><strong>Summary</strong>: Write a clean 1–2 sentence elevator pitch explaining user benefit and motivation.</li>
+              <li><strong>Summary</strong>: Write a clean 1-2 sentence elevator pitch explaining user benefit and motivation.</li>
               <li><strong>Breakdown</strong>: Use clear numbered bullet points for feature requirements to guide implementation plans.</li>
             </ul>
           </div>

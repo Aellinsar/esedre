@@ -1,0 +1,11 @@
+{
+  "id": 3,
+  "code": "Esedre",
+  "name": "Esedre",
+  "description": "Esedre developer roadmap, ticketing, and LLM agent coordination platform",
+  "colors": {
+    "badge": "border-fuchsia-300 dark:border-fuchsia-500/30 bg-fuchsia-50 dark:bg-fuchsia-500/10 text-fuchsia-950 dark:text-fuchsia-300 font-semibold",
+    "dot": "bg-fuchsia-600 dark:bg-fuchsia-400",
+    "border": "border-fuchsia-300 dark:border-fuchsia-500/40"
+  }
+}

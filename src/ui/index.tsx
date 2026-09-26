@@ -37,6 +37,7 @@ function App() {
       <PlannedWorkView
         initialProject={initialProject}
         showHeader={!isEmbedded}
+        isEmbedded={isEmbedded}
         onClose={handleClose}
       />
     </div>

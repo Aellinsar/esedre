@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import child_process from 'node:child_process';
 import { FilesystemStorageAdapter } from '../src/storage/filesystem.js';
 import { SecurityFilter } from '../src/securityFilter.js';
 import { computeTicketHash, verifyTicketHash, generateProjectSnapshot } from '../src/snapshot.js';
@@ -339,6 +340,37 @@ describe('Upgrade & 3-Way Hash Detection', () => {
       expect(fs.existsSync(path.join(tempDir, '.esedre', 'ese'))).toBe(true);
       expect(fs.existsSync(path.join(tempDir, '.agents', 'mcp_config.json'))).toBe(true);
       expect(fs.existsSync(path.join(tempDir, '.agents', 'skills', 'esedre', 'SKILL.md'))).toBe(true);
+
+      const esedrePs1Content = fs.readFileSync(path.join(tempDir, '.esedre', 'esedre.ps1'), 'utf-8');
+      expect(esedrePs1Content).toContain('[Console]::OutputEncoding = [System.Text.Encoding]::UTF8');
+      expect(esedrePs1Content).toContain('$OutputEncoding = [System.Text.Encoding]::UTF8');
+
+      const esePs1Content = fs.readFileSync(path.join(tempDir, '.esedre', 'ese.ps1'), 'utf-8');
+      expect(esePs1Content).toContain('[Console]::OutputEncoding = [System.Text.Encoding]::UTF8');
+      expect(esePs1Content).toContain('$OutputEncoding = [System.Text.Encoding]::UTF8');
+
+      const esedreCmdContent = fs.readFileSync(path.join(tempDir, '.esedre', 'esedre.cmd'), 'utf-8');
+      expect(esedreCmdContent).toContain('goto use_ese');
+      expect(esedreCmdContent).toContain(':use_ese');
+      expect(esedreCmdContent).toContain('call ese %*');
+      expect(esedreCmdContent).toContain('call esedre %*');
+      expect(esedreCmdContent).toContain('goto done');
+      expect(esedreCmdContent).toContain(':done');
+      expect(esedreCmdContent).not.toMatch(/\(\s*[^)]*goto\s+done/i);
+
+      const eseCmdContent = fs.readFileSync(path.join(tempDir, '.esedre', 'ese.cmd'), 'utf-8');
+      expect(eseCmdContent).toContain('call "%~dp0esedre.cmd" %*');
+      expect(eseCmdContent).toContain('exit /b %ERRORLEVEL%');
+
+      if (process.platform === 'win32') {
+        const eseCmdPath = path.join(tempDir, '.esedre', 'ese.cmd');
+        const output = child_process.execSync(`cmd.exe /c "${eseCmdPath}" --version`, {
+          encoding: 'utf-8',
+          windowsHide: true,
+        });
+        expect(output).not.toContain('The system cannot find the batch label specified');
+        expect(output).toContain('esedre v');
+      }
     } finally {
       if (fs.existsSync(tempDir)) {
         fs.rmSync(tempDir, { recursive: true, force: true });

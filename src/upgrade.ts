@@ -42,33 +42,44 @@ export function classifyContent(
 export const WRAPPER_CMD = `@echo off
 REM Esedre Autonomous Ticketing & Project Planning Engine Wrapper (Windows CMD)
 setlocal
+
 where ese >nul 2>nul
-if %ERRORLEVEL% equ 0 (
-  ese %*
-  goto :done
-)
+if %ERRORLEVEL% equ 0 goto use_ese
+
 where esedre >nul 2>nul
-if %ERRORLEVEL% equ 0 (
-  esedre %*
-  goto :done
-)
-if exist "%~dp0..\\..\\esedre\\dist\\esedre.mjs" (
-  node "%~dp0..\\..\\esedre\\dist\\esedre.mjs" %*
-  goto :done
-)
-if exist "%~dp0..\\esedre\\dist\\esedre.mjs" (
-  node "%~dp0..\\esedre\\dist\\esedre.mjs" %*
-  goto :done
-)
-if exist "%~dp0..\\node_modules\\.bin\\ese.cmd" (
-  call "%~dp0..\\node_modules\\.bin\\ese.cmd" %*
-  goto :done
-)
-if exist "%~dp0..\\node_modules\\.bin\\esedre.cmd" (
-  call "%~dp0..\\node_modules\\.bin\\esedre.cmd" %*
-  goto :done
-)
-npx --yes esedre %*
+if %ERRORLEVEL% equ 0 goto use_esedre
+
+if exist "%~dp0..\\..\\esedre\\dist\\esedre.mjs" goto use_sibling_dist
+if exist "%~dp0..\\esedre\\dist\\esedre.mjs" goto use_local_dist
+if exist "%~dp0..\\node_modules\\.bin\\ese.cmd" goto use_node_modules_ese
+if exist "%~dp0..\\node_modules\\.bin\\esedre.cmd" goto use_node_modules_esedre
+
+call npx --yes esedre %*
+goto done
+
+:use_ese
+call ese %*
+goto done
+
+:use_esedre
+call esedre %*
+goto done
+
+:use_sibling_dist
+node "%~dp0..\\..\\esedre\\dist\\esedre.mjs" %*
+goto done
+
+:use_local_dist
+node "%~dp0..\\esedre\\dist\\esedre.mjs" %*
+goto done
+
+:use_node_modules_ese
+call "%~dp0..\\node_modules\\.bin\\ese.cmd" %*
+goto done
+
+:use_node_modules_esedre
+call "%~dp0..\\node_modules\\.bin\\esedre.cmd" %*
+goto done
 
 :done
 endlocal
@@ -77,6 +88,14 @@ exit /b %ERRORLEVEL%
 
 export const WRAPPER_PS1 = `# Esedre Autonomous Ticketing & Project Planning Engine Wrapper (PowerShell)
 $ErrorActionPreference = "Stop"
+
+# Ensure UTF-8 console output and pipeline encoding on Windows
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    [Console]::InputEncoding  = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+} catch {}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 if (Get-Command "ese" -ErrorAction SilentlyContinue) {
@@ -140,9 +159,16 @@ exec npx --yes esedre "$@"
 export const ESE_WRAPPER_CMD = `@echo off
 REM Ese CLI short alias wrapper for Esedre (Windows CMD)
 call "%~dp0esedre.cmd" %*
+exit /b %ERRORLEVEL%
 `;
 
 export const ESE_WRAPPER_PS1 = `# Ese CLI short alias wrapper for Esedre (PowerShell)
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    [Console]::InputEncoding  = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+} catch {}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 & (Join-Path $scriptDir "esedre.ps1") @args
 exit $LASTEXITCODE
@@ -157,6 +183,8 @@ exec "$DIR/esedre" "$@"
 export const HISTORIC_SKILL_HASHES: string[] = [
   '8611116c276fdfb598b965c716b251ce7c77c7f7',
   '05f129fb6e06a18df00215af105567abcbf0bc67',
+  '5d330ecf8fc96f383946e0351adb60378afa70f0',
+  '23716c9db561e52e5115dc364fe154d3a7bc1e23',
 ];
 
 export const ESEDRE_SKILL_TEMPLATE = `---
@@ -168,9 +196,18 @@ description: Tooling and workflow reference for interacting with the Esedre deve
 
 Esedre is the developer ticketing and LLM coding partner coordination platform. The engine codebase resides in the standalone repository \`aellinsar/esedre\` (\`../esedre\`), and operates on decoupled ticket repositories (such as \`aellinsar/esedre-data\` configured in \`.esedre/esedre.json\`). Interact with tickets via in-repo shell wrappers in \`.esedre/\` (\`.esedre/ese\`), or the global \`ese\` CLI.
 
-## 0. Instant Zero-Latency Context (\`.esedre/snapshot.json\`)
+## 0. Authoritative Ingress Hierarchy & Zero-Latency Context (\`.esedre/snapshot.json\`)
 
-Before querying tickets over the network or CLI, check \`.esedre/snapshot.json\` in the workspace root. It provides a local read-only projection containing all active and completed tickets, summaries, implementation plans, revision numbers, completion dates (\`completedAt\`), and staleness metrics (\`daysSinceUpdate\`).
+All ticket discovery, inspection, and state management strictly follow this positive ingress hierarchy:
+
+1. **Step 1 (Default for Read-Only Inspection) - Local Snapshot Projection**:
+   Always read \`.esedre/snapshot.json\` in the workspace root first. It provides an immediate, zero-latency local projection containing all active and completed tickets, summaries, implementation plans, revision numbers, completion dates (\`completedAt\`), and staleness metrics (\`daysSinceUpdate\`).
+2. **Step 2 (Dynamic Queries & State Mutations) - Esedre MCP Tools**:
+   Use first-class MCP tools when active in the session (\`esedre_list_tickets\`, \`esedre_get_ticket\`, \`esedre_get_plan\`, \`esedre_save_plan\`, \`esedre_update_ticket\`, \`esedre_add_comment\`).
+3. **Step 3 (Terminal & Script Fallback) - In-Repo CLI Wrapper**:
+   Use \`.esedre/ese\` (\`.esedre/ese get\`, \`.esedre/ese plan\`, \`.esedre/ese update\`, \`.esedre/ese snapshot\`, \`.esedre/ese refresh\`).
+4. **Storage Boundary**:
+   Backing ticket hubs (such as \`esedre-data\`) represent data storage managed by the engine. All agent interactions with roadmap tickets flow through the snapshot projection, MCP tools, or CLI wrappers.
 
 ## 1. Model Context Protocol (MCP) Tools
 
@@ -182,7 +219,7 @@ When Esedre MCP is active in your agent session (\`.agents/mcp_config.json\`), u
 | \`esedre_get_ticket\` | Full specification, summary, comments, revision & sha1 | \`ticketId\` (numeric e.g. \`96\` or compound e.g. \`Profe-96\`) |
 | \`esedre_get_plan\` | Active implementation plan markdown | \`ticketId\` (numeric or compound) |
 | \`esedre_save_plan\` | Save implementation plan markdown with OCC | \`ticketId\`, \`planMarkdown\`, \`lastHash\` |
-| \`esedre_create_ticket\` | Mint a new ticket with auto sequential ID | \`title\` (max 48 chars), \`type\`, \`project\`, \`effort\`, \`summary\` |
+| \`esedre_create_ticket\` | Mint a new ticket with auto sequential ID | \`title\` (max 48 chars), \`type\`, \`project\`, \`effort\`, \`summary\`, \`detail\` |
 | \`esedre_update_ticket\` | Update ticket attributes with OCC | \`ticketId\`, \`status\`, \`type\`, \`title\`, \`complexity\`, \`effort\`, \`inDevelopment\`, \`featureFlag\`, \`lastHash\` |
 | \`esedre_add_comment\` | Append developer or agent comment | \`ticketId\`, \`text\`, \`author\` |
 
@@ -209,7 +246,7 @@ Both \`esedre\` and \`ese\` work interchangeably:
 
 ### Create a Ticket
 \`\`\`bash
-.esedre/ese create --title "..." [-p|--project <code>] [-t|--type Feature] [--complexity Medium] [--effort "2.0 - 4.0 hours"] [--json]
+.esedre/ese create --title "..." [-p|--project <code>] [-t|--type Feature] [--complexity Medium] [--effort "2.0 - 4.0 hours"] [--detail "<md>"] [--file <path>] [--json]
 \`\`\`
 
 ### Update Ticket Status & Attributes
@@ -228,6 +265,7 @@ Both \`esedre\` and \`ese\` work interchangeably:
 ### Regenerate Snapshot
 \`\`\`bash
 .esedre/ese snapshot
+.esedre/ese refresh
 \`\`\`
 
 ### Server Lifecycle & Daemon Management
@@ -681,9 +719,23 @@ export function configureWorkspace(targetDir: string, options: ConfigureOptions 
 
 export const initWorkspace = configureWorkspace;
 
+export const ESEDRE_HUB_AGENTS_TEMPLATE = `# Agent Guidelines: esedre-data
+
+## 1. Role & Storage Boundary
+- **Backing Storage Repository**: \`esedre-data\` is a dedicated, decoupled data hub storing raw tickets, metadata manifests, and implementation plans managed by the Esedre engine.
+- **Authorized Ingress Channels**: Ticket discovery, read-only inspection, status updates, and plan authoring strictly ingress through the Esedre application layer in consuming project workspaces:
+  1. **Local Workspace Snapshot**: Check the consuming workspace's \`.esedre/snapshot.json\` first for instant, zero-latency read access to ticket summaries, plans, and statuses.
+  2. **Esedre MCP Tools**: Use \`esedre_get_ticket\`, \`esedre_list_tickets\`, \`esedre_get_plan\`, \`esedre_save_plan\`, and \`esedre_update_ticket\`.
+  3. **Esedre CLI**: Execute \`.esedre/ese get <id>\`, \`.esedre/ese list\`, or \`.esedre/ese plan\` from within the relevant project workspace.
+
+## 2. Ingress Redirection Protocol
+When inspecting or managing tickets for any project (such as \`Profe\`, \`Esedre\`, or \`Alce\`), navigate to that project's workspace and utilize its local \`.esedre/snapshot.json\`, Esedre MCP tools, or \`.esedre/ese\` CLI wrapper.
+`;
+
 export interface InitHubResult {
   projectsJsonCreated: boolean;
   projectsDirCreated: boolean;
+  agentsMdCreated: boolean;
   hubDir: string;
 }
 
@@ -707,9 +759,17 @@ export function initHub(targetDir: string): InitHubResult {
     projectsJsonCreated = true;
   }
 
+  const agentsMdPath = path.join(resolved, 'AGENTS.md');
+  let agentsMdCreated = false;
+  if (!fs.existsSync(agentsMdPath)) {
+    fs.writeFileSync(agentsMdPath, ESEDRE_HUB_AGENTS_TEMPLATE, 'utf-8');
+    agentsMdCreated = true;
+  }
+
   return {
     projectsJsonCreated,
     projectsDirCreated,
+    agentsMdCreated,
     hubDir: resolved.replace(/\\/g, '/'),
   };
 }

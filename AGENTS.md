@@ -22,7 +22,7 @@
 2. **Addressing & Formatting Convention**:
    - **Cross-Project & All-Projects View**: Formatted with the project code prefix: `<ProjectCode>-<id>` (e.g. `Prof-35`, `Esedre-1`, `Alce-1`).
    - **Project-Scoped View**: Inside a single project view or CLI run with `--project <Code>`, formatted as `#<id>` (e.g. `#35`, `#1`).
-   - **CLI & MCP Tool Lookups**: The CLI (`ese get`, `ese plan`, `ese update`, `ese comment`) and MCP tools accept both prefixed keys (`ese get Prof-35`, `ese get Esedre-1`) and numeric IDs (`ese get 1 --project Esedre`, or `ese get 1` when scoped to the active workspace project).
+   - **CLI & MCP Tool Lookups**: The CLI (`ese get`, `ese plan`, `ese update`, `ese comment`, `ese create`) and MCP tools accept both prefixed keys (`ese get Prof-35`, `ese get Esedre-1`) and numeric IDs (`ese get 1 --project Esedre`, or `ese get 1` when scoped to the active workspace project).
 
 3. **Case-Remembering Casing & Case-Insensitive Matching Invariant**:
    - **Case-Remembering on Registration & Storage**: Project codes are up to 8 alphanumeric characters (`^[a-zA-Z0-9]{1,8}$`). The original casing provided at project registration (e.g. `Personal`, `Esedre`, `Prof`) is canonical. Storage directories (e.g. `projects/Personal/`) and metadata manifests (`project.json`, `projects.json`, `meta.json`) permanently preserve this canonical casing. Re-registering or configuring a project preserves the existing remembered casing instead of overwriting it with different casing. Ticket metadata (`meta.project`) always stamps the canonical remembered casing.
@@ -47,6 +47,13 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
    - Combines `dataDir` hubs and `projects` federated paths, enabling personal ticket hubs and shared repositories to be managed side-by-side in one local runner.
 6. **Monorepo / In-Workspace Hub Topology**:
    - When `dataDir` is omitted, the storage adapter automatically auto-discovers a `projects/` directory containing projects directly at `workspaceRoot` (or `./data`, `./.esedre`), enabling monorepos and ticket hubs to function out-of-the-box with zero configuration.
+7. **Zero-Latency Snapshot Projection & Authoritative Ingress Hierarchy**:
+   - Each project repository running Esedre maintains an authoritative read-only projection at `.esedre/snapshot.json`.
+   - Agents interacting with tickets MUST strictly adhere to this positive access hierarchy:
+     1. **Primary Read-Only Inspection**: Always check `.esedre/snapshot.json` in the workspace root first. It provides an immediate, zero-latency projection of all active and completed tickets, summaries, implementation plans, and revision hashes without network calls.
+     2. **Dynamic Lookups & Mutations (MCP)**: Use Esedre MCP tools (`esedre_list_tickets`, `esedre_get_ticket`, `esedre_get_plan`, `esedre_save_plan`, `esedre_create_ticket`, `esedre_update_ticket`, `esedre_add_comment`) when MCP is active in the session.
+     3. **CLI Ingress**: Use `.esedre/ese` or global `ese` (`ese get`, `ese plan`, `ese update`, `ese create`, `ese snapshot`, `ese refresh`) for terminal workflows.
+     4. **Storage Boundary**: Registered data hubs (such as `esedre-data`) represent backing storage for the engine. Agent ticket discovery and management strictly flows through the snapshot projection, MCP tools, or the `ese` CLI.
 
 ---
 
@@ -70,8 +77,9 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 3. **Zero Turn-to-Turn Carryover for Commit/Push**
    - An explicit instruction to commit or push in one turn **DOES NOT CARRY OVER** to subsequent turns or tasks. Each commit/push action requires a separate, explicit command.
 
-4. **Main Branch Lockdown & PR Requirement**
-   - Direct merges into `main` or direct pushes to `origin/main` are strictly forbidden; production deploys and releases occur via pull requests.
+4. **Main Branch Lockdown, Dedicated Child Branches & PR Requirement**
+   - **Dedicated Ticket Child Branch**: Whenever starting work on or tackling a ticket, agents and developers MUST move to a dedicated child branch (e.g. `ticket/<ProjectCode>-<id>-<slug>`, `fix/<ticketId>`, or `feat/<ticketId>`) before making code modifications or commits. Never commit or work directly on `main`.
+   - **Lockdown & PR Invariant**: Direct merges into `main` or direct pushes to `origin/main` are strictly forbidden; production deploys and releases occur exclusively via pull requests from dedicated child branches.
 
 5. **Mandatory Scope Clarification in Multi-Project Workspaces**
    - In a multi-project workspace, if there is ANY ambiguity regarding which repositories, projects, or modified files are intended to be committed or pushed, you MUST ask the user for explicit clarification before staging, committing, or pushing.
@@ -158,9 +166,10 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 8. **Smart Release & Package Publishing Workflow (`npm run pub`)**:
    - **Publishing Command**: Always use `npm run pub` (or `npm run pub -- <args>`) instead of bare `npm publish`.
    - **Upfront Auth Pre-Check**: `scripts/publish.js` runs a fast `npm whoami` check (~100ms) before invoking any builds or tests.
+   - **Upfront Published Version Collision Guard**: `scripts/publish.js` queries `npm view <package>@<version> version` upfront (~150ms). If the package version in `package.json` is already published on the registry, it halts immediately with code 1 before running builds or tests, preventing `E403` collision errors.
    - **Auto-Login**: If unauthenticated, it automatically launches an interactive `npm login` prompt in local terminal sessions instead of waiting through minutes of compilation only to fail with a registry 404/403.
    - **Lifecycle Chain**: Once authenticated, it triggers `prepublishOnly` (`npm run lint`, `npm run test`, `npm run build`) and publishes with `--access public`.
-   - **Strict Agent Invariant (Dry Run Only)**: Autonomous LLM coding agents are STRICTLY FORBIDDEN from executing live package publication (`npm run pub` or `npm publish`). Agents may ONLY run dry run verification (`npm run pub -- --dry-run`). Live package publishing to the npm registry is exclusively executed manually by the human developer.
+   - **Strict Agent Invariant (Dry Run Only & Version Collision Check)**: Autonomous LLM coding agents are STRICTLY FORBIDDEN from executing live package publication (`npm run pub` or `npm publish`). Agents may ONLY run dry run verification (`npm run pub -- --dry-run`). Live package publishing to the npm registry is exclusively executed manually by the human developer. Before suggesting a publish command to the user or running release verification, agents MUST check published registry versions (`npm view <package> versions --json`) to verify that the version in `package.json` has been properly bumped to prevent collision (`E403`).
 
 9. **Trailing Newline at EOF**:
    - All code, JSON, Markdown, and config files must end with a single trailing newline (`\n`).
@@ -309,9 +318,10 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 ## 16. Package Distribution, Versioning & Release Workflow
 
-1. **Dual Version Synchronization**:
-   - Package version numbers must strictly stay synchronized across `package.json` (`"version"`) and `src/types.ts` (`CURRENT_ESEDRE_VERSION`).
+1. **Dual Version Synchronization & Registry Pre-Check**:
+   - Package version numbers must strictly stay synchronized across `package.json` (`"version"`), `package-lock.json`, and `src/types.ts` (`CURRENT_ESEDRE_VERSION`).
    - Tests dynamically import `CURRENT_ESEDRE_VERSION` to ensure version checks remain evergreen across releases.
+   - **Mandatory Registry Version Check Before Suggesting Publish**: Agents MUST check published registry versions (`npm view esedre versions --json` or `npm view esedre@<version> version`) before suggesting or verifying a release. Never suggest running `npm run pub` with a version that is already published on npm. If the version exists on the registry, bump `version` in `package.json`, `package-lock.json`, `src/types.ts`, and update `CHANGELOG.md` first.
 
 2. **Standard Native npm Publishing**:
    - Publishing relies on standard `npm publish` with `prepublishOnly` executing `npm run lint && npm run test && npm run build`.
@@ -322,3 +332,22 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 4. **Pre-Publish Documentation Currency Check**:
    - The mandatory pre-flight check defined in Section 5.6 strictly applies before publishing any package release. Never initiate or assist with a package release if documentation is stale. Halt and present suggested fixes for user review.
+
+---
+
+## 17. Windows Shell & Batch Wrapper Invariants
+
+1. **Windows CMD Batch Wrapper (`ese.cmd` / `esedre.cmd`)**:
+   - Jump labels MUST reside strictly at the top level outside of parenthesized `if (...)` blocks.
+   - All internal batch script and binary invocations (`ese`, `esedre`, `npx`) MUST be prefixed with `call` (e.g. `call ese %*`).
+   - All wrappers must terminate with `exit /b %ERRORLEVEL%` to preserve and propagate process exit codes.
+   - Never evaluate `goto` statements inside parenthesized blocks; doing so in `cmd.exe` invalidates block token streaming upon script handoff and throws `'The system cannot find the batch label specified - done'`.
+
+2. **PowerShell Wrapper (`ese.ps1` / `esedre.ps1`)**:
+   - Enforce UTF-8 stream encodings at script start:
+     ```powershell
+     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+     [Console]::InputEncoding  = [System.Text.Encoding]::UTF8
+     $OutputEncoding = [System.Text.Encoding]::UTF8
+     ```
+   - Prevents multi-byte non-ASCII Unicode characters (such as en-dashes or quotes) from rendering as mojibake on default Windows OEM code pages (e.g. CP 437).

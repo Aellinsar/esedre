@@ -30,7 +30,7 @@ npm run pub -- --dry-run
 - Confirm zero test assertion failures.
 - Confirm clean bundling to `dist/esedre.mjs`, `dist/web/embed.js`, and `dist/web/`.
 - For releases, developers run `npm run pub` (via `scripts/publish.js`), which performs a fast 100ms `npm whoami` check and triggers interactive login if unauthenticated before executing the `prepublishOnly` lifecycle suite and publishing.
-- **Strict Agent Invariant (Dry Run Only)**: Autonomous LLM coding agents are strictly forbidden from executing live package publication (`npm run pub` or `npm publish`). Agents may ONLY run dry run verification (`npm run pub -- --dry-run`). Live publishing is reserved exclusively for the human developer.
+- **Strict Agent Invariant (Dry Run Only & Version Collision Check)**: Autonomous LLM coding agents are strictly forbidden from executing live package publication (`npm run pub` or `npm publish`). Agents may ONLY run dry run verification (`npm run pub -- --dry-run`). Live publishing is reserved exclusively for the human developer. Before suggesting a publish command to the user or running release verification, agents MUST check published registry versions (`npm view <package> versions --json`) to verify that the version in `package.json` has been properly bumped to prevent collision (`E403`).
 
 ---
 

@@ -125,11 +125,44 @@ describe('Project Binding & End-to-End Workflow', () => {
     expect(create2.meta.id).toBe(2);
     expect(create2.meta.title).toBe('Implement health check endpoint');
 
+    // 2b. Create third ticket with inline --detail markdown (Ticket #27)
+    const create3 = runCli(
+      ['create', '--title', 'User authentication with OAuth', '--type', 'Feature', '--detail', '1. Setup Passport\n2. Add GitHub OAuth', '--json'],
+      sampleDir
+    ).json();
+
+    expect(create3.meta.id).toBe(3);
+    expect(create3.detail.breakdown).toContain('Setup Passport');
+    expect(create3.detail.breakdown).toContain('Add GitHub OAuth');
+
+    // 2c. Create fourth ticket with external specification --file (Ticket #27)
+    const specFile = path.join(sampleDir, 'rate-limit-spec.md');
+    fs.writeFileSync(specFile, '### Summary\nRate limiting middleware\n\n### Feature Breakdown\n1. Token bucket algorithm\n2. Redis store\n', 'utf-8');
+    const create4 = runCli(
+      ['create', '--title', 'Rate limiting middleware', '--type', 'Platform', '--file', specFile, '--json'],
+      sampleDir
+    ).json();
+
+    expect(create4.meta.id).toBe(4);
+    expect(create4.detail.summary).toBe('Rate limiting middleware');
+    expect(create4.detail.breakdown).toContain('Token bucket algorithm');
+    expect(create4.detail.breakdown).toContain('Redis store');
+
+    // Verify nonexistent --file throws error
+    expect(() => {
+      runCli(
+        ['create', '--title', 'Failing ticket', '--file', 'nonexistent-spec-file.md', '--json'],
+        sampleDir
+      );
+    }).toThrow();
+
     // 3. List tickets scoped to the project
     const list = runCli(['list', '--json'], sampleDir).json();
-    expect(list).toHaveLength(2);
+    expect(list).toHaveLength(4);
     expect(list[0].id).toBe(1);
     expect(list[1].id).toBe(2);
+    expect(list[2].id).toBe(3);
+    expect(list[3].id).toBe(4);
 
     // 4. Update ticket status using both numeric and compound keys
     const update1 = runCli(
@@ -145,10 +178,15 @@ describe('Project Binding & End-to-End Workflow', () => {
     expect(update2.meta.status).toBe('Completed');
 
     // 5. Update and inspect implementation plan
-    runCli(
+    const planSaveRes = runCli(
       ['plan', 'SERV-1', '--set', '## Technical Approach\n1. Add Express router\n2. Add test suite', '--json'],
       sampleDir
-    );
+    ).json();
+    expect(planSaveRes.success).toBe(true);
+    expect(planSaveRes.ticketId).toBe('SERV-1');
+    expect(planSaveRes.project).toBe('SERV');
+    expect(planSaveRes.planMarkdown).toContain('Add Express router');
+    expect(planSaveRes.sha1).toBeDefined();
 
     const plan1 = runCli(['plan', '1', '--json'], sampleDir).json();
     expect(plan1.planMarkdown).toContain('Add Express router');
@@ -231,10 +269,12 @@ describe('Project Binding & End-to-End Workflow', () => {
     expect(updatedAlpha.meta.status).toBe('Completed');
 
     // Cross-project plan using -p flag
-    runCli(
+    const betaPlanSet = runCli(
       ['plan', '1', '-p', 'BETA', '--set', '## Beta UI Plan', '--json'],
       tempRoot
-    );
+    ).json();
+    expect(betaPlanSet.success).toBe(true);
+    expect(betaPlanSet.project).toBe('BETA');
 
     const betaPlan = runCli(['plan', 'BETA-1', '--json'], tempRoot).json();
     expect(betaPlan.planMarkdown).toBe('## Beta UI Plan');

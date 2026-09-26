@@ -11,6 +11,8 @@ export interface CreateTicketInput {
   projectId?: number;
   submittedBy?: string;
   summary?: string;
+  detail?: string;
+  detailMarkdown?: string;
 }
 
 export interface ListTicketsFilter {
