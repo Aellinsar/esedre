@@ -325,7 +325,7 @@ If the host application declares any or all of the 12 core design tokens on \`:r
 - **Never delete tickets** directly via filesystem.
 - **Workspace Scoping**: An LLM coding partner operates strictly within the authorized project scope declared in the local repository configuration. Central repository linking and system-level configuration are managed separately; focus roadmap work, implementation plans, and verification notes on this project.
 - **Secret Developer Hash Route (\`#/planner\`, \`#/plan\`, \`#planner\`, \`#plan\`)**:
-  - In web applications embedding Esedre (such as Professor Arwam), \`#/planner\` and \`#/plan\` serve as direct secret developer entry routes.
+  - In web applications embedding Esedre (such as your host web app), \`#/planner\` and \`#/plan\` serve as direct secret developer entry routes.
   - **SEO Invariant**: These developer routes are private and MUST NEVER be exposed in \`sitemap.xml\`, \`robots.txt\`, \`llms.txt\`, or public navigation links.
   - The URL hash is preserved across hard page refreshes (F5) without falling back to \`#/chat\` or other views.
 `;

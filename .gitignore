@@ -9,3 +9,6 @@ coverage/
 !.env.example
 .esedre/snapshot.json
 tools/tunnel/token.txt
+tools/tunnel/config.yml
+!tools/tunnel/config.yml.example
+.bridge-dest

@@ -69,7 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Smart npm Publish Lifecycle Wrapper (`npm run pub`)**: Upfront authentication pre-check (`npm whoami`) with automatic interactive login before compilation, executing full prepublish test/lint/build lifecycle.
-- **Multi-Layer Zero-Crawl Protection**: Edge and Vite middleware security preventing search spiders and AI crawler cataloging on development tunnels (`esedre.aroomwithamoose.com`).
+- **Multi-Layer Zero-Crawl Protection**: Edge and Vite middleware security preventing search spiders and AI crawler cataloging on development Cloudflare tunnels.
 - **Canonical Apex Ecosystem Links**: Standardized all portfolio ecosystem references to canonical apex `https://arwam.com`.
 
 ## [0.1.8] - 2026-09-11

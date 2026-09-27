@@ -1,8 +1,0 @@
-tunnel: 6c8dec34-54bc-42b5-82a2-3f1d4f5b4a85
-
-ingress:
-  - hostname: esedre.aroomwithamoose.com
-    service: http://localhost:5674
-  - hostname: planner.arwam.com
-    service: http://localhost:5674
-  - service: http_status:404

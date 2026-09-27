@@ -7,7 +7,21 @@ import { DEFAULT_ALLOW_LIST, GAMEDAY_ALLOW_LIST } from './constants.js';
 // 1. Parse Mode (npm run net:all passes --all)
 const isAllMode = process.argv.includes('--all');
 
-console.log('\n🚀 [Esedre] Starting Vite Dev Server & Cloudflare Tunnel (esedre.aroomwithamoose.com)...\n');
+function resolveTunnelHostname(configFile) {
+  if (process.env.ESEDRE_TUNNEL_HOST) return process.env.ESEDRE_TUNNEL_HOST;
+  if (fs.existsSync(configFile)) {
+    try {
+      const content = fs.readFileSync(configFile, 'utf-8');
+      const match = content.match(/hostname:\s*([^\s\r\n]+)/);
+      if (match && match[1]) return match[1];
+    } catch {}
+  }
+  return null;
+}
+
+const localConfigFile = path.resolve(import.meta.dirname, 'config.yml');
+const tunnelHostname = resolveTunnelHostname(localConfigFile);
+console.log(`\n🚀 [Esedre] Starting Vite Dev Server & Cloudflare Tunnel${tunnelHostname ? ` (${tunnelHostname})` : ''}...\n`);
 
 // 2. Locate cloudflared binary
 function getCloudflaredPath() {
@@ -161,6 +175,11 @@ async function main() {
     (fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf-8').trim() : null);
 
   const configFile = path.resolve(import.meta.dirname, 'config.yml');
+  if (!token && !fs.existsSync(configFile)) {
+    console.warn('\n⚠️  [Cloudflare Tunnel] Neither tools/tunnel/config.yml nor token.txt was found.');
+    console.warn('   Copy tools/tunnel/config.yml.example to tools/tunnel/config.yml and configure your tunnel.\n');
+  }
+
   const tunnelArgs = token
     ? ['tunnel', 'run', '--protocol', 'http2', '--token', token]
     : ['--config', configFile, 'tunnel', 'run', '--protocol', 'http2', 'esedre-dev'];

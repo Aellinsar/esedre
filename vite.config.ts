@@ -38,6 +38,27 @@ import fs from 'node:fs';
 import https from 'node:https';
 import { extractListsFromText, isIpAllowed } from './tools/tunnel/ipMatcher.ts';
 
+function resolveAllowedHosts(): string[] {
+  const hosts = new Set(['localhost', '127.0.0.1', '::1']);
+  if (process.env.ESEDRE_ALLOWED_HOSTS) {
+    process.env.ESEDRE_ALLOWED_HOSTS.split(',').forEach((h) => {
+      const trimmed = h.trim().toLowerCase();
+      if (trimmed) hosts.add(trimmed);
+    });
+  }
+  const tunnelConfigPath = path.resolve(__dirname, 'tools/tunnel/config.yml');
+  if (fs.existsSync(tunnelConfigPath)) {
+    try {
+      const content = fs.readFileSync(tunnelConfigPath, 'utf-8');
+      const matches = content.matchAll(/hostname:\s*([^\s\r\n]+)/g);
+      for (const m of matches) {
+        if (m[1]) hosts.add(m[1].toLowerCase());
+      }
+    } catch {}
+  }
+  return Array.from(hosts);
+}
+
 function tunnelSecurityPlugin(): Plugin {
   let cachedConstantsProfiles = { defaultAllow: [] as string[], gamedayAllow: [] as string[] };
   let lastConstantsMtime = 0;
@@ -125,10 +146,11 @@ function tunnelSecurityPlugin(): Plugin {
           }
         }
 
+        const configuredAllowedHosts = resolveAllowedHosts();
         const hostHeader = (req.headers['x-forwarded-host'] || req.headers['host'] || '') as string;
         const hostname = hostHeader.split(',')[0].split(':')[0].toLowerCase().trim();
         const isDevHost =
-          hostname.endsWith('.aroomwithamoose.com') ||
+          configuredAllowedHosts.includes(hostname) ||
           hostname === 'localhost' ||
           hostname === '127.0.0.1' ||
           hostname === '::1' ||
@@ -185,7 +207,7 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    allowedHosts: ['esedre.aroomwithamoose.com', 'planner.arwam.com', 'localhost', '127.0.0.1'],
+    allowedHosts: resolveAllowedHosts(),
   },
 });
 

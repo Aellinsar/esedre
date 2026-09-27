@@ -42,7 +42,7 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 3. **Multi-Hub Topology**:
    - `dataDir: ["../team-hub", "../shared-hub"]` scans and aggregates multiple hub repositories.
 4. **Disparate Multi-Repo Federation Topology**:
-   - `projects: { "Prof": "../ProfessorArwamSleepCenter", "Alce": "../alce-web" }` maps independent project repositories into a unified view.
+   - `projects: { "Core": "../core-engine", "Web": "../frontend-app" }` maps independent project repositories into a unified view.
 5. **Hybrid Topology**:
    - Combines `dataDir` hubs and `projects` federated paths, enabling personal ticket hubs and shared repositories to be managed side-by-side in one local runner.
 6. **Monorepo / In-Workspace Hub Topology**:
@@ -152,17 +152,13 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 7. **Local Dev & Cloudflare Tunnel Workflows**:
    - `npm run dev`: Runs local Vite development server on port 5674.
-   - `npm run net`: Cloudflare tunnel targeting port 5674 for `esedre.aroomwithamoose.com` (with `planner.arwam.com` as alias) with IP whitelist protection.
+   - `npm run net`: Cloudflare tunnel targeting port 5674 with dynamic tunnel host resolution (via local gitignored `tools/tunnel/config.yml` or `ESEDRE_TUNNEL_HOST`) and IP whitelist protection.
    - `npm run net:all`: Public open tunnel mode for external access.
-   - **Vite `server.allowedHosts`**: Configured in `vite.config.ts` with `['esedre.aroomwithamoose.com', 'planner.arwam.com', 'localhost', '127.0.0.1']` to prevent Vite 6/8 host header rejection (`403 Forbidden`).
+   - **Vite `server.allowedHosts`**: Configured in `vite.config.ts` dynamically from local `tools/tunnel/config.yml` or `process.env.ESEDRE_ALLOWED_HOSTS` alongside `localhost` and `127.0.0.1` to prevent Vite 6/8 host header rejection (`403 Forbidden`).
+   - **Tunnel Configuration Template**: `tools/tunnel/config.yml` is gitignored to protect private tunnel credentials and endpoints. `tools/tunnel/config.yml.example` provides the committed reference template.
    - **Global `--config` Flag Order**: In `cloudflared`, `--config` must precede the subcommand: `cloudflared --config tools/tunnel/config.yml tunnel run ...`.
    - **Remote vs Local Ingress Configuration**: Tunnels created or managed in the Cloudflare Zero Trust dashboard receive ingress configuration remotely, overriding local `config.yml`. When routing new hostnames (`cloudflared tunnel route dns`), remote ingress configuration must be updated via Cloudflare API (`PUT /accounts/:id/cfd_tunnel/:id/configurations`) or the Zero Trust dashboard.
-   - **Private Domain Separation**: Standalone Esedre planning hub and local filesystem data endpoints are strictly hosted under the private domain `esedre.aroomwithamoose.com`. Public documentation and marketing previews run on `dev.esedre.com` (under `esedre-web`), ensuring zero external discovery of private local data hubs.
-   - **Cloudflare Origin Certificate Scoping Invariant (`~/.cloudflared/`)**:
-     * Runtime tunnels (`npm run net` / `cloudflared tunnel run`) authenticate via JSON credentials or tunnel tokens; they never read `.pem` certificates.
-     * Administrative CLI routing (`cloudflared tunnel route dns`) uses Origin CA certificates (`.pem`), which are strictly bound to a single Cloudflare Zone ID.
-     * To prevent accidental zone contamination (such as minting `.arwam.com` subdomains on external targets), dedicated certificates are preserved with distinct names (`cert-arwam.pem`, `cert-aroomwithamoose.pem`, `cert-esedre.pem`). CLI route commands must pass `--origincert` explicitly.
-   - **Multi-Layer Zero-Crawl & Anti-Indexing Invariant**: All dev tunnel responses (`esedre.aroomwithamoose.com`) are strictly protected against search engine and AI spider cataloging via edge-level Cloudflare rules ('Dev Tunnels - Noindex Header'), local Vite `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex`, virtual `GET /robots.txt` (`Disallow: /`), virtual 404s for sitemaps, and dev HTML meta tag injection.
+   - **Multi-Layer Zero-Crawl & Anti-Indexing Invariant**: All dev tunnel responses are strictly protected against search engine and AI spider cataloging via edge-level Cloudflare rules ('Dev Tunnels - Noindex Header'), local Vite `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex`, virtual `GET /robots.txt` (`Disallow: /`), virtual 404s for sitemaps, and dev HTML meta tag injection.
 
 
 8. **Smart Release & Package Publishing Workflow (`npm run pub`)**:
@@ -281,7 +277,7 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 1. **Standalone Mode vs Embedded View**:
    - **Standalone Mode**: Normal, primary operation of Esedre accessed via its dedicated web UI (port 5674 / `/app`). The unified server is ALWAYS run whenever Esedre is utilized (`ese start`).
-   - **Embedded View**: Optional embedding of the `<PlannedWorkView />` component inside a host application (e.g. Professor Arwam's Sleep Research Center) via host dev server reverse proxy (`/esedre`).
+   - **Embedded View**: Optional embedding of the `<PlannedWorkView />` component inside a host application (e.g. your host web application) via host dev server reverse proxy (`/esedre`).
 
 2. **Zero-Effort Drop-in Fallback Bridge**:
    - `<PlannedWorkView />` embeds an internal CSS fallback bridge (`.esedre-host-bridge` / `.esedre-theme-root` with `ESEDRE_THEME_FALLBACK_CSS`).

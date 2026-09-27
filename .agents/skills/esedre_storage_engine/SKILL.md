@@ -39,7 +39,7 @@ Methods accept both numeric IDs (`96`) and compound project keys (`Profe-96`, `E
 1. **Single Hub Topology**: `dataDir: "../esedre-data"` targeting a dedicated ticket repo (`projects/<ProjectCode>/tickets/<id>/`).
 2. **In-Repo Standalone Topology**: Tickets stored in the workspace repo under `.esedre/tickets/<id>/`.
 3. **Multi-Hub Topology**: `dataDir: ["../hub1", "../hub2"]` aggregating multiple hubs.
-4. **Disparate Multi-Repo Federation**: `projects: { "Prof": "../ProfessorArwamSleepCenter", "Alce": "../alce-web" }`.
+4. **Disparate Multi-Repo Federation**: `projects: { "Core": "../core-engine", "Web": "../frontend-app" }`.
 5. **Hybrid Topology**: Combines `dataDir` hubs and `projects` federated repo paths.
 6. **Monorepo / In-Workspace Hub Topology**: When `dataDir` is omitted, auto-discovers `projects/` directory directly at workspace root or `./data`, enabling zero-configuration monorepos and local ticket hubs.
 
