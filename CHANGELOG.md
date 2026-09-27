@@ -5,6 +5,15 @@ All notable changes to Esedre are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-09-28
+
+### Added
+- **Public Open-Source Readiness & Repository Sanitization**:
+  - Decoupled and gitignored local development tunnel credentials and endpoint configurations (`tools/tunnel/config.yml`), providing `tools/tunnel/config.yml.example` reference template for public contributors.
+  - Dynamically resolve Vite allowed hostnames (`resolveAllowedHosts`) from local tunnel configurations and `ESEDRE_ALLOWED_HOSTS` environment variable, eliminating hardcoded domains.
+  - Dynamically resolve development build artifact bridge destinations (`scripts/bridge.js`) via local gitignored `.bridge-dest` file or `ESEDRE_BRIDGE_DEST` environment variable.
+  - Genericized documentation, agent skills, and built-in skill templates (`AGENTS.md`, `esedre_storage_engine`, `src/upgrade.ts`) to eliminate proprietary repository paths and internal domain references.
+
 ## [1.0.0] - 2026-09-27
 
 ### Added

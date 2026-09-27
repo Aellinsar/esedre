@@ -1,4 +1,4 @@
-export const CURRENT_ESEDRE_VERSION = '1.0.0';
+export const CURRENT_ESEDRE_VERSION = '1.0.1';
 
 export type TicketType = 'Feature' | 'Platform' | 'Tools' | 'Idea' | 'Bug';
 export type TicketCategory = TicketType; // Back-compat alias
