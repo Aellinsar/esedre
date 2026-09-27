@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { FilesystemStorageAdapter } from '../src/storage/filesystem.js';
 import { EsedreMcpServer } from '../src/mcp/server.js';
+import { CURRENT_ESEDRE_VERSION } from '../src/types.js';
 
 describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
   let tempDir: string;
@@ -50,6 +51,7 @@ describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
     expect(res.id).toBe(1);
     expect(res.result.protocolVersion).toBe('2024-11-05');
     expect(res.result.serverInfo.name).toBe('esedre');
+    expect(res.result.serverInfo.version).toBe(CURRENT_ESEDRE_VERSION);
     expect(res.result.capabilities.tools).toBeDefined();
     expect(res.result.capabilities.resources).toBeDefined();
   });

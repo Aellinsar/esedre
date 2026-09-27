@@ -51,8 +51,8 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
    - Each project repository running Esedre maintains an authoritative read-only projection at `.esedre/snapshot.json`.
    - Agents interacting with tickets MUST strictly adhere to this positive access hierarchy:
      1. **Primary Read-Only Inspection**: Always check `.esedre/snapshot.json` in the workspace root first. It provides an immediate, zero-latency projection of all active and completed tickets, summaries, implementation plans, and revision hashes without network calls.
-     2. **Dynamic Lookups & Mutations (MCP)**: Use Esedre MCP tools (`esedre_list_tickets`, `esedre_get_ticket`, `esedre_get_plan`, `esedre_save_plan`, `esedre_create_ticket`, `esedre_update_ticket`, `esedre_link_ticket`, `esedre_unlink_ticket`, `esedre_add_comment`) when MCP is active in the session.
-     3. **CLI Ingress**: Use `.esedre/ese` or global `ese` (`ese get`, `ese plan`, `ese update`, `ese create`, `ese link`, `ese unlink`, `ese snapshot`, `ese refresh`) for terminal workflows.
+     2. **Dynamic Lookups & Mutations (MCP)**: Use Esedre MCP tools (`esedre_list_tickets`, `esedre_get_ticket`, `esedre_get_plan`, `esedre_save_plan`, `esedre_create_ticket`, `esedre_update_ticket`, `esedre_link_ticket`, `esedre_unlink_ticket`, `esedre_list_milestones`, `esedre_get_milestone`, `esedre_create_milestone`, `esedre_update_milestone`, `esedre_add_comment`) when MCP is active in the session.
+     3. **CLI Ingress**: Use `.esedre/ese` or global `ese` (`ese get`, `ese plan`, `ese update`, `ese create`, `ese link`, `ese unlink`, `ese milestone`, `ese snapshot`, `ese refresh`) for terminal workflows.
      4. **Storage Boundary**: Registered data hubs (such as `esedre-data`) represent backing storage for the engine. Agent ticket discovery and management strictly flows through the snapshot projection, MCP tools, or the `ese` CLI.
 
 ---
@@ -382,10 +382,9 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 ## 18. Windows Shell & Batch Wrapper Invariants
 
 1. **Windows CMD Batch Wrapper (`ese.cmd` / `esedre.cmd`)**:
-   - Jump labels MUST reside strictly at the top level outside of parenthesized `if (...)` blocks.
-   - All internal batch script and binary invocations (`ese`, `esedre`, `npx`) MUST be prefixed with `call` (e.g. `call ese %*`).
-   - All wrappers must terminate with `exit /b %ERRORLEVEL%` to preserve and propagate process exit codes.
-   - Never evaluate `goto` statements inside parenthesized blocks; doing so in `cmd.exe` invalidates block token streaming upon script handoff and throws `'The system cannot find the batch label specified - done'`.
+   - The wrapper dispatches through a `:run` subroutine via `call :run %*` and terminates with `exit /b %ERRORLEVEL%`.
+   - Resolution branches inside `:run` exit immediately via `goto :eof`, eliminating user-defined `:done` labels entirely so `cmd.exe` never attempts to resolve a missing label across nested batch contexts.
+   - When in-repo or local `node_modules` builds exist (`dist/esedre.mjs`), invoke Node directly to eliminate nested batch hops.
 
 2. **PowerShell Wrapper (`ese.ps1` / `esedre.ps1`)**:
    - Enforce UTF-8 stream encodings at script start:

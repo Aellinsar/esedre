@@ -8,7 +8,8 @@
 
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-blue.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-100%25%20Passing-emerald.svg)](tests/)
-[![Website: arwam.com](https://img.shields.io/badge/Website-arwam.com-cyan.svg)](https://arwam.com)
+[![Website: esedre.com](https://img.shields.io/badge/Website-esedre.com-indigo.svg)](https://esedre.com)
+[![Ecosystem: arwam.com](https://img.shields.io/badge/Ecosystem-arwam.com-cyan.svg)](https://arwam.com)
 
 ---
 
@@ -221,7 +222,10 @@ Esedre supports bi-directional ticket relationships across tickets within the sa
 Esedre introduces first-class milestone management to group related tickets toward target deliverables and release cycles:
 
 - **Target Deliverables**: Organize tickets under sequential project milestones (e.g. `#1 Lab 151 Platform Foundation`, `#2 Public Release`).
+- **Cross-Project Milestone Deliverables**: Milestones can group member tickets across multiple projects (e.g. platform, web, and tooling repositories) toward a unified delivery target.
+- **Compound Milestone Notation**: In multi-project or portfolio context, milestones are addressed and filtered using compound notation (`ProjectCode:MilestoneTitle` or `ProjectCode:MilestoneId`).
 - **Umbrella Feature Flag Inheritance**: Milestones can optionally link to an umbrella feature flag, which automatically propagates to all tickets in the milestone unless individually overridden.
+- **Embed & Allow-List Isolation**: When viewed from embedded host applications or scoped agent environments, tickets belonging to external projects outside `allowedProjects` render as masked placeholders, preserving project security boundaries.
 - **Visual Progress Tracking**: Real-time progress bars, completion metrics, and assigned ticket chips in the Web UI dashboard.
 - **Full CLI & MCP Parity**: Manage milestones from the terminal via `ese milestone list`, `ese milestone create`, and `ese milestone update`, or let autonomous LLM coding agents inspect deliverables via MCP tools (`esedre_list_milestones`, `esedre_get_milestone`).
 

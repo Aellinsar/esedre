@@ -1821,10 +1821,26 @@ export function PlannedWorkView({
       (milestoneFilter === 'none' && !itemMilestone) ||
       (Boolean(itemMilestone) && (
         itemMilestone!.toLowerCase() === milestoneFilter.toLowerCase() ||
-        milestones.some((m) =>
-          (m.title.toLowerCase() === milestoneFilter.toLowerCase() || String(m.id) === milestoneFilter) &&
-          (itemMilestone!.toLowerCase() === m.title.toLowerCase() || itemMilestone!.toLowerCase() === String(m.id).toLowerCase())
-        )
+        milestones.some((m) => {
+          const mTitleLower = m.title.toLowerCase();
+          const mIdStr = String(m.id);
+          const filterLower = milestoneFilter.toLowerCase();
+          const isTargetMilestone =
+            mTitleLower === filterLower ||
+            mIdStr === filterLower ||
+            `${m.project}:${m.title}`.toLowerCase() === filterLower ||
+            `${m.project}:${m.id}`.toLowerCase() === filterLower;
+
+          if (!isTargetMilestone) return false;
+
+          const itemLower = itemMilestone!.toLowerCase();
+          return (
+            itemLower === mTitleLower ||
+            itemLower === mIdStr ||
+            itemLower === `${m.project}:${m.title}`.toLowerCase() ||
+            itemLower === `${m.project}:${m.id}`.toLowerCase()
+          );
+        })
       ));
 
     const matchesInDev = !inDevOnly || isFeatureInDevelopment(f);
@@ -2891,11 +2907,28 @@ export function PlannedWorkView({
                                   const msRaw = metasMap[feat.ticketId]?.milestone || feat.milestone;
                                   if (!msRaw) return null;
                                   const projectCode = metasMap[feat.ticketId]?.project || feat.project;
+                                  const cleanMs = String(msRaw).trim();
+                                  const colonIdx = cleanMs.indexOf(':');
+                                  const prefixProj = colonIdx > 0 ? cleanMs.substring(0, colonIdx).trim().toLowerCase() : null;
+                                  const targetKey = colonIdx > 0 ? cleanMs.substring(colonIdx + 1).trim().toLowerCase() : cleanMs.toLowerCase();
+
                                   const foundMs = milestones.find((m) => {
-                                    if (projectCode && m.project && projectCode.toLowerCase() !== m.project.toLowerCase()) return false;
-                                    return String(m.id) === String(msRaw) || m.title.toLowerCase() === String(msRaw).toLowerCase();
+                                    const mProj = m.project.toLowerCase();
+                                    const mTitle = m.title.toLowerCase();
+                                    const mId = String(m.id);
+                                    if (prefixProj) {
+                                      return mProj === prefixProj && (mTitle === targetKey || mId === targetKey);
+                                    }
+                                    if (projectCode && mProj === projectCode.toLowerCase()) {
+                                      return mTitle === targetKey || mId === targetKey;
+                                    }
+                                    return mTitle === targetKey;
                                   });
-                                  const msDisplay = foundMs ? foundMs.title : msRaw;
+                                  const msDisplay = foundMs
+                                    ? (projectCode && foundMs.project.toUpperCase() !== projectCode.toUpperCase()
+                                        ? `[${foundMs.project}] ${foundMs.title}`
+                                        : foundMs.title)
+                                    : msRaw;
                                   return (
                                     <button
                                       type="button"
@@ -3949,6 +3982,15 @@ export function PlannedWorkView({
               }}
               onMilestonesChanged={loadMilestones}
               onSelectTicket={(ticketId) => {
+                const targetProject = metasMap[ticketId]?.project;
+                if (targetProject && projectFilter !== 'all' && projectFilter.toLowerCase() !== targetProject.toLowerCase()) {
+                  setProjectFilter(targetProject);
+                  try {
+                    sessionStorage.setItem('dev_plan_project_filter', targetProject);
+                    localStorage.setItem('dev_plan_project_filter', targetProject);
+                    updateProjectUrlSearchParam(targetProject, isEmbedded);
+                  } catch (e) {}
+                }
                 setActiveTab('features');
                 setExpandedFeatureId(`feature-${ticketId}`);
                 handleJumpToFeature(`feature-${ticketId}`, Number(ticketId));
@@ -3966,6 +4008,8 @@ export function PlannedWorkView({
                 setActiveTab('features');
               }}
               availableProjects={availableProjects}
+              isEmbedded={isEmbedded}
+              allowedProjects={allowedProjects}
             />
           )}
 

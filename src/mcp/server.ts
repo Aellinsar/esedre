@@ -1,6 +1,6 @@
 import readline from 'node:readline';
 import { StorageAdapter } from '../storage/adapter.js';
-import { TicketType, TicketCategory, TicketStatus, TicketPriority, EsedreConflictError } from '../types.js';
+import { TicketType, TicketCategory, TicketStatus, TicketPriority, EsedreConflictError, CURRENT_ESEDRE_VERSION } from '../types.js';
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -80,7 +80,7 @@ export class EsedreMcpServer {
             },
             serverInfo: {
               name: 'esedre',
-              version: '0.1.0',
+              version: CURRENT_ESEDRE_VERSION,
             },
           },
         };

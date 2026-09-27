@@ -1078,6 +1078,55 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     writeSafeFile(mPath, JSON.stringify(milestones, null, 2) + '\n');
   }
 
+  public resolveMilestone(milestoneRef: string, localLoc?: ResolvedProjectLocation): Milestone | null {
+    const cleanRef = normalizeDashesAndMojibake(milestoneRef).trim();
+    if (!cleanRef) return null;
+
+    const locations = this.resolveProjectLocations();
+
+    // 1. Check for compound project notation: "ProjectCode:Milestone" or "ProjectCode:Id"
+    const colonIdx = cleanRef.indexOf(':');
+    if (colonIdx > 0) {
+      const projPrefix = cleanRef.substring(0, colonIdx).trim();
+      const targetRef = cleanRef.substring(colonIdx + 1).trim();
+      const targetLoc = locations.find((l) => isProjectMatch(l.project.code, projPrefix));
+      if (targetLoc) {
+        const pMilestones = this.readProjectMilestones(targetLoc);
+        const match = pMilestones.find(
+          (m) =>
+            String(m.id).toLowerCase() === targetRef.toLowerCase() ||
+            m.title.toLowerCase() === targetRef.toLowerCase()
+        );
+        if (match) return { ...match, project: targetLoc.project.code };
+      }
+    }
+
+    // 2. Check local project location first
+    if (localLoc) {
+      const localMilestones = this.readProjectMilestones(localLoc);
+      const match = localMilestones.find(
+        (m) =>
+          String(m.id).toLowerCase() === cleanRef.toLowerCase() ||
+          m.title.toLowerCase() === cleanRef.toLowerCase()
+      );
+      if (match) return { ...match, project: localLoc.project.code };
+    }
+
+    // 3. Fallback: Search all other registered project locations
+    for (const loc of locations) {
+      if (localLoc && isProjectMatch(loc.project.code, localLoc.project.code)) continue;
+      const list = this.readProjectMilestones(loc);
+      const match = list.find(
+        (m) =>
+          String(m.id).toLowerCase() === cleanRef.toLowerCase() ||
+          m.title.toLowerCase() === cleanRef.toLowerCase()
+      );
+      if (match) return { ...match, project: loc.project.code };
+    }
+
+    return null;
+  }
+
   public async listMilestones(projectCode?: string): Promise<Milestone[]> {
     const locations = this.resolveProjectLocations();
     const milestones: Milestone[] = [];
@@ -1100,10 +1149,18 @@ export class FilesystemStorageAdapter implements StorageAdapter {
   }
 
   public async getMilestone(id: number | string, projectCode?: string): Promise<Milestone | null> {
-    const all = await this.listMilestones(projectCode);
-    const target = String(id).trim().toLowerCase();
+    const target = String(id).trim();
+    const colonIdx = target.indexOf(':');
+    let effectiveProject = projectCode;
+    let effectiveId = target;
+    if (colonIdx > 0 && (!projectCode || projectCode === 'all')) {
+      effectiveProject = target.substring(0, colonIdx).trim();
+      effectiveId = target.substring(colonIdx + 1).trim();
+    }
+    const all = await this.listMilestones(effectiveProject);
+    const targetLower = effectiveId.toLowerCase();
     const found = all.find(
-      (m) => String(m.id).toLowerCase() === target || m.title.toLowerCase() === target
+      (m) => String(m.id).toLowerCase() === targetLower || m.title.toLowerCase() === targetLower
     );
     return found || null;
   }
@@ -1376,14 +1433,10 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           meta.project = effectiveLoc.project.code;
           meta.projectId = effectiveLoc.project.id;
 
+          let mMatch: Milestone | null = null;
           if (meta.milestone) {
             meta.milestone = normalizeDashesAndMojibake(meta.milestone);
-            const pMilestones = this.readProjectMilestones(effectiveLoc);
-            const mMatch = pMilestones.find(
-              (m) =>
-                String(m.id).toLowerCase() === meta.milestone?.toLowerCase() ||
-                m.title.toLowerCase() === meta.milestone?.toLowerCase()
-            );
+            mMatch = this.resolveMilestone(meta.milestone, effectiveLoc);
             if (mMatch?.featureFlag) {
               meta.inheritedFeatureFlag = mMatch.featureFlag;
               if (!meta.featureFlag) {
@@ -1401,14 +1454,31 @@ export class FilesystemStorageAdapter implements StorageAdapter {
 
           if (filter?.milestone) {
             const mFilter = filter.milestone.trim().toLowerCase();
-            const pMilestones = this.readProjectMilestones(effectiveLoc);
-            const resolvedMilestone = pMilestones.find(
-              (m) => String(m.id).toLowerCase() === mFilter || m.title.toLowerCase() === mFilter
-            );
+            const resolvedFilterMilestone = this.resolveMilestone(filter.milestone, effectiveLoc);
             const matchesDirect = Boolean(meta.milestone && meta.milestone.toLowerCase() === mFilter);
-            const matchesResolvedTitle = Boolean(resolvedMilestone && meta.milestone && meta.milestone.toLowerCase() === resolvedMilestone.title.toLowerCase());
-            const matchesResolvedId = Boolean(resolvedMilestone && meta.milestone && String(resolvedMilestone.id).toLowerCase() === meta.milestone.toLowerCase());
-            if (!matchesDirect && !matchesResolvedTitle && !matchesResolvedId) {
+            const matchesResolvedTitle = Boolean(
+              resolvedFilterMilestone &&
+              meta.milestone &&
+              meta.milestone.toLowerCase() === resolvedFilterMilestone.title.toLowerCase()
+            );
+            const matchesResolvedId = Boolean(
+              resolvedFilterMilestone &&
+              meta.milestone &&
+              String(resolvedFilterMilestone.id).toLowerCase() === meta.milestone.toLowerCase()
+            );
+            const matchesCompound = Boolean(
+              resolvedFilterMilestone &&
+              meta.milestone &&
+              `${resolvedFilterMilestone.project}:${resolvedFilterMilestone.title}`.toLowerCase() === meta.milestone.toLowerCase()
+            );
+            const matchesResolvedSelf = Boolean(
+              mMatch &&
+              (mMatch.title.toLowerCase() === mFilter ||
+                String(mMatch.id).toLowerCase() === mFilter ||
+                `${mMatch.project}:${mMatch.title}`.toLowerCase() === mFilter ||
+                `${mMatch.project}:${mMatch.id}`.toLowerCase() === mFilter)
+            );
+            if (!matchesDirect && !matchesResolvedTitle && !matchesResolvedId && !matchesCompound && !matchesResolvedSelf) {
               continue;
             }
           }
@@ -1520,12 +1590,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
 
       if (meta.milestone) {
         meta.milestone = normalizeDashesAndMojibake(meta.milestone);
-        const pMilestones = this.readProjectMilestones(locInfo.loc);
-        const mMatch = pMilestones.find(
-          (m) =>
-            String(m.id).toLowerCase() === meta.milestone?.toLowerCase() ||
-            m.title.toLowerCase() === meta.milestone?.toLowerCase()
-        );
+        const mMatch = this.resolveMilestone(meta.milestone, locInfo.loc);
         if (mMatch?.featureFlag) {
           meta.inheritedFeatureFlag = mMatch.featureFlag;
           if (!meta.featureFlag) {

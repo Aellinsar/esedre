@@ -350,12 +350,12 @@ describe('Upgrade & 3-Way Hash Detection', () => {
       expect(esePs1Content).toContain('$OutputEncoding = [System.Text.Encoding]::UTF8');
 
       const esedreCmdContent = fs.readFileSync(path.join(tempDir, '.esedre', 'esedre.cmd'), 'utf-8');
-      expect(esedreCmdContent).toContain('goto use_ese');
-      expect(esedreCmdContent).toContain(':use_ese');
-      expect(esedreCmdContent).toContain('call ese %*');
-      expect(esedreCmdContent).toContain('call esedre %*');
-      expect(esedreCmdContent).toContain('goto done');
-      expect(esedreCmdContent).toContain('endlocal & exit /b %ERRORLEVEL%');
+      expect(esedreCmdContent).toContain('call :run %*');
+      expect(esedreCmdContent).toContain(':run');
+      expect(esedreCmdContent).toContain('goto :eof');
+      expect(esedreCmdContent).toContain('exit /b %ERRORLEVEL%');
+      expect(esedreCmdContent).not.toContain('goto done');
+      expect(esedreCmdContent).not.toContain(':done');
       expect(esedreCmdContent).not.toMatch(/\(\s*[^)]*goto\s+:?done/i);
 
       const eseCmdContent = fs.readFileSync(path.join(tempDir, '.esedre', 'ese.cmd'), 'utf-8');
@@ -397,9 +397,11 @@ describe('Upgrade & 3-Way Hash Detection', () => {
 
       const updatedCmd = fs.readFileSync(path.join(esedreDir, 'esedre.cmd'), 'utf-8');
       expect(updatedCmd).not.toMatch(/\(\s*[^)]*goto\s+:?done/i);
-      expect(updatedCmd).toContain('goto done');
-      expect(updatedCmd).toContain(':done');
-      expect(updatedCmd).toContain('endlocal & exit /b %ERRORLEVEL%');
+      expect(updatedCmd).toContain('call :run %*');
+      expect(updatedCmd).toContain('goto :eof');
+      expect(updatedCmd).not.toContain('goto done');
+      expect(updatedCmd).not.toContain(':done');
+      expect(updatedCmd).toContain('exit /b %ERRORLEVEL%');
 
       if (process.platform === 'win32') {
         const eseCmdPath = path.join(esedreDir, 'ese.cmd');

@@ -10,12 +10,9 @@ try {
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-if (Get-Command "ese" -ErrorAction SilentlyContinue) {
-    & ese @args
-    exit $LASTEXITCODE
-}
-if (Get-Command "esedre" -ErrorAction SilentlyContinue) {
-    & esedre @args
+$inRepoEsedre = Join-Path $scriptDir "..\dist\esedre.mjs"
+if (Test-Path $inRepoEsedre) {
+    & node $inRepoEsedre @args
     exit $LASTEXITCODE
 }
 $siblingEsedre = Join-Path $scriptDir "..\..\esedre\dist\esedre.mjs"
@@ -28,6 +25,11 @@ if (Test-Path $distEsedre) {
     & node $distEsedre @args
     exit $LASTEXITCODE
 }
+$nodeModulesEsedre = Join-Path $scriptDir "..\node_modules\esedre\dist\esedre.mjs"
+if (Test-Path $nodeModulesEsedre) {
+    & node $nodeModulesEsedre @args
+    exit $LASTEXITCODE
+}
 $localBin = Join-Path $scriptDir "..\node_modules\.bin\ese.cmd"
 if (Test-Path $localBin) {
     & $localBin @args
@@ -36,6 +38,14 @@ if (Test-Path $localBin) {
 $localEsedreBin = Join-Path $scriptDir "..\node_modules\.bin\esedre.cmd"
 if (Test-Path $localEsedreBin) {
     & $localEsedreBin @args
+    exit $LASTEXITCODE
+}
+if (Get-Command "ese" -ErrorAction SilentlyContinue) {
+    & ese @args
+    exit $LASTEXITCODE
+}
+if (Get-Command "esedre" -ErrorAction SilentlyContinue) {
+    & esedre @args
     exit $LASTEXITCODE
 }
 & npx --yes esedre @args

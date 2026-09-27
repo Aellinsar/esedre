@@ -4,10 +4,18 @@ import { SecurityFilter } from '../securityFilter.js';
 import { generateProjectSnapshot } from '../snapshot.js';
 import { validateProjectCode, validateProjectName } from '../config.js';
 
+const MAX_JSON_BODY_BYTES = 10 * 1024 * 1024; // 10MB payload ceiling
+
 function readJsonBody(req: http.IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
     let body = '';
+    let bytesRead = 0;
     req.on('data', (chunk) => {
+      bytesRead += chunk.length;
+      if (bytesRead > MAX_JSON_BODY_BYTES) {
+        req.destroy(new Error('Payload Too Large: JSON body exceeds 10MB limit'));
+        return;
+      }
       body += chunk;
     });
     req.on('end', () => {
@@ -72,7 +80,7 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
         res.writeHead(204, {
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-esedre-allowed-projects',
         });
         res.end();
         return true;

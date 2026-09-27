@@ -104,18 +104,17 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
     }
   }, [projectId]);
 
-  // Load available milestones for current project
+  // Load available milestones across accessible projects
   React.useEffect(() => {
     if (isOpen && activePlanningProvider.listMilestones) {
-      const targetProject = projectId !== undefined ? getProjectById(projectId) : undefined;
       activePlanningProvider
-        .listMilestones(targetProject?.code)
+        .listMilestones('all')
         .then((ms) => {
           setAvailableMilestones(ms || []);
         })
         .catch(() => setAvailableMilestones([]));
     }
-  }, [isOpen, projectId]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -373,11 +372,19 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
                   className="w-full p-2 bg-[var(--bg-input)] border border-[var(--border-subtle)] focus:border-indigo-500/50 rounded-xl text-xs text-indigo-700 dark:text-indigo-300 focus:outline-none"
                 >
                   <option value="" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">None (Unassigned)</option>
-                  {availableMilestones.map((m) => (
-                    <option key={m.id} value={m.title} className="bg-[var(--bg-surface)] text-[var(--text-primary)]">
-                      {m.title} {m.featureFlag ? `[Flag: ${m.featureFlag}]` : ''}
-                    </option>
-                  ))}
+                  {availableMilestones.map((m) => {
+                    const targetProj = projectId !== undefined ? getProjectById(projectId) : undefined;
+                    const isOtherProj = targetProj && m.project && m.project.toUpperCase() !== targetProj.code.toUpperCase();
+                    const label = isOtherProj
+                      ? `[${m.project}] ${m.title}${m.featureFlag ? ` [Flag: ${m.featureFlag}]` : ''}`
+                      : `${m.title}${m.featureFlag ? ` [Flag: ${m.featureFlag}]` : ''}`;
+                    const val = isOtherProj ? `${m.project}:${m.title}` : m.title;
+                    return (
+                      <option key={`${m.project}-${m.id}`} value={val} className="bg-[var(--bg-surface)] text-[var(--text-primary)]">
+                        {label}
+                      </option>
+                    );
+                  })}
                   <option value="__custom__" className="bg-[var(--bg-surface)] text-indigo-600 dark:text-indigo-400 font-semibold">
                     + Custom Milestone...
                   </option>
@@ -387,12 +394,23 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
                   type="text"
                   value={milestone}
                   onChange={(e) => setMilestone(e.target.value)}
-                  placeholder="e.g. v2.0 Release"
+                  placeholder="e.g. v2.0 Release or Project:Milestone"
                   className="w-full p-2 bg-[var(--bg-input)] border border-[var(--border-subtle)] focus:border-indigo-500/50 rounded-xl text-xs text-indigo-700 dark:text-indigo-300 placeholder-[var(--text-muted)] focus:outline-none"
                 />
               )}
               {(() => {
-                const selectedM = availableMilestones.find((m) => m.title === milestone);
+                const cleanMs = milestone.trim();
+                const colonIdx = cleanMs.indexOf(':');
+                const targetKey = colonIdx > 0 ? cleanMs.substring(colonIdx + 1).trim().toLowerCase() : cleanMs.toLowerCase();
+                const targetProj = colonIdx > 0 ? cleanMs.substring(0, colonIdx).trim().toLowerCase() : null;
+                const selectedM = availableMilestones.find((m) => {
+                  const mTitle = m.title.toLowerCase();
+                  const mId = String(m.id);
+                  if (targetProj) {
+                    return m.project.toLowerCase() === targetProj && (mTitle === targetKey || mId === targetKey);
+                  }
+                  return mTitle === targetKey || mId === targetKey;
+                });
                 if (selectedM?.featureFlag) {
                   return (
                     <span className="text-[10px] text-purple-600 dark:text-purple-400 font-mono block">

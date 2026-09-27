@@ -41,48 +41,49 @@ export function classifyContent(
 
 export const WRAPPER_CMD = `@echo off
 REM Esedre Autonomous Ticketing & Project Planning Engine Wrapper (Windows CMD)
-setlocal
+call :run %*
+exit /b %ERRORLEVEL%
+
+:run
+if exist "%~dp0..\\dist\\esedre.mjs" (
+  node "%~dp0..\\dist\\esedre.mjs" %*
+  goto :eof
+)
+if exist "%~dp0..\\..\\esedre\\dist\\esedre.mjs" (
+  node "%~dp0..\\..\\esedre\\dist\\esedre.mjs" %*
+  goto :eof
+)
+if exist "%~dp0..\\esedre\\dist\\esedre.mjs" (
+  node "%~dp0..\\esedre\\dist\\esedre.mjs" %*
+  goto :eof
+)
+if exist "%~dp0..\\node_modules\\esedre\\dist\\esedre.mjs" (
+  node "%~dp0..\\node_modules\\esedre\\dist\\esedre.mjs" %*
+  goto :eof
+)
+if exist "%~dp0..\\node_modules\\.bin\\ese.cmd" (
+  call "%~dp0..\\node_modules\\.bin\\ese.cmd" %*
+  goto :eof
+)
+if exist "%~dp0..\\node_modules\\.bin\\esedre.cmd" (
+  call "%~dp0..\\node_modules\\.bin\\esedre.cmd" %*
+  goto :eof
+)
 
 where ese >nul 2>nul
-if %ERRORLEVEL% equ 0 goto use_ese
+if %ERRORLEVEL% equ 0 (
+  call ese %*
+  goto :eof
+)
 
 where esedre >nul 2>nul
-if %ERRORLEVEL% equ 0 goto use_esedre
-
-if exist "%~dp0..\\..\\esedre\\dist\\esedre.mjs" goto use_sibling_dist
-if exist "%~dp0..\\esedre\\dist\\esedre.mjs" goto use_local_dist
-if exist "%~dp0..\\node_modules\\.bin\\ese.cmd" goto use_node_modules_ese
-if exist "%~dp0..\\node_modules\\.bin\\esedre.cmd" goto use_node_modules_esedre
+if %ERRORLEVEL% equ 0 (
+  call esedre %*
+  goto :eof
+)
 
 call npx --yes esedre %*
-goto done
-
-:use_ese
-call ese %*
-goto done
-
-:use_esedre
-call esedre %*
-goto done
-
-:use_sibling_dist
-node "%~dp0..\\..\\esedre\\dist\\esedre.mjs" %*
-goto done
-
-:use_local_dist
-node "%~dp0..\\esedre\\dist\\esedre.mjs" %*
-goto done
-
-:use_node_modules_ese
-call "%~dp0..\\node_modules\\.bin\\ese.cmd" %*
-goto done
-
-:use_node_modules_esedre
-call "%~dp0..\\node_modules\\.bin\\esedre.cmd" %*
-goto done
-
-:done
-endlocal & exit /b %ERRORLEVEL%
+goto :eof
 `;
 
 export const WRAPPER_PS1 = `# Esedre Autonomous Ticketing & Project Planning Engine Wrapper (PowerShell)
@@ -97,12 +98,9 @@ try {
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-if (Get-Command "ese" -ErrorAction SilentlyContinue) {
-    & ese @args
-    exit $LASTEXITCODE
-}
-if (Get-Command "esedre" -ErrorAction SilentlyContinue) {
-    & esedre @args
+$inRepoEsedre = Join-Path $scriptDir "..\\dist\\esedre.mjs"
+if (Test-Path $inRepoEsedre) {
+    & node $inRepoEsedre @args
     exit $LASTEXITCODE
 }
 $siblingEsedre = Join-Path $scriptDir "..\\..\\esedre\\dist\\esedre.mjs"
@@ -115,6 +113,11 @@ if (Test-Path $distEsedre) {
     & node $distEsedre @args
     exit $LASTEXITCODE
 }
+$nodeModulesEsedre = Join-Path $scriptDir "..\\node_modules\\esedre\\dist\\esedre.mjs"
+if (Test-Path $nodeModulesEsedre) {
+    & node $nodeModulesEsedre @args
+    exit $LASTEXITCODE
+}
 $localBin = Join-Path $scriptDir "..\\node_modules\\.bin\\ese.cmd"
 if (Test-Path $localBin) {
     & $localBin @args
@@ -123,6 +126,14 @@ if (Test-Path $localBin) {
 $localEsedreBin = Join-Path $scriptDir "..\\node_modules\\.bin\\esedre.cmd"
 if (Test-Path $localEsedreBin) {
     & $localEsedreBin @args
+    exit $LASTEXITCODE
+}
+if (Get-Command "ese" -ErrorAction SilentlyContinue) {
+    & ese @args
+    exit $LASTEXITCODE
+}
+if (Get-Command "esedre" -ErrorAction SilentlyContinue) {
+    & esedre @args
     exit $LASTEXITCODE
 }
 & npx --yes esedre @args
@@ -134,11 +145,8 @@ export const WRAPPER_BASH = `#!/usr/bin/env bash
 set -e
 DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
-if command -v ese >/dev/null 2>&1; then
-  exec ese "$@"
-fi
-if command -v esedre >/dev/null 2>&1; then
-  exec esedre "$@"
+if [ -f "$DIR/../dist/esedre.mjs" ]; then
+  exec node "$DIR/../dist/esedre.mjs" "$@"
 fi
 if [ -f "$DIR/../../esedre/dist/esedre.mjs" ]; then
   exec node "$DIR/../../esedre/dist/esedre.mjs" "$@"
@@ -146,11 +154,20 @@ fi
 if [ -f "$DIR/../esedre/dist/esedre.mjs" ]; then
   exec node "$DIR/../esedre/dist/esedre.mjs" "$@"
 fi
+if [ -f "$DIR/../node_modules/esedre/dist/esedre.mjs" ]; then
+  exec node "$DIR/../node_modules/esedre/dist/esedre.mjs" "$@"
+fi
 if [ -f "$DIR/../node_modules/.bin/ese" ]; then
   exec "$DIR/../node_modules/.bin/ese" "$@"
 fi
 if [ -f "$DIR/../node_modules/.bin/esedre" ]; then
   exec "$DIR/../node_modules/.bin/esedre" "$@"
+fi
+if command -v ese >/dev/null 2>&1; then
+  exec ese "$@"
+fi
+if command -v esedre >/dev/null 2>&1; then
+  exec esedre "$@"
 fi
 exec npx --yes esedre "$@"
 `;

@@ -1,8 +1,8 @@
 {
   "name": "esedre",
-  "version": "0.1.12",
+  "version": "1.0.0",
   "description": "Esedre: Developer roadmap, ticketing, and LLM coding partner coordination platform",
-  "homepage": "https://arwam.com",
+  "homepage": "https://esedre.com",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Aellinsar/esedre.git"

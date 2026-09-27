@@ -1,5 +1,4 @@
 tunnel: 6c8dec34-54bc-42b5-82a2-3f1d4f5b4a85
-credentials-file: C:\Users\MattG\.cloudflared\6c8dec34-54bc-42b5-82a2-3f1d4f5b4a85.json
 
 ingress:
   - hostname: esedre.aroomwithamoose.com
