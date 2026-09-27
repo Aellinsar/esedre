@@ -5,6 +5,27 @@ All notable changes to Esedre are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Cross-Project Ticket Linking & Dependencies**: Support bi-directional linked issues across tickets in the same project or across different projects (e.g. `Profe-136` relates to `Lab151-1`).
+  - Standard relations with inverse pairs: `relates-to` <-> `relates-to` (symmetric), `blocks` <-> `blocked-by` (inverse), `parent-of` <-> `child-of` (inverse), and `duplicates` <-> `duplicated-by` (inverse).
+  - Cycle detection preventing circular dependencies on `blocks` and `parent-of` trees.
+  - Automatic blocker detection (`isBlocked: true`) on tickets with uncompleted blockers.
+  - Agent Project Allow-List isolation: Redacts target metadata to `[Restricted Project]` when target project is outside `allowedProjects`.
+  - CLI commands: `ese link <sourceId> <relation> <targetId>` and `ese unlink <sourceId> <targetId>`, plus `--blocked` and `--linked-to <ticketKey>` query filters for `ese list`.
+  - MCP tools: `esedre_link_ticket` and `esedre_unlink_ticket`, with `isBlocked` and `linkedTo` filter arguments on `esedre_list_tickets`.
+  - Web UI: Standalone `LinkTicketModal`, Sub-tab 5: "Links" with relation badges and unlink actions, and `Blocked` warning pill in ticket headers.
+- **Dedicated Project Milestones & Umbrella Feature Flags**: First-class milestone management stored in `milestones.json` with umbrella feature flag inheritance across member tickets.
+  - CLI commands: `ese milestone list`, `ese milestone get`, `ese milestone create`, `ese milestone update`, `ese milestone delete`.
+  - MCP tools: `esedre_list_milestones`, `esedre_get_milestone`, `esedre_create_milestone`, `esedre_update_milestone`.
+  - Web UI: Milestones view, `MilestoneModal`, and milestone filter chips.
+- **Project Settings & Code Rename Engine**:
+  - CLI commands: `ese rename-project <oldCode> <newCode> [--name "<name>"]` and `ese project set <code> [--name "<name>"]`.
+  - Web UI: Project settings modal supporting live display name and code updates with link and ticket migration.
+- **Table of Contents Alignment & Static Layout**:
+  - Web UI: Fixed-width ticket numbering eliminating zig-zag alignment in All Projects view, expanded title area, and static Type and Status pills at the far right.
+
 ## [0.1.12] - 2026-09-26
 
 ### Fixed

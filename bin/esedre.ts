@@ -5,9 +5,9 @@ import path from 'node:path';
 import { FilesystemStorageAdapter } from '../src/storage/filesystem.js';
 import { StorageAdapter } from '../src/storage/adapter.js';
 import { SecurityFilter } from '../src/securityFilter.js';
-import { formatTicketListTable, formatTicketDetail, colors, normalizeDashesAndMojibake } from '../src/utils/formatter.js';
+import { formatTicketListTable, formatTicketDetail, formatMilestoneListTable, colors, normalizeDashesAndMojibake, normalizePriority } from '../src/utils/formatter.js';
 import { EsedreMcpServer } from '../src/mcp/server.js';
-import { TicketType, TicketCategory, TicketStatus, ProjectDescriptor, EsedreConflictError } from '../src/types.js';
+import { TicketType, TicketCategory, TicketStatus, TicketPriority, Milestone, MilestoneStatus, ProjectDescriptor, EsedreConflictError, TicketLinkRelation } from '../src/types.js';
 import {
   findEsedreConfig,
   EsedreAuthorizationError,
@@ -68,17 +68,32 @@ ${colors.bold}ROADMAP COMMANDS (Pair Programming & LLM Agents):${colors.reset}
   ${colors.bold}plan${colors.reset}        <id> [--file <path> | --set "<markdown>"] [--last-hash <sha1>] [--json]
                View or update implementation plan with optimistic concurrency control.
 
-  ${colors.bold}create${colors.reset}      --title "..." [-p|--project <code>] [-t|--type <type>] [--complexity <c>] [--effort "<e>"] [--summary "<s>"] [--detail "<md>"] [--file <path>] [--json]
+  ${colors.bold}create${colors.reset}      --title "..." [-p|--project <code>] [-t|--type <type>] [-P|--priority <prio>] [--complexity <c>] [--effort "<e>"] [--summary "<s>"] [--detail "<md>"] [--file <path>] [--json]
                Mint a new roadmap ticket with sequential numeric ID.
 
-  ${colors.bold}update${colors.reset}      <id> [-s|--status <status>] [-t|--type <type>] [--title "..."] [--complexity <c>] [--effort "<e>"] [--in-dev] [--flag <name>] [--last-hash <sha1>] [--force] [--json]
-               Mutate ticket status, type, title, complexity, effort, active state, or feature flag with OCC protection.
+  ${colors.bold}update${colors.reset}      <id> [-s|--status <status>] [-t|--type <type>] [-P|--priority <prio>] [--title "..."] [--complexity <c>] [--effort "<e>"] [--in-dev] [--flag <name>] [--last-hash <sha1>] [--force] [--json]
+               Mutate ticket status, type, priority, title, complexity, effort, active state, or feature flag with OCC protection.
 
   ${colors.bold}comment${colors.reset}     <id> ["<text>"] [--text "..."] [--author "..."] [--json]
                Append a research finding, test verification, or note to ticket history.
 
+  ${colors.bold}link${colors.reset}        <sourceId> <relation> <targetId> [--author "..."] [--json]
+               Establish a bi-directional link between two tickets (within or across projects).
+               • Relations: 'relates-to', 'blocks', 'blocked-by', 'parent-of', 'child-of', 'duplicates', 'duplicated-by'
+
+  ${colors.bold}unlink${colors.reset}      <sourceId> <targetId> [--json]
+               Remove a link between two tickets and its reciprocal link.
+
   ${colors.bold}snapshot, refresh${colors.reset} [--project <code>] [--json]
                Generate lean read-only projection snapshot (.esedre/snapshot.json) for zero-latency agent context.
+
+  ${colors.bold}milestone${colors.reset}   [list | get <id> | create | update <id> | delete <id>] [options] [--json]
+               Manage project milestones with optional umbrella feature flags.
+               • list:   ese milestone list [-p <project>]
+               • get:    ese milestone get <id> [-p <project>]
+               • create: ese milestone create --title "..." [-p <project>] [--flag <name>] [--status <status>] [--target-date <date>] [--desc "..."]
+               • update: ese milestone update <id> [--title "..."] [--flag <name>] [--status <status>] [--target-date <date>] [--desc "..."]
+               • delete: ese milestone delete <id> [-p <project>]
 
 ${colors.bold}SERVICE DAEMON COMMANDS:${colors.reset}
   ${colors.bold}start${colors.reset}       [--port <n>] [--foreground | -f] [--quiet] [--json]
@@ -115,12 +130,24 @@ ${colors.bold}DEVELOPER ADMINISTRATION (Human Setup & Configuration):${colors.re
   ${colors.bold}projects${colors.reset}    [--json]
                List registered workspace projects, project codes (e.g. 'CORE', 'WEB', 'DOCS'), and descriptions.
 
+  ${colors.bold}project${colors.reset}     [set <code> [-n|--name <name>] [-d|--desc <text>] | rename <old> <new>] [--json]
+               Inspect, update metadata, or rename workspace projects.
+
+  ${colors.bold}rename-project${colors.reset} <oldCode> <newCode> [-n|--name <name>] [--json]
+               Safely rename a project code on disk, updating hub folders, manifests, ticket references, and workspace configs.
+
 ${colors.bold}OPTIONS:${colors.reset}
   -p, --project <code> Project code (e.g. CORE, ALCE, DOCS).
   -n, --name <name>    Project display name (e.g. "Alce Web Reader").
   -t, --type <type>    Ticket type ('Feature', 'Platform', 'Tools', 'Idea', 'Bug').
+  -P, --priority <prio> Ticket priority ('Critical', 'High', 'Medium', 'Low', 'none').
+  -m, --milestone <name|id> Ticket milestone association.
   -s, --status <stat>  Ticket status ('Planned', 'In Development', 'Completed', 'Rejected').
   -q, --search <query> Case-insensitive substring search query.
+  -r, --relation <rel> Link relation type ('relates-to', 'blocks', 'blocked-by', etc.).
+  --to <targetId>      Target ticket ID for link/unlink commands.
+  --blocked            Filter tickets that are blocked by uncompleted tickets.
+  --linked-to <key>    Filter tickets that are linked to a specific ticket.
   --detail "<md>"      Specification markdown for ticket detail during create.
   --file <path>        Path to markdown file for detail (create) or implementation plan (plan).
   --json              Output raw machine-readable JSON (strongly recommended for autonomous LLM coding agents).
@@ -162,7 +189,7 @@ function parseArgs(rawArgs: string[]): { command: string; positionals: string[];
         flags['help'] = true;
       } else if (key === 'y') {
         flags['yes'] = true;
-      } else if (key === 't' || key === 'p' || key === 's' || key === 'q' || key === 'n') {
+      } else if (key === 't' || key === 'p' || key === 's' || key === 'q' || key === 'n' || key === 'P' || key === 'm' || key === 'r') {
         const next = rawArgs[i + 1];
         if (next !== undefined && !next.startsWith('-')) {
           flags[key] = next;
@@ -185,9 +212,12 @@ function parseArgs(rawArgs: string[]): { command: string; positionals: string[];
   // Map canonical shorthand flags to their long-form equivalents
   if (flags['t'] && !flags['type']) flags['type'] = flags['t'];
   if (flags['p'] && !flags['project']) flags['project'] = flags['p'];
+  if (flags['P'] && !flags['priority']) flags['priority'] = flags['P'];
+  if (flags['m'] && !flags['milestone']) flags['milestone'] = flags['m'];
   if (flags['n'] && !flags['name']) flags['name'] = flags['n'];
   if (flags['s'] && !flags['status']) flags['status'] = flags['s'];
   if (flags['q'] && !flags['search']) flags['search'] = flags['q'];
+  if (flags['r'] && !flags['relation']) flags['relation'] = flags['r'];
   if (flags['f'] && !flags['foreground']) flags['foreground'] = flags['f'];
 
   return { command, positionals, flags };
@@ -823,6 +853,84 @@ async function main(): Promise<void> {
         return;
       }
 
+      case 'rename-project': {
+        const oldCode = positionals[0];
+        const newCode = positionals[1];
+        if (!oldCode || !newCode) {
+          console.error(`${colors.red}Error: Both oldCode and newCode are required (e.g. ese rename-project Profe Lab151)${colors.reset}`);
+          process.exit(1);
+        }
+        const newName = (flags['name'] || flags['n']) as string | undefined;
+        const result = await storage.renameProjectCode({ oldCode, newCode, newName });
+        if (isJson) {
+          console.log(JSON.stringify(result, null, 2));
+        } else {
+          console.log(`${colors.green}✔ Successfully renamed project "${result.oldCode}" to "${result.newCode}"${colors.reset}`);
+          console.log(`  • Display Name: ${result.project.name}`);
+          console.log(`  • Migrated Tickets: ${result.migratedTicketsCount}`);
+          if (result.updatedHubs.length > 0) {
+            console.log(`  • Updated Data Hubs: ${result.updatedHubs.length}`);
+          }
+          if (result.updatedConfigs.length > 0) {
+            console.log(`  • Updated Configs: ${result.updatedConfigs.join(', ')}`);
+          }
+        }
+        return;
+      }
+
+      case 'project': {
+        const sub = positionals[0]?.toLowerCase();
+        if (sub === 'rename') {
+          const oldCode = positionals[1];
+          const newCode = positionals[2];
+          if (!oldCode || !newCode) {
+            console.error(`${colors.red}Error: Both oldCode and newCode are required (e.g. ese project rename Profe Lab151)${colors.reset}`);
+            process.exit(1);
+          }
+          const newName = (flags['name'] || flags['n']) as string | undefined;
+          const result = await storage.renameProjectCode({ oldCode, newCode, newName });
+          if (isJson) {
+            console.log(JSON.stringify(result, null, 2));
+          } else {
+            console.log(`${colors.green}✔ Successfully renamed project "${result.oldCode}" to "${result.newCode}"${colors.reset}`);
+            console.log(`  • Display Name: ${result.project.name}`);
+            console.log(`  • Migrated Tickets: ${result.migratedTicketsCount}`);
+          }
+          return;
+        }
+
+        if (sub === 'set') {
+          const code = positionals[1] || (flags['project'] as string) || (flags['p'] as string);
+          if (!code) {
+            console.error(`${colors.red}Error: Project code is required (e.g. ese project set Lab151 --name "Lab 151")${colors.reset}`);
+            process.exit(1);
+          }
+          const name = (flags['name'] || flags['n']) as string | undefined;
+          const description = (flags['description'] || flags['desc'] || flags['d']) as string | undefined;
+          const updated = await storage.updateProject({ code, name, description });
+          if (isJson) {
+            console.log(JSON.stringify(updated, null, 2));
+          } else {
+            console.log(`${colors.green}✔ Updated project "${updated.code}"${colors.reset}`);
+            console.log(`  • Name: ${updated.name}`);
+            console.log(`  • Description: ${updated.description}`);
+          }
+          return;
+        }
+
+        printDuplicateProjectWarnings(storage, isJson);
+        const projects = await storage.getProjects();
+        if (isJson) {
+          console.log(JSON.stringify(projects, null, 2));
+        } else {
+          console.log(`${colors.bold}Registered Projects:${colors.reset}`);
+          for (const p of projects) {
+            console.log(`  • ${colors.bold}${p.code}${colors.reset} (#${p.id}): ${p.name}: ${colors.dim}${p.description}${colors.reset}`);
+          }
+        }
+        return;
+      }
+
       case 'projects': {
         printDuplicateProjectWarnings(storage, isJson);
         const projects = await storage.getProjects();
@@ -844,9 +952,27 @@ async function main(): Promise<void> {
         const status = (flags['status'] as TicketStatus) || undefined;
         const type = ((flags['type'] as TicketType) || (flags['category'] as TicketType)) || undefined;
         const category = type;
+        const rawPriority = flags['priority'] as string;
+        let priority: TicketPriority | 'none' | undefined;
+        if (rawPriority) {
+          const lower = rawPriority.trim().toLowerCase();
+          if (lower === 'none' || lower === 'null') {
+            priority = 'none';
+          } else {
+            const norm = normalizePriority(rawPriority);
+            if (!norm) {
+              console.error(`${colors.red}Error: Invalid priority filter '${rawPriority}'. Valid options: Critical, High, Medium, Low, none${colors.reset}`);
+              process.exit(1);
+            }
+            priority = norm;
+          }
+        }
         const search = (flags['search'] as string) || undefined;
+        const milestone = (flags['milestone'] as string) || (flags['m'] as string) || undefined;
+        const isBlocked = flags['blocked'] ? true : undefined;
+        const linkedTo = (flags['linked-to'] as string) || (flags['linkedTo'] as string) || undefined;
 
-        const tickets = await storage.listTickets({ project, status, type, category, search });
+        const tickets = await storage.listTickets({ project, status, type, category, priority, milestone, search, isBlocked, linkedTo });
         if (isJson) {
           console.log(JSON.stringify(tickets.map((t) => ({
             id: t.meta.id,
@@ -854,10 +980,16 @@ async function main(): Promise<void> {
             type: t.meta.type || t.meta.category,
             category: t.meta.type || t.meta.category,
             status: t.meta.status,
+            priority: t.meta.priority,
             complexity: normalizeDashesAndMojibake(t.meta.complexity),
             effort: normalizeDashesAndMojibake(t.meta.estimatedEffort),
+            milestone: t.meta.milestone,
+            featureFlag: t.meta.featureFlag,
+            inheritedFeatureFlag: t.meta.inheritedFeatureFlag,
             project: t.projectDescriptor?.code || t.meta.project || 'UNASSIGNED',
             sha1: t.sha1 || t.meta.sha1,
+            isBlocked: t.isBlocked,
+            links: t.links,
           })), null, 2));
         } else {
           if (tickets.length === 0) {
@@ -968,6 +1100,16 @@ async function main(): Promise<void> {
 
         const type = ((flags['type'] as string) || (flags['category'] as string) || 'Feature') as TicketType;
         const category = type;
+        const rawPriority = flags['priority'] as string;
+        let priority: TicketPriority | undefined;
+        if (rawPriority) {
+          const norm = normalizePriority(rawPriority);
+          if (!norm) {
+            console.error(`${colors.red}Error: Invalid priority '${rawPriority}'. Valid options: Critical, High, Medium, Low${colors.reset}`);
+            process.exit(1);
+          }
+          priority = norm;
+        }
         const projectCode = (flags['project'] as string) || discovered.config?.projectCode;
         if (!projectCode) {
           console.error(`${colors.red}Error: Project is required to create a ticket (--project <code> or configure projectCode in esedre.json).${colors.reset}`);
@@ -987,6 +1129,7 @@ async function main(): Promise<void> {
 
         const detailArg = flags['detail'] as string;
         const fileArg = flags['file'] as string;
+        const milestone = (flags['milestone'] as string) || (flags['m'] as string) || undefined;
 
         let detailMarkdown: string | undefined = detailArg;
         if (fileArg) {
@@ -1006,6 +1149,7 @@ async function main(): Promise<void> {
           title,
           type,
           category,
+          priority,
           projectCode,
           complexity,
           estimatedEffort,
@@ -1013,12 +1157,13 @@ async function main(): Promise<void> {
           submittedBy,
           detail: detailMarkdown,
           detailMarkdown,
+          milestone,
         });
 
         if (isJson) {
           console.log(JSON.stringify(created, null, 2));
         } else {
-          console.log(`${colors.green}✔ Created Ticket #${created.meta.id}: ${created.meta.title}${colors.reset} [${created.projectDescriptor?.code || created.meta.project || 'UNASSIGNED'}] (SHA-1: ${created.sha1?.slice(0, 8)})`);
+          console.log(`${colors.green}✔ Created Ticket #${created.meta.id}: ${created.meta.title}${colors.reset} [${created.projectDescriptor?.code || created.meta.project || 'UNASSIGNED'}]${created.meta.priority ? ` [${created.meta.priority}]` : ''} (SHA-1: ${created.sha1?.slice(0, 8)})`);
         }
         return;
       }
@@ -1038,6 +1183,7 @@ async function main(): Promise<void> {
         const effort = flags['effort'] ? normalizeDashesAndMojibake(flags['effort'] as string) : undefined;
         const inDev = flags['in-dev'] !== undefined ? Boolean(flags['in-dev']) : undefined;
         const flag = flags['flag'] as string;
+        const rawMilestone = flags['milestone'] !== undefined ? flags['milestone'] : flags['m'];
         const isForce = Boolean(flags['force']);
         const lastHash = isForce ? undefined : (flags['last-hash'] as string);
 
@@ -1045,19 +1191,177 @@ async function main(): Promise<void> {
         const type = ((flags['type'] as TicketType) || (flags['category'] as TicketType)) || undefined;
         if (type) { updates.type = type; updates.category = type; }
         if (status) updates.status = status;
+        if (flags['priority'] !== undefined) {
+          const raw = String(flags['priority']).trim();
+          if (raw.toLowerCase() === 'none' || raw.toLowerCase() === 'clear' || raw.toLowerCase() === 'null') {
+            updates.priority = 'none';
+          } else {
+            const norm = normalizePriority(raw);
+            if (!norm) {
+              console.error(`${colors.red}Error: Invalid priority '${raw}'. Valid options: Critical, High, Medium, Low, none${colors.reset}`);
+              process.exit(1);
+            }
+            updates.priority = norm;
+          }
+        }
         if (title) updates.title = title;
         if (complexity) updates.complexity = complexity;
         if (effort) updates.estimatedEffort = effort;
         if (inDev !== undefined) updates.isActivePlanning = inDev;
         if (flag) updates.featureFlag = flag;
+        if (rawMilestone !== undefined) updates.milestone = rawMilestone as string;
 
         const updated = await storage.updateTicket(lookupKey, updates, lastHash);
         if (isJson) {
           console.log(JSON.stringify(updated, null, 2));
         } else {
-          console.log(`${colors.green}✔ Updated Ticket #${lookupKey}: ${updated.meta.title} (Status: ${updated.meta.status}, SHA-1: ${updated.sha1?.slice(0, 8)})${colors.reset}`);
+          console.log(`${colors.green}✔ Updated Ticket #${lookupKey}: ${updated.meta.title} (Status: ${updated.meta.status}${updated.meta.priority ? `, Priority: ${updated.meta.priority}` : ''}${updated.meta.milestone ? `, Milestone: ${updated.meta.milestone}` : ''}, SHA-1: ${updated.sha1?.slice(0, 8)})${colors.reset}`);
         }
         return;
+      }
+
+      case 'milestone':
+      case 'milestones': {
+        const subAction = positionals[0] || 'list';
+        const project = (flags['project'] as string) || (flags['p'] as string) || discovered.config?.projectCode;
+
+        if (subAction === 'list') {
+          const milestones = await storage.listMilestones(project);
+          const allTickets = await storage.listTickets({ project });
+          if (isJson) {
+            console.log(JSON.stringify(milestones, null, 2));
+          } else {
+            console.log(formatMilestoneListTable(milestones, allTickets));
+            if (milestones.length > 0) {
+              console.log(`\n${colors.dim}Total: ${milestones.length} milestones${colors.reset}`);
+            }
+          }
+          return;
+        }
+
+        if (subAction === 'get') {
+          const idStr = positionals[1];
+          if (!idStr) {
+            console.error(`${colors.red}Error: Milestone ID or title is required (e.g. ese milestone get 1 or ese milestone get "v0.2.0")${colors.reset}`);
+            process.exit(1);
+          }
+          const milestone = await storage.getMilestone(idStr, project);
+          if (!milestone) {
+            console.error(`${colors.red}Error: Milestone "${idStr}" not found.${colors.reset}`);
+            process.exit(1);
+          }
+          const tickets = await storage.listTickets({ project, milestone: String(milestone.id) });
+          if (isJson) {
+            console.log(JSON.stringify({ ...milestone, tickets }, null, 2));
+          } else {
+            console.log(`${colors.bold}${colors.cyan}Milestone #${milestone.id}: ${milestone.title}${colors.reset}`);
+            console.log(`${colors.dim}${'='.repeat(60)}${colors.reset}`);
+            console.log(`${colors.bold}Project:${colors.reset}       ${milestone.project}`);
+            console.log(`${colors.bold}Status:${colors.reset}        ${milestone.status}`);
+            if (milestone.featureFlag) {
+              console.log(`${colors.bold}Umbrella Flag:${colors.reset} ${colors.yellow}${milestone.featureFlag}${colors.reset} ${colors.dim}(inherited by all tickets in milestone)${colors.reset}`);
+            }
+            if (milestone.targetDate) {
+              console.log(`${colors.bold}Target Date:${colors.reset}   ${milestone.targetDate}`);
+            }
+            if (milestone.description) {
+              console.log(`\n${colors.bold}Description:${colors.reset}\n${milestone.description}`);
+            }
+            const completedCount = tickets.filter((t) => t.meta.status === 'Completed').length;
+            const progress = tickets.length > 0 ? Math.round((completedCount / tickets.length) * 100) : 0;
+            console.log(`\n${colors.bold}Progress:${colors.reset}      ${completedCount} / ${tickets.length} completed (${progress}%)`);
+            if (tickets.length > 0) {
+              console.log(`\n${colors.bold}Tickets:${colors.reset}`);
+              for (const t of tickets) {
+                console.log(`  • #${t.meta.id} [${t.meta.status}] [${t.meta.type}]: ${t.meta.title}${t.meta.priority ? ` (${t.meta.priority})` : ''}`);
+              }
+            }
+          }
+          return;
+        }
+
+        if (subAction === 'create') {
+          const rawTitle = (flags['title'] as string) || positionals.slice(1).join(' ').trim();
+          if (!rawTitle) {
+            console.error(`${colors.red}Error: --title is required to create a milestone (e.g. ese milestone create --title "v0.2.0")${colors.reset}`);
+            process.exit(1);
+          }
+          const title = normalizeDashesAndMojibake(rawTitle);
+          const projectCode = project;
+          if (!projectCode) {
+            console.error(`${colors.red}Error: Project is required to create a milestone (--project <code> or configure projectCode in esedre.json).${colors.reset}`);
+            process.exit(1);
+          }
+          const description = (flags['desc'] as string) || (flags['description'] as string);
+          const featureFlag = (flags['flag'] as string) || (flags['feature-flag'] as string);
+          const targetDate = (flags['target-date'] as string) || (flags['date'] as string);
+          const status = (flags['status'] as any) || 'Planned';
+
+          const created = await storage.createMilestone({
+            projectCode,
+            title,
+            description,
+            featureFlag,
+            targetDate,
+            status,
+          });
+
+          if (isJson) {
+            console.log(JSON.stringify(created, null, 2));
+          } else {
+            console.log(`${colors.green}✔ Created Milestone #${created.id}: ${created.title} [${created.project}]${created.featureFlag ? ` (Umbrella Flag: ${created.featureFlag})` : ''}${colors.reset}`);
+          }
+          return;
+        }
+
+        if (subAction === 'update') {
+          const idStr = positionals[1];
+          if (!idStr) {
+            console.error(`${colors.red}Error: Milestone ID is required (e.g. ese milestone update 1 --status Active)${colors.reset}`);
+            process.exit(1);
+          }
+          const updates: any = {};
+          if (flags['title']) updates.title = flags['title'] as string;
+          if (flags['desc'] || flags['description']) updates.description = (flags['desc'] || flags['description']) as string;
+          if (flags['status']) updates.status = flags['status'];
+          if (flags['flag'] !== undefined || flags['feature-flag'] !== undefined) {
+            updates.featureFlag = flags['flag'] !== undefined ? flags['flag'] : flags['feature-flag'];
+          }
+          if (flags['target-date'] !== undefined || flags['date'] !== undefined) {
+            updates.targetDate = flags['target-date'] !== undefined ? flags['target-date'] : flags['date'];
+          }
+
+          const updated = await storage.updateMilestone(idStr, updates, project);
+          if (isJson) {
+            console.log(JSON.stringify(updated, null, 2));
+          } else {
+            console.log(`${colors.green}✔ Updated Milestone #${updated.id}: ${updated.title} (Status: ${updated.status}${updated.featureFlag ? `, Flag: ${updated.featureFlag}` : ''})${colors.reset}`);
+          }
+          return;
+        }
+
+        if (subAction === 'delete') {
+          const idStr = positionals[1];
+          if (!idStr) {
+            console.error(`${colors.red}Error: Milestone ID is required (e.g. ese milestone delete 1)${colors.reset}`);
+            process.exit(1);
+          }
+          const success = await storage.deleteMilestone(idStr, project);
+          if (isJson) {
+            console.log(JSON.stringify({ success, id: idStr }, null, 2));
+          } else {
+            if (success) {
+              console.log(`${colors.green}✔ Deleted Milestone #${idStr}${colors.reset}`);
+            } else {
+              console.error(`${colors.red}Error: Milestone "${idStr}" not found.${colors.reset}`);
+              process.exit(1);
+            }
+          }
+          return;
+        }
+
+        console.error(`${colors.red}Error: Unknown milestone action "${subAction}". Valid actions: list, get, create, update, delete${colors.reset}`);
+        process.exit(1);
       }
 
       case 'comment': {
@@ -1082,6 +1386,66 @@ async function main(): Promise<void> {
           console.log(JSON.stringify(comment, null, 2));
         } else {
           console.log(`${colors.green}✔ Added comment to Ticket #${lookupKey} by ${comment.author}${colors.reset}`);
+        }
+        return;
+      }
+
+      case 'link': {
+        let sourceId = positionals[0];
+        let relationArg = flags['relation'] as string;
+        let targetId = (flags['to'] as string) || positionals[1];
+
+        if (positionals.length >= 3) {
+          sourceId = positionals[0];
+          relationArg = positionals[1];
+          targetId = positionals[2];
+        } else if (positionals.length === 2 && !flags['relation']) {
+          const normRel = positionals[1].toLowerCase().replace(/_/g, '-');
+          if (['blocks', 'blocked-by', 'relates-to', 'parent-of', 'child-of', 'duplicates', 'duplicated-by'].includes(normRel)) {
+            relationArg = normRel;
+            targetId = (flags['to'] as string) || positionals[2];
+          } else {
+            targetId = positionals[1];
+            relationArg = 'relates-to';
+          }
+        }
+
+        if (!sourceId || !targetId) {
+          console.error(`${colors.red}Error: Both source and target ticket IDs are required.${colors.reset}`);
+          console.error(`${colors.dim}Usage: ese link <sourceId> <relation> <targetId> [options]${colors.reset}`);
+          console.error(`${colors.dim}Relations: blocks, blocked-by, relates-to, parent-of, child-of, duplicates, duplicated-by${colors.reset}`);
+          process.exit(1);
+        }
+
+        const relation = (relationArg || 'relates-to').toLowerCase().replace(/_/g, '-') as TicketLinkRelation;
+        const project = (flags['project'] as string) || discovered.config?.projectCode;
+        const author = (flags['author'] as string) || 'User';
+
+        const result = await storage.addTicketLink(sourceId, relation, targetId, { author, project });
+        if (isJson) {
+          console.log(JSON.stringify(result, null, 2));
+        } else {
+          console.log(`${colors.green}✔ Linked #${result.source.meta.id} (${result.source.meta.project || 'Project'}) -> ${relation} -> #${targetId}${colors.reset}`);
+        }
+        return;
+      }
+
+      case 'unlink': {
+        const sourceId = positionals[0];
+        const targetId = (flags['to'] as string) || positionals[1];
+
+        if (!sourceId || !targetId) {
+          console.error(`${colors.red}Error: Both source and target ticket IDs are required.${colors.reset}`);
+          console.error(`${colors.dim}Usage: ese unlink <sourceId> <targetId> [options]${colors.reset}`);
+          process.exit(1);
+        }
+
+        const project = (flags['project'] as string) || discovered.config?.projectCode;
+        const result = await storage.removeTicketLink(sourceId, targetId, { project });
+        if (isJson) {
+          console.log(JSON.stringify(result, null, 2));
+        } else {
+          console.log(`${colors.green}✔ Unlinked #${result.source.meta.id} from #${targetId}${colors.reset}`);
         }
         return;
       }

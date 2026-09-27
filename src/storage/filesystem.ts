@@ -11,11 +11,31 @@ function isProjectMatch(code?: string, filter?: string): boolean {
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { EsedreTicket, TicketMeta, ProjectDescriptor, TicketComment, TicketDetail, TicketType, TicketCategory, EsedreConflictError } from '../types.js';
+import os from 'node:os';
+import {
+  EsedreTicket,
+  TicketMeta,
+  ProjectDescriptor,
+  TicketComment,
+  TicketDetail,
+  TicketType,
+  TicketCategory,
+  EsedreConflictError,
+  UpdateProjectInput,
+  RenameProjectCodeInput,
+  RenameProjectCodeResult,
+  Milestone,
+  CreateMilestoneInput,
+  UpdateMilestoneInput,
+  TicketLinkRelation,
+  TicketLink,
+  EnrichedTicketLink,
+  INVERSE_RELATIONS,
+} from '../types.js';
 import { StorageAdapter, CreateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './adapter.js';
-import { EsedreConfig, findEsedreConfig, expandHome } from '../config.js';
+import { EsedreConfig, findEsedreConfig, expandHome, validateProjectCode, validateProjectName } from '../config.js';
 import { computeTicketHash, verifyTicketHash } from '../snapshot.js';
-import { normalizeDashesAndMojibake, normalizeTicketFields } from '../utils/formatter.js';
+import { normalizeDashesAndMojibake, normalizeTicketFields, normalizePriority } from '../utils/formatter.js';
 
 function writeSafeFile(filePath: string, content: string): void {
   const dir = path.dirname(filePath);
@@ -69,6 +89,19 @@ export class FilesystemStorageAdapter implements StorageAdapter {
   }
 
   public refreshConfig(): void {
+    if (this.isConfigExplicit) {
+      try {
+        const discovered = findEsedreConfig(this.workspaceRoot);
+        if (discovered.config && Object.keys(discovered.config).length > 0) {
+          this.config = {
+            ...this.config,
+            ...discovered.config,
+          };
+        }
+      } catch {}
+      this.lastConfigCheck = Date.now();
+      return;
+    }
     try {
       const discovered = findEsedreConfig(this.workspaceRoot);
       this.config = discovered.config || {};
@@ -638,6 +671,563 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     return projectDesc;
   }
 
+  public async updateProject(input: UpdateProjectInput): Promise<ProjectDescriptor> {
+    const cleanCode = input.code.trim();
+    const cleanLower = cleanCode.toLowerCase();
+
+    if (input.name !== undefined) {
+      const nameVal = validateProjectName(input.name);
+      if (!nameVal.valid) {
+        throw new Error(nameVal.error);
+      }
+    }
+
+    const locations = this.resolveProjectLocations();
+    const loc = locations.find((l) => l.project.code.toLowerCase() === cleanLower);
+    if (!loc) {
+      throw new Error(`Project "${cleanCode}" not found`);
+    }
+
+    const updatedDesc: ProjectDescriptor = {
+      ...loc.project,
+      ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+      ...(input.description !== undefined ? { description: input.description.trim() } : {}),
+      ...(input.colors !== undefined ? { colors: input.colors } : {}),
+      ...(input.techStack !== undefined ? { techStack: input.techStack } : {}),
+      ...(input.groundingRules !== undefined ? { groundingRules: input.groundingRules } : {}),
+      ...(input.guidelinesRef !== undefined ? { guidelinesRef: input.guidelinesRef } : {}),
+    };
+
+    if (loc.sourceType === 'hub' && loc.hubDir) {
+      const projectDir = path.dirname(loc.ticketsDir);
+      const pJsonPath = path.join(projectDir, 'project.json');
+      let existingPJson: any = {};
+      if (fs.existsSync(pJsonPath)) {
+        try { existingPJson = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8')); } catch {}
+      }
+      const mergedPJson = { ...existingPJson, ...updatedDesc };
+      writeSafeFile(pJsonPath, JSON.stringify(mergedPJson, null, 2) + '\n');
+
+      const hubProjectsFile = path.join(loc.hubDir, 'projects.json');
+      const subHubProjectsFile = path.join(loc.hubDir, 'projects', 'projects.json');
+      for (const f of [hubProjectsFile, subHubProjectsFile]) {
+        if (fs.existsSync(f)) {
+          try {
+            const arr: ProjectDescriptor[] = JSON.parse(fs.readFileSync(f, 'utf-8'));
+            const idx = arr.findIndex((p) => p.code.toLowerCase() === cleanLower);
+            if (idx >= 0) {
+              arr[idx] = { ...arr[idx], ...updatedDesc };
+              writeSafeFile(f, JSON.stringify(arr, null, 2) + '\n');
+            }
+          } catch {}
+        }
+      }
+    } else {
+      // In-repo or federated
+      const projectDir = loc.sourceType === 'federated' ? path.dirname(loc.ticketsDir) : path.join(this.workspaceRoot, '.esedre');
+      const candidates = [
+        path.join(projectDir, 'project.json'),
+        path.join(this.workspaceRoot, '.esedre', 'project.json'),
+        path.join(this.workspaceRoot, 'project.json'),
+      ];
+      for (const pJsonPath of candidates) {
+        if (fs.existsSync(pJsonPath)) {
+          try {
+            const existing = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8'));
+            const merged = { ...existing, ...updatedDesc };
+            writeSafeFile(pJsonPath, JSON.stringify(merged, null, 2) + '\n');
+          } catch {}
+        }
+      }
+      const pJsonListCandidates = [
+        path.join(projectDir, 'projects.json'),
+        path.join(this.workspaceRoot, '.esedre', 'projects.json'),
+        path.join(this.workspaceRoot, 'projects.json'),
+      ];
+      for (const projectsJsonPath of pJsonListCandidates) {
+        if (fs.existsSync(projectsJsonPath)) {
+          try {
+            const arr: ProjectDescriptor[] = JSON.parse(fs.readFileSync(projectsJsonPath, 'utf-8'));
+            const idx = arr.findIndex((p) => p.code.toLowerCase() === cleanLower);
+            if (idx >= 0) {
+              arr[idx] = { ...arr[idx], ...updatedDesc };
+              writeSafeFile(projectsJsonPath, JSON.stringify(arr, null, 2) + '\n');
+            }
+          } catch {}
+        }
+      }
+    }
+
+    this.refreshConfig();
+    return updatedDesc;
+  }
+
+  public async renameProjectCode(input: RenameProjectCodeInput): Promise<RenameProjectCodeResult> {
+    const cleanOld = input.oldCode.trim();
+    const cleanNew = input.newCode.trim();
+    const oldLower = cleanOld.toLowerCase();
+    const newLower = cleanNew.toLowerCase();
+
+    const codeVal = validateProjectCode(cleanNew);
+    if (!codeVal.valid) {
+      throw new Error(codeVal.error);
+    }
+
+    if (input.newName !== undefined) {
+      const nameVal = validateProjectName(input.newName);
+      if (!nameVal.valid) {
+        throw new Error(nameVal.error);
+      }
+    }
+
+    const locations = this.resolveProjectLocations();
+    const loc = locations.find((l) => l.project.code.toLowerCase() === oldLower);
+    if (!loc) {
+      throw new Error(`Project "${cleanOld}" not found`);
+    }
+
+    if (oldLower !== newLower) {
+      const collision = locations.find((l) => l.project.code.toLowerCase() === newLower);
+      if (collision) {
+        throw new Error(`Project code "${cleanNew}" collides with existing project "${collision.project.code}".`);
+      }
+    }
+
+    let migratedTicketsCount = 0;
+    const updatedHubs: string[] = [];
+    const updatedConfigs: string[] = [];
+
+    const updatedDesc: ProjectDescriptor = {
+      ...loc.project,
+      code: cleanNew,
+      ...(input.newName ? { name: input.newName.trim() } : {}),
+    };
+
+    if (loc.sourceType === 'hub' && loc.hubDir) {
+      const hubDir = loc.hubDir;
+      const oldProjectDir = path.dirname(loc.ticketsDir);
+      const hubProjectsDir = path.dirname(oldProjectDir);
+      const newProjectDir = path.join(hubProjectsDir, cleanNew);
+
+      // Handle folder rename
+      if (oldProjectDir.toLowerCase() === newProjectDir.toLowerCase()) {
+        // Case-only rename
+        if (path.basename(oldProjectDir) !== cleanNew) {
+          const tempHop = `${oldProjectDir}__rename_hop_${Date.now()}`;
+          fs.renameSync(oldProjectDir, tempHop);
+          fs.renameSync(tempHop, newProjectDir);
+        }
+      } else {
+        if (fs.existsSync(newProjectDir)) {
+          throw new Error(`Target directory "${newProjectDir}" already exists.`);
+        }
+        fs.renameSync(oldProjectDir, newProjectDir);
+      }
+
+      // Update project.json in target directory
+      const pJsonPath = path.join(newProjectDir, 'project.json');
+      let existingPJson: any = {};
+      if (fs.existsSync(pJsonPath)) {
+        try { existingPJson = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8')); } catch {}
+      }
+      const mergedPJson = { ...existingPJson, ...updatedDesc, code: cleanNew };
+      writeSafeFile(pJsonPath, JSON.stringify(mergedPJson, null, 2) + '\n');
+
+      // Update hub projects.json
+      const hubProjectsFile = path.join(hubDir, 'projects.json');
+      const subHubProjectsFile = path.join(hubDir, 'projects', 'projects.json');
+      for (const f of [hubProjectsFile, subHubProjectsFile]) {
+        if (fs.existsSync(f)) {
+          try {
+            const arr: ProjectDescriptor[] = JSON.parse(fs.readFileSync(f, 'utf-8'));
+            const idx = arr.findIndex((p) => p.code.toLowerCase() === oldLower);
+            if (idx >= 0) {
+              arr[idx] = { ...arr[idx], ...updatedDesc, code: cleanNew };
+              writeSafeFile(f, JSON.stringify(arr, null, 2) + '\n');
+              if (!updatedHubs.includes(f)) updatedHubs.push(f);
+            }
+          } catch {}
+        }
+      }
+
+      // Update tickets under newProjectDir/tickets/
+      const newTicketsDir = path.join(newProjectDir, 'tickets');
+      if (fs.existsSync(newTicketsDir)) {
+        try {
+          const entries = fs.readdirSync(newTicketsDir, { withFileTypes: true });
+          for (const ent of entries) {
+            if (!ent.isDirectory()) continue;
+            const tMetaPath = path.join(newTicketsDir, ent.name, 'meta.json');
+            if (fs.existsSync(tMetaPath)) {
+              try {
+                const meta = JSON.parse(fs.readFileSync(tMetaPath, 'utf-8'));
+                meta.project = cleanNew;
+                if (Array.isArray(meta.links)) {
+                  for (const l of meta.links) {
+                    if (l.targetProject && l.targetProject.toLowerCase() === oldLower) {
+                      l.targetProject = cleanNew;
+                      l.targetKey = `${cleanNew}-${l.targetId}`;
+                    }
+                  }
+                }
+                writeSafeFile(tMetaPath, JSON.stringify(meta, null, 2) + '\n');
+                migratedTicketsCount++;
+              } catch {}
+            }
+          }
+        } catch {}
+      }
+
+      // Update links in other projects pointing to the renamed project code
+      for (const otherLoc of locations) {
+        if (otherLoc.project.code.toLowerCase() === oldLower) continue;
+        if (fs.existsSync(otherLoc.ticketsDir)) {
+          try {
+            const entries = fs.readdirSync(otherLoc.ticketsDir, { withFileTypes: true });
+            for (const ent of entries) {
+              if (!ent.isDirectory()) continue;
+              const tMetaPath = path.join(otherLoc.ticketsDir, ent.name, 'meta.json');
+              if (fs.existsSync(tMetaPath)) {
+                try {
+                  const meta = JSON.parse(fs.readFileSync(tMetaPath, 'utf-8'));
+                  if (Array.isArray(meta.links)) {
+                    let changed = false;
+                    for (const l of meta.links) {
+                      if (l.targetProject && l.targetProject.toLowerCase() === oldLower) {
+                        l.targetProject = cleanNew;
+                        l.targetKey = `${cleanNew}-${l.targetId}`;
+                        changed = true;
+                      }
+                    }
+                    if (changed) {
+                      writeSafeFile(tMetaPath, JSON.stringify(meta, null, 2) + '\n');
+                    }
+                  }
+                } catch {}
+              }
+            }
+          } catch {}
+        }
+      }
+
+      // Update milestones.json under newProjectDir
+      const newMilestonesPath = path.join(newProjectDir, 'milestones.json');
+      if (fs.existsSync(newMilestonesPath)) {
+        try {
+          const arr: Milestone[] = JSON.parse(fs.readFileSync(newMilestonesPath, 'utf-8'));
+          for (const m of arr) {
+            m.project = cleanNew;
+          }
+          writeSafeFile(newMilestonesPath, JSON.stringify(arr, null, 2) + '\n');
+        } catch {}
+      }
+    } else {
+      // In-repo or federated
+      const esedreDir = path.join(this.workspaceRoot, '.esedre');
+      const pJsonPath = path.join(esedreDir, 'project.json');
+      if (fs.existsSync(pJsonPath)) {
+        try {
+          const existing = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8'));
+          writeSafeFile(pJsonPath, JSON.stringify({ ...existing, ...updatedDesc, code: cleanNew }, null, 2) + '\n');
+        } catch {}
+      }
+
+      const projectsJsonPath = path.join(esedreDir, 'projects.json');
+      if (fs.existsSync(projectsJsonPath)) {
+        try {
+          const arr: ProjectDescriptor[] = JSON.parse(fs.readFileSync(projectsJsonPath, 'utf-8'));
+          const idx = arr.findIndex((p) => p.code.toLowerCase() === oldLower);
+          if (idx >= 0) {
+            arr[idx] = { ...arr[idx], ...updatedDesc, code: cleanNew };
+            writeSafeFile(projectsJsonPath, JSON.stringify(arr, null, 2) + '\n');
+          }
+        } catch {}
+      }
+
+      // Update tickets in in-repo tickets directory
+      if (fs.existsSync(loc.ticketsDir)) {
+        try {
+          const entries = fs.readdirSync(loc.ticketsDir, { withFileTypes: true });
+          for (const ent of entries) {
+            if (!ent.isDirectory()) continue;
+            const tMetaPath = path.join(loc.ticketsDir, ent.name, 'meta.json');
+            if (fs.existsSync(tMetaPath)) {
+              try {
+                const meta = JSON.parse(fs.readFileSync(tMetaPath, 'utf-8'));
+                meta.project = cleanNew;
+                if (Array.isArray(meta.links)) {
+                  for (const l of meta.links) {
+                    if (l.targetProject && l.targetProject.toLowerCase() === oldLower) {
+                      l.targetProject = cleanNew;
+                      l.targetKey = `${cleanNew}-${l.targetId}`;
+                    }
+                  }
+                }
+                writeSafeFile(tMetaPath, JSON.stringify(meta, null, 2) + '\n');
+                migratedTicketsCount++;
+              } catch {}
+            }
+          }
+        } catch {}
+      }
+
+      const milestonesJsonPath = path.join(esedreDir, 'milestones.json');
+      if (fs.existsSync(milestonesJsonPath)) {
+        try {
+          const arr: Milestone[] = JSON.parse(fs.readFileSync(milestonesJsonPath, 'utf-8'));
+          for (const m of arr) {
+            if (m.project.toLowerCase() === oldLower) {
+              m.project = cleanNew;
+            }
+          }
+          writeSafeFile(milestonesJsonPath, JSON.stringify(arr, null, 2) + '\n');
+        } catch {}
+      }
+    }
+
+    // Workspace configuration update: .esedre/esedre.json
+    const workspaceConfigFile = path.join(this.workspaceRoot, '.esedre', 'esedre.json');
+    if (fs.existsSync(workspaceConfigFile)) {
+      try {
+        const wsCfg: EsedreConfig = JSON.parse(fs.readFileSync(workspaceConfigFile, 'utf-8'));
+        let modified = false;
+        if (wsCfg.projectCode && wsCfg.projectCode.toLowerCase() === oldLower) {
+          wsCfg.projectCode = cleanNew;
+          if (input.newName) wsCfg.projectName = input.newName.trim();
+          modified = true;
+        }
+        if (Array.isArray(wsCfg.allowedProjects)) {
+          const idx = wsCfg.allowedProjects.findIndex((p) => p.toLowerCase() === oldLower);
+          if (idx >= 0) {
+            wsCfg.allowedProjects[idx] = cleanNew;
+            modified = true;
+          }
+        }
+        if (modified) {
+          writeSafeFile(workspaceConfigFile, JSON.stringify(wsCfg, null, 2) + '\n');
+          updatedConfigs.push(workspaceConfigFile);
+        }
+      } catch {}
+    }
+
+    // Global configuration update: ~/.esedre/config.json
+    const globalConfigFile = path.join(os.homedir(), '.esedre', 'config.json');
+    if (fs.existsSync(globalConfigFile)) {
+      try {
+        const gCfg = JSON.parse(fs.readFileSync(globalConfigFile, 'utf-8'));
+        let modified = false;
+        if (gCfg.projects && typeof gCfg.projects === 'object') {
+          for (const [key, val] of Object.entries(gCfg.projects)) {
+            if (key.toLowerCase() === oldLower) {
+              delete gCfg.projects[key];
+              gCfg.projects[cleanNew] = val;
+              modified = true;
+              break;
+            }
+          }
+        }
+        if (modified) {
+          writeSafeFile(globalConfigFile, JSON.stringify(gCfg, null, 2) + '\n');
+          updatedConfigs.push(globalConfigFile);
+        }
+      } catch {}
+    }
+
+    if (this.config.projectCode && this.config.projectCode.toLowerCase() === oldLower) {
+      this.config.projectCode = cleanNew;
+      if (input.newName) this.config.projectName = input.newName.trim();
+    }
+    if (Array.isArray(this.config.allowedProjects)) {
+      const idx = this.config.allowedProjects.findIndex((p) => p.toLowerCase() === oldLower);
+      if (idx >= 0) {
+        this.config.allowedProjects[idx] = cleanNew;
+      }
+    }
+
+    this.refreshConfig();
+    return {
+      success: true,
+      oldCode: cleanOld,
+      newCode: cleanNew,
+      project: updatedDesc,
+      migratedTicketsCount,
+      updatedHubs,
+      updatedConfigs,
+    };
+  }
+
+  public getMilestonesPath(loc: ResolvedProjectLocation): string {
+    const parent = path.dirname(loc.ticketsDir);
+    return path.join(parent, 'milestones.json');
+  }
+
+  public readProjectMilestones(loc: ResolvedProjectLocation): Milestone[] {
+    const mPath = this.getMilestonesPath(loc);
+    if (!fs.existsSync(mPath)) return [];
+    try {
+      const raw = fs.readFileSync(mPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  public writeProjectMilestones(loc: ResolvedProjectLocation, milestones: Milestone[]): void {
+    const mPath = this.getMilestonesPath(loc);
+    writeSafeFile(mPath, JSON.stringify(milestones, null, 2) + '\n');
+  }
+
+  public async listMilestones(projectCode?: string): Promise<Milestone[]> {
+    const locations = this.resolveProjectLocations();
+    const milestones: Milestone[] = [];
+    for (const loc of locations) {
+      if (projectCode && projectCode !== 'all') {
+        if (!isProjectMatch(loc.project.code, projectCode)) continue;
+      }
+      const list = this.readProjectMilestones(loc);
+      for (const m of list) {
+        milestones.push({
+          ...m,
+          project: loc.project.code,
+        });
+      }
+    }
+    return milestones.sort((a, b) => {
+      if (a.project !== b.project) return a.project.localeCompare(b.project);
+      return (Number(a.id) || 0) - (Number(b.id) || 0);
+    });
+  }
+
+  public async getMilestone(id: number | string, projectCode?: string): Promise<Milestone | null> {
+    const all = await this.listMilestones(projectCode);
+    const target = String(id).trim().toLowerCase();
+    const found = all.find(
+      (m) => String(m.id).toLowerCase() === target || m.title.toLowerCase() === target
+    );
+    return found || null;
+  }
+
+  public async createMilestone(input: CreateMilestoneInput): Promise<Milestone> {
+    const locations = this.resolveProjectLocations();
+    const projectCode = input.projectCode || this.config.projectCode;
+    let targetLoc: ResolvedProjectLocation | undefined;
+    if (projectCode) {
+      targetLoc = locations.find((l) => isProjectMatch(l.project.code, projectCode));
+    } else if (locations.length === 1) {
+      targetLoc = locations[0];
+    }
+    if (!targetLoc) {
+      throw new Error('Project is required to create a milestone.');
+    }
+
+    const existing = this.readProjectMilestones(targetLoc);
+    const existingIds = existing
+      .map((m) => (typeof m.id === 'number' ? m.id : parseInt(String(m.id), 10)))
+      .filter((n) => !isNaN(n));
+    const nextId = existingIds.length > 0 ? Math.max(...existingIds) + 1 : 1;
+
+    const now = new Date().toISOString();
+    const title = normalizeDashesAndMojibake(input.title).trim();
+    if (!title) {
+      throw new Error('Milestone title is required.');
+    }
+
+    const milestone: Milestone = {
+      id: nextId,
+      project: targetLoc.project.code,
+      title,
+      description: input.description ? normalizeDashesAndMojibake(input.description).trim() : undefined,
+      status: input.status || 'Planned',
+      featureFlag: input.featureFlag ? normalizeDashesAndMojibake(input.featureFlag).trim() : undefined,
+      targetDate: input.targetDate ? normalizeDashesAndMojibake(input.targetDate).trim() : undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    existing.push(milestone);
+    this.writeProjectMilestones(targetLoc, existing);
+    return milestone;
+  }
+
+  public async updateMilestone(id: number | string, input: UpdateMilestoneInput, projectCode?: string): Promise<Milestone> {
+    const locations = this.resolveProjectLocations();
+    const targetId = String(id).trim().toLowerCase();
+    let foundLoc: ResolvedProjectLocation | undefined;
+    let foundIndex = -1;
+
+    for (const loc of locations) {
+      if (projectCode && projectCode !== 'all' && !isProjectMatch(loc.project.code, projectCode)) continue;
+      const list = this.readProjectMilestones(loc);
+      const idx = list.findIndex(
+        (m) => String(m.id).toLowerCase() === targetId || m.title.toLowerCase() === targetId
+      );
+      if (idx >= 0) {
+        foundLoc = loc;
+        foundIndex = idx;
+        break;
+      }
+    }
+
+    if (!foundLoc || foundIndex < 0) {
+      throw new Error(`Milestone '${id}' not found.`);
+    }
+
+    const now = new Date().toISOString();
+    const list = this.readProjectMilestones(foundLoc);
+    const m = list[foundIndex];
+
+    if (input.title !== undefined) m.title = normalizeDashesAndMojibake(input.title).trim();
+    if (input.description !== undefined) {
+      m.description = input.description ? normalizeDashesAndMojibake(input.description).trim() : undefined;
+    }
+    if (input.status !== undefined) {
+      m.status = input.status;
+      if (input.status === 'Completed' && !m.completedAt) {
+        m.completedAt = now;
+      } else if (input.status !== 'Completed') {
+        delete m.completedAt;
+      }
+    }
+    if (input.featureFlag !== undefined) {
+      if (input.featureFlag === null || input.featureFlag === '' || input.featureFlag.toLowerCase() === 'none') {
+        delete m.featureFlag;
+      } else {
+        m.featureFlag = normalizeDashesAndMojibake(input.featureFlag).trim();
+      }
+    }
+    if (input.targetDate !== undefined) {
+      if (input.targetDate === null || input.targetDate === '' || input.targetDate.toLowerCase() === 'none') {
+        delete m.targetDate;
+      } else {
+        m.targetDate = normalizeDashesAndMojibake(input.targetDate).trim();
+      }
+    }
+    m.updatedAt = now;
+    m.project = foundLoc.project.code;
+
+    this.writeProjectMilestones(foundLoc, list);
+    return m;
+  }
+
+  public async deleteMilestone(id: number | string, projectCode?: string): Promise<boolean> {
+    const locations = this.resolveProjectLocations();
+    const targetId = String(id).trim().toLowerCase();
+
+    for (const loc of locations) {
+      if (projectCode && projectCode !== 'all' && !isProjectMatch(loc.project.code, projectCode)) continue;
+      const list = this.readProjectMilestones(loc);
+      const filtered = list.filter(
+        (m) => String(m.id).toLowerCase() !== targetId && m.title.toLowerCase() !== targetId
+      );
+      if (filtered.length !== list.length) {
+        this.writeProjectMilestones(loc, filtered);
+        return true;
+      }
+    }
+    return false;
+  }
+
   private findTicketLocation(id: number | string): { loc: ResolvedProjectLocation; ticketDir: string; id: number } | null {
     const locations = this.resolveProjectLocations();
     if (locations.length === 0) return null;
@@ -769,6 +1359,9 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           meta.id = meta.id ?? num;
           meta.type = meta.type || meta.category || 'Feature';
           meta.category = meta.type;
+          if (meta.priority) {
+            meta.priority = normalizePriority(meta.priority);
+          }
 
           let effectiveLoc = loc;
           if (loc.isSharedDir) {
@@ -783,9 +1376,39 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           meta.project = effectiveLoc.project.code;
           meta.projectId = effectiveLoc.project.id;
 
+          if (meta.milestone) {
+            meta.milestone = normalizeDashesAndMojibake(meta.milestone);
+            const pMilestones = this.readProjectMilestones(effectiveLoc);
+            const mMatch = pMilestones.find(
+              (m) =>
+                String(m.id).toLowerCase() === meta.milestone?.toLowerCase() ||
+                m.title.toLowerCase() === meta.milestone?.toLowerCase()
+            );
+            if (mMatch?.featureFlag) {
+              meta.inheritedFeatureFlag = mMatch.featureFlag;
+              if (!meta.featureFlag) {
+                meta.featureFlag = mMatch.featureFlag;
+              }
+            }
+          }
+
           if (filter?.project && filter.project !== 'all') {
             const pLower = filter.project.toLowerCase();
             if (!isProjectMatch(meta.project, filter.project)) {
+              continue;
+            }
+          }
+
+          if (filter?.milestone) {
+            const mFilter = filter.milestone.trim().toLowerCase();
+            const pMilestones = this.readProjectMilestones(effectiveLoc);
+            const resolvedMilestone = pMilestones.find(
+              (m) => String(m.id).toLowerCase() === mFilter || m.title.toLowerCase() === mFilter
+            );
+            const matchesDirect = Boolean(meta.milestone && meta.milestone.toLowerCase() === mFilter);
+            const matchesResolvedTitle = Boolean(resolvedMilestone && meta.milestone && meta.milestone.toLowerCase() === resolvedMilestone.title.toLowerCase());
+            const matchesResolvedId = Boolean(resolvedMilestone && meta.milestone && String(resolvedMilestone.id).toLowerCase() === meta.milestone.toLowerCase());
+            if (!matchesDirect && !matchesResolvedTitle && !matchesResolvedId) {
               continue;
             }
           }
@@ -795,6 +1418,18 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           }
           if (filter?.category && meta.category !== filter.category) {
             continue;
+          }
+          if (filter?.priority !== undefined) {
+            const fPrio = String(filter.priority).trim().toLowerCase();
+            if (fPrio === 'none' || fPrio === 'null') {
+              if (meta.priority) {
+                continue;
+              }
+            } else {
+              if (!meta.priority || meta.priority.toLowerCase() !== fPrio) {
+                continue;
+              }
+            }
           }
           if (filter?.search) {
             const term = filter.search.toLowerCase();
@@ -834,8 +1469,25 @@ export class FilesystemStorageAdapter implements StorageAdapter {
             projectDescriptor: effectiveLoc.project,
           };
           normalizeTicketFields(ticketObj);
+          this.enrichTicketLinks(ticketObj);
           ticketObj.sha1 = computeTicketHash(ticketObj);
           ticketObj.lastHash = ticketObj.sha1;
+
+          if (filter?.isBlocked !== undefined && Boolean(ticketObj.isBlocked) !== Boolean(filter.isBlocked)) {
+            continue;
+          }
+          if (filter?.linkedTo) {
+            const target = filter.linkedTo.trim().toLowerCase();
+            const hasLink = ticketObj.meta.links?.some((l) => {
+              const tk = l.targetKey.toLowerCase();
+              const idStr = String(l.targetId);
+              return tk === target || idStr === target;
+            });
+            if (!hasLink) {
+              continue;
+            }
+          }
+
           tickets.push(ticketObj);
         } catch {}
       }
@@ -862,6 +1514,25 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       meta.id = meta.id ?? locInfo.id;
       meta.project = locInfo.loc.project.code;
       meta.projectId = locInfo.loc.project.id;
+      if (meta.priority) {
+        meta.priority = normalizePriority(meta.priority);
+      }
+
+      if (meta.milestone) {
+        meta.milestone = normalizeDashesAndMojibake(meta.milestone);
+        const pMilestones = this.readProjectMilestones(locInfo.loc);
+        const mMatch = pMilestones.find(
+          (m) =>
+            String(m.id).toLowerCase() === meta.milestone?.toLowerCase() ||
+            m.title.toLowerCase() === meta.milestone?.toLowerCase()
+        );
+        if (mMatch?.featureFlag) {
+          meta.inheritedFeatureFlag = mMatch.featureFlag;
+          if (!meta.featureFlag) {
+            meta.featureFlag = mMatch.featureFlag;
+          }
+        }
+      }
 
       let detail: TicketDetail | undefined;
       const detailPath = path.join(locInfo.ticketDir, 'detail.md');
@@ -892,6 +1563,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         projectDescriptor: locInfo.loc.project,
       };
       normalizeTicketFields(ticket);
+      this.enrichTicketLinks(ticket);
       ticket.sha1 = computeTicketHash(ticket);
       ticket.lastHash = ticket.sha1;
       return ticket;
@@ -950,10 +1622,14 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       }
     }
 
+    const priorityMatch = raw.match(/\*\*Priority\*\*:\s*([^\n]+)/i);
+    const priority = priorityMatch ? normalizePriority(priorityMatch[1].trim()) : undefined;
+
     return {
       title,
       type,
       category,
+      priority,
       complexity,
       estimatedEffort,
       summary,
@@ -1008,6 +1684,29 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     const cleanTitle = normalizeDashesAndMojibake(input.title).slice(0, 48).trim();
     const cleanEffort = normalizeDashesAndMojibake(input.estimatedEffort || input.effort || '2.0 - 4.0 hours');
     const cleanComplexity = normalizeDashesAndMojibake(input.complexity || 'Medium');
+    const cleanPriority = normalizePriority(input.priority);
+    let cleanMilestone = input.milestone ? normalizeDashesAndMojibake(String(input.milestone)).trim() : undefined;
+    let inheritedFlag: string | undefined;
+    let initialFlag: string | undefined;
+
+    if (cleanMilestone) {
+      const pMilestones = this.readProjectMilestones(targetLoc);
+      const mMatch = pMilestones.find(
+        (m) =>
+          String(m.id).toLowerCase() === cleanMilestone?.toLowerCase() ||
+          m.title.toLowerCase() === cleanMilestone?.toLowerCase()
+      );
+      if (mMatch?.featureFlag) {
+        inheritedFlag = mMatch.featureFlag;
+        initialFlag = mMatch.featureFlag;
+      }
+    }
+
+    let cleanFeatureFlag = input.featureFlag ? normalizeDashesAndMojibake(input.featureFlag).trim() : undefined;
+    if (!cleanFeatureFlag && initialFlag) {
+      cleanFeatureFlag = initialFlag;
+    }
+
     const cleanSummary = input.summary ? normalizeDashesAndMojibake(input.summary) : undefined;
     const cleanDetailRaw = (input.detailMarkdown || input.detail) ? normalizeDashesAndMojibake(input.detailMarkdown || input.detail) : undefined;
 
@@ -1016,6 +1715,10 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       title: cleanTitle,
       type: effectiveType,
       category: effectiveType,
+      ...(cleanPriority ? { priority: cleanPriority } : {}),
+      ...(cleanMilestone ? { milestone: cleanMilestone } : {}),
+      ...(cleanFeatureFlag ? { featureFlag: cleanFeatureFlag } : {}),
+      ...(inheritedFlag ? { inheritedFeatureFlag: inheritedFlag } : {}),
       complexity: cleanComplexity,
       estimatedEffort: cleanEffort,
       submittedBy: input.submittedBy || 'Developer',
@@ -1030,6 +1733,8 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     };
 
     const rawDetail = cleanDetailRaw?.trim();
+    const priorityLine = meta.priority ? `**Priority**: ${meta.priority}  \n` : '';
+    const milestoneLine = meta.milestone ? `**Milestone**: ${meta.milestone}  \n` : '';
     let detailMd: string;
 
     if (rawDetail) {
@@ -1037,7 +1742,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         // Starts with or contains a top-level single-hash heading (# Title)
         let processed = rawDetail.replace(/^#\s+[^\n]+/m, `# Ticket #${nextId}: ${meta.title}`);
         if (!/\*\*(?:Type|Category)\*\*:/i.test(processed)) {
-          const metaBlock = `\n**Category**: ${meta.category}  \n**Complexity**: ${meta.complexity}  \n**Estimated Effort**: ${meta.estimatedEffort}  \n`;
+          const metaBlock = `\n**Category**: ${meta.category}  \n${priorityLine}${milestoneLine}**Complexity**: ${meta.complexity}  \n**Estimated Effort**: ${meta.estimatedEffort}  \n`;
           processed = processed.replace(/^(# Ticket[^\n]+\n)/m, `$1${metaBlock}`);
         }
         if (!/(?:##|###)\s*(?:Summary|Rationale)/i.test(processed)) {
@@ -1062,7 +1767,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
 
         detailMd = `# Ticket #${nextId}: ${meta.title}
 **Category**: ${meta.category}  
-**Complexity**: ${meta.complexity}  
+${priorityLine}${milestoneLine}**Complexity**: ${meta.complexity}  
 **Estimated Effort**: ${meta.estimatedEffort}  
 
 ${body.trim()}\n`;
@@ -1070,7 +1775,7 @@ ${body.trim()}\n`;
     } else {
       detailMd = `# Ticket #${nextId}: ${meta.title}
 **Category**: ${meta.category}  
-**Complexity**: ${meta.complexity}  
+${priorityLine}${milestoneLine}**Complexity**: ${meta.complexity}  
 **Estimated Effort**: ${meta.estimatedEffort}  
 
 ### Summary
@@ -1095,7 +1800,7 @@ ${input.summary || 'Summary to be defined.'}
     return created!;
   }
 
-  public async updateTicket(id: number | string, updates: Partial<TicketMeta>, lastHash?: string): Promise<EsedreTicket> {
+  public async updateTicket(id: number | string, updates: Partial<TicketMeta> & { priority?: any }, lastHash?: string): Promise<EsedreTicket> {
     const existing = await this.getTicket(id);
     if (!existing) {
       throw new Error(`Ticket #${id} does not exist`);
@@ -1136,17 +1841,78 @@ ${input.summary || 'Summary to be defined.'}
       revision,
     };
 
+    if ('priority' in updates || updates.priority !== undefined) {
+      const rawPrio = updates.priority;
+      if (rawPrio === null || rawPrio === 'none' || rawPrio === 'null' || rawPrio === '') {
+        delete updatedMeta.priority;
+      } else {
+        const norm = normalizePriority(rawPrio);
+        if (norm) {
+          updatedMeta.priority = norm;
+        } else {
+          delete updatedMeta.priority;
+        }
+      }
+    }
+
+    if ('milestone' in updates || updates.milestone !== undefined) {
+      const rawMilestone = updates.milestone;
+      if (rawMilestone === null || rawMilestone === 'none' || rawMilestone === 'null' || rawMilestone === '') {
+        delete updatedMeta.milestone;
+        if (updatedMeta.inheritedFeatureFlag && updatedMeta.featureFlag === updatedMeta.inheritedFeatureFlag) {
+          delete updatedMeta.featureFlag;
+        }
+        delete updatedMeta.inheritedFeatureFlag;
+      } else {
+        updatedMeta.milestone = normalizeDashesAndMojibake(String(rawMilestone)).trim();
+        const pMilestones = this.readProjectMilestones(locInfo.loc);
+        const mMatch = pMilestones.find(
+          (m) =>
+            String(m.id).toLowerCase() === updatedMeta.milestone?.toLowerCase() ||
+            m.title.toLowerCase() === updatedMeta.milestone?.toLowerCase()
+        );
+        if (mMatch?.featureFlag) {
+          updatedMeta.inheritedFeatureFlag = mMatch.featureFlag;
+          if (!updatedMeta.featureFlag) {
+            updatedMeta.featureFlag = mMatch.featureFlag;
+          }
+        }
+      }
+    }
+
     writeSafeFile(metaPath, JSON.stringify(updatedMeta, null, 2) + '\n');
 
     const newType = updates.type || updates.category;
     if (newType) { updatedMeta.type = newType; updatedMeta.category = newType; }
-    if (existing.detail && (updates.title || updates.type || updates.category || updates.complexity || updates.estimatedEffort)) {
+    if (existing.detail && ('priority' in updates || 'milestone' in updates || updates.title || updates.type || updates.category || updates.complexity || updates.estimatedEffort)) {
       let content = existing.detail.raw;
       if (updates.title) {
         content = content.replace(/^#\s*(?:Ticket\s*#?\d+\s*:\s*|\d+\s*:\s*)?[^\n]+/im, `# Ticket #${locInfo.id}: ${updatedMeta.title}`);
       }
       if (updates.type || updates.category) {
         content = content.replace(/\*\*(?:Type|Category)\*\*:\s*[^\n]+/i, `**Type**: ${updatedMeta.type}`);
+      }
+      if ('priority' in updates) {
+        if (updatedMeta.priority) {
+          if (/\*\*Priority\*\*:\s*[^\n]+/i.test(content)) {
+            content = content.replace(/\*\*Priority\*\*:\s*[^\n]+/i, `**Priority**: ${updatedMeta.priority}`);
+          } else if (/\*\*(?:Type|Category)\*\*:\s*[^\n]+/i.test(content)) {
+            content = content.replace(/(\*\*(?:Type|Category)\*\*:\s*[^\n]+)/i, `$1  \n**Priority**: ${updatedMeta.priority}`);
+          }
+        } else {
+          content = content.replace(/\*\*Priority\*\*:\s*[^\n]+\n?/i, '');
+        }
+      }
+      if ('milestone' in updates) {
+        if (updatedMeta.milestone) {
+          if (/\*\*Milestone\*\*:\s*[^\n]+/i.test(content)) {
+            content = content.replace(/\*\*Milestone\*\*:\s*[^\n]+/i, `**Milestone**: ${updatedMeta.milestone}`);
+          } else if (/\*\*(?:Priority|Type|Category)\*\*:\s*[^\n]+/i.test(content)) {
+            content = content.replace(/(\*\*(?:Priority|Type|Category)\*\*:\s*[^\n]+)/i, `$1  \n**Milestone**: ${updatedMeta.milestone}`);
+          }
+        } else {
+          content = content.replace(/\*\*Milestone\*\*:\s*[^\n]+\n?/i, '');
+        }
       }
       if (updates.complexity) {
         content = content.replace(/\*\*Complexity\*\*:\s*[^\n]+/i, `**Complexity**: ${updatedMeta.complexity}`);
@@ -1230,5 +1996,271 @@ ${input.summary || 'Summary to be defined.'}
     comments.push(newComment);
     writeSafeFile(commentsPath, JSON.stringify(comments, null, 2) + '\n');
     return newComment;
+  }
+
+  public resolveTicketIdentifier(
+    id: number | string,
+    defaultProject?: string
+  ): { loc: ResolvedProjectLocation; ticketDir: string; id: number; key: string; project: string } | null {
+    const str = String(id).trim();
+    if (!/^([a-zA-Z0-9]{1,8})[-_:](\d+)$/i.test(str) && defaultProject && defaultProject !== 'all') {
+      const candidate = this.findTicketLocation(`${defaultProject}-${str}`);
+      if (candidate) {
+        return {
+          ...candidate,
+          key: `${candidate.loc.project.code}-${candidate.id}`,
+          project: candidate.loc.project.code,
+        };
+      }
+    }
+    const loc = this.findTicketLocation(id);
+    if (!loc) return null;
+    return {
+      ...loc,
+      key: `${loc.loc.project.code}-${loc.id}`,
+      project: loc.loc.project.code,
+    };
+  }
+
+  private wouldCreateCycle(
+    sourceKey: string,
+    targetKey: string,
+    relation: TicketLinkRelation
+  ): boolean {
+    if (relation !== 'blocks' && relation !== 'parent-of') {
+      return false;
+    }
+    const sLower = sourceKey.toLowerCase();
+    const visited = new Set<string>();
+    const queue = [targetKey.toLowerCase()];
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (current === sLower) {
+        return true;
+      }
+      if (visited.has(current)) continue;
+      visited.add(current);
+
+      const loc = this.findTicketLocation(current);
+      if (!loc) continue;
+      const metaPath = path.join(loc.ticketDir, 'meta.json');
+      if (!fs.existsSync(metaPath)) continue;
+      try {
+        const meta: TicketMeta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+        if (Array.isArray(meta.links)) {
+          for (const l of meta.links) {
+            if (l.relation === relation) {
+              queue.push(l.targetKey.toLowerCase());
+            }
+          }
+        }
+      } catch {}
+    }
+    return false;
+  }
+
+  public enrichTicketLinks(ticket: EsedreTicket): void {
+    if (!ticket.meta.links || ticket.meta.links.length === 0) {
+      ticket.links = [];
+      ticket.isBlocked = false;
+      return;
+    }
+
+    const enriched: EnrichedTicketLink[] = [];
+    let isBlocked = false;
+
+    for (const link of ticket.meta.links) {
+      const enrichedLink: EnrichedTicketLink = { ...link, isResolved: false };
+      const targetLoc = this.findTicketLocation(link.targetKey);
+      if (targetLoc) {
+        const targetMetaPath = path.join(targetLoc.ticketDir, 'meta.json');
+        if (fs.existsSync(targetMetaPath)) {
+          try {
+            const targetMeta: TicketMeta = JSON.parse(fs.readFileSync(targetMetaPath, 'utf-8'));
+            enrichedLink.targetTitle = targetMeta.title;
+            enrichedLink.targetType = targetMeta.type || targetMeta.category || 'Feature';
+            enrichedLink.targetStatus = targetMeta.status || 'Planned';
+            enrichedLink.isTargetCompleted = targetMeta.status === 'Completed';
+            if (targetMeta.priority) {
+              enrichedLink.targetPriority = normalizePriority(targetMeta.priority);
+            }
+            enrichedLink.isResolved = true;
+            if (link.relation === 'blocked-by' && targetMeta.status !== 'Completed') {
+              enrichedLink.isBlockedByUncompleted = true;
+              isBlocked = true;
+            }
+          } catch {}
+        }
+      }
+      enriched.push(enrichedLink);
+    }
+
+    ticket.links = enriched;
+    ticket.isBlocked = isBlocked;
+  }
+
+  public async addTicketLink(
+    sourceId: number | string,
+    relation: TicketLinkRelation,
+    targetId: number | string,
+    options?: { author?: string; project?: string }
+  ): Promise<{ source: EsedreTicket; target?: EsedreTicket }> {
+    if (!INVERSE_RELATIONS[relation]) {
+      throw new Error(
+        `Invalid link relation: "${relation}". Valid relations: ${Object.keys(INVERSE_RELATIONS).join(', ')}`
+      );
+    }
+
+    const sourceInfo = this.resolveTicketIdentifier(sourceId, options?.project);
+    if (!sourceInfo) {
+      throw new Error(`Source ticket #${sourceId} could not be located.`);
+    }
+
+    const targetInfo = this.resolveTicketIdentifier(targetId, options?.project || sourceInfo.project);
+    if (!targetInfo) {
+      throw new Error(`Target ticket #${targetId} could not be located.`);
+    }
+
+    if (sourceInfo.key.toLowerCase() === targetInfo.key.toLowerCase()) {
+      throw new Error(`Cannot link ticket ${sourceInfo.key} to itself.`);
+    }
+
+    if (this.wouldCreateCycle(sourceInfo.key, targetInfo.key, relation)) {
+      throw new Error(
+        `Circular dependency detected: linking ${sourceInfo.key} -> ${targetInfo.key} with "${relation}" forms a cycle.`
+      );
+    }
+
+    const now = new Date().toISOString();
+    const sourceMetaPath = path.join(sourceInfo.ticketDir, 'meta.json');
+    const sourceMeta: TicketMeta = JSON.parse(fs.readFileSync(sourceMetaPath, 'utf-8'));
+    sourceMeta.links = sourceMeta.links || [];
+
+    const existingSourceLink = sourceMeta.links.find(
+      (l) => l.targetKey.toLowerCase() === targetInfo.key.toLowerCase()
+    );
+
+    if (existingSourceLink) {
+      existingSourceLink.relation = relation;
+      existingSourceLink.targetProject = targetInfo.project;
+      existingSourceLink.targetId = targetInfo.id;
+    } else {
+      sourceMeta.links.push({
+        relation,
+        targetKey: targetInfo.key,
+        targetProject: targetInfo.project,
+        targetId: targetInfo.id,
+        createdAt: now,
+        createdBy: options?.author ? normalizeDashesAndMojibake(options.author) : undefined,
+      });
+    }
+
+    sourceMeta.updatedAt = now;
+    sourceMeta.revision = (sourceMeta.revision || 1) + 1;
+    writeSafeFile(sourceMetaPath, JSON.stringify(sourceMeta, null, 2) + '\n');
+
+    // Update target ticket bi-directionally if accessible
+    let updatedTarget: EsedreTicket | undefined;
+    const targetMetaPath = path.join(targetInfo.ticketDir, 'meta.json');
+    if (fs.existsSync(targetMetaPath)) {
+      try {
+        const targetMeta: TicketMeta = JSON.parse(fs.readFileSync(targetMetaPath, 'utf-8'));
+        targetMeta.links = targetMeta.links || [];
+        const inverseRel = INVERSE_RELATIONS[relation];
+        const existingTargetLink = targetMeta.links.find(
+          (l) => l.targetKey.toLowerCase() === sourceInfo.key.toLowerCase()
+        );
+
+        if (existingTargetLink) {
+          existingTargetLink.relation = inverseRel;
+          existingTargetLink.targetProject = sourceInfo.project;
+          existingTargetLink.targetId = sourceInfo.id;
+        } else {
+          targetMeta.links.push({
+            relation: inverseRel,
+            targetKey: sourceInfo.key,
+            targetProject: sourceInfo.project,
+            targetId: sourceInfo.id,
+            createdAt: now,
+            createdBy: options?.author ? normalizeDashesAndMojibake(options.author) : undefined,
+          });
+        }
+
+        targetMeta.updatedAt = now;
+        targetMeta.revision = (targetMeta.revision || 1) + 1;
+        writeSafeFile(targetMetaPath, JSON.stringify(targetMeta, null, 2) + '\n');
+        updatedTarget = (await this.getTicket(targetInfo.key)) || undefined;
+      } catch {}
+    }
+
+    const updatedSource = (await this.getTicket(sourceInfo.key))!;
+    return { source: updatedSource, target: updatedTarget };
+  }
+
+  public async removeTicketLink(
+    sourceId: number | string,
+    targetId: number | string,
+    options?: { relation?: TicketLinkRelation; project?: string }
+  ): Promise<{ source: EsedreTicket; target?: EsedreTicket }> {
+    const sourceInfo = this.resolveTicketIdentifier(sourceId, options?.project);
+    if (!sourceInfo) {
+      throw new Error(`Source ticket #${sourceId} could not be located.`);
+    }
+
+    const targetInfo = this.resolveTicketIdentifier(targetId, options?.project || sourceInfo.project);
+    const targetKey = targetInfo ? targetInfo.key : String(targetId).trim();
+
+    const now = new Date().toISOString();
+    const sourceMetaPath = path.join(sourceInfo.ticketDir, 'meta.json');
+    if (fs.existsSync(sourceMetaPath)) {
+      try {
+        const sourceMeta: TicketMeta = JSON.parse(fs.readFileSync(sourceMetaPath, 'utf-8'));
+        if (Array.isArray(sourceMeta.links)) {
+          const originalLen = sourceMeta.links.length;
+          sourceMeta.links = sourceMeta.links.filter(
+            (l) =>
+              !(
+                l.targetKey.toLowerCase() === targetKey.toLowerCase() &&
+                (!options?.relation || l.relation === options.relation)
+              )
+          );
+          if (sourceMeta.links.length !== originalLen) {
+            sourceMeta.updatedAt = now;
+            sourceMeta.revision = (sourceMeta.revision || 1) + 1;
+            writeSafeFile(sourceMetaPath, JSON.stringify(sourceMeta, null, 2) + '\n');
+          }
+        }
+      } catch {}
+    }
+
+    let updatedTarget: EsedreTicket | undefined;
+    if (targetInfo) {
+      const targetMetaPath = path.join(targetInfo.ticketDir, 'meta.json');
+      if (fs.existsSync(targetMetaPath)) {
+        try {
+          const targetMeta: TicketMeta = JSON.parse(fs.readFileSync(targetMetaPath, 'utf-8'));
+          if (Array.isArray(targetMeta.links)) {
+            const originalLen = targetMeta.links.length;
+            targetMeta.links = targetMeta.links.filter(
+              (l) =>
+                !(
+                  l.targetKey.toLowerCase() === sourceInfo.key.toLowerCase() &&
+                  (!options?.relation || l.relation === INVERSE_RELATIONS[options.relation])
+                )
+            );
+            if (targetMeta.links.length !== originalLen) {
+              targetMeta.updatedAt = now;
+              targetMeta.revision = (targetMeta.revision || 1) + 1;
+              writeSafeFile(targetMetaPath, JSON.stringify(targetMeta, null, 2) + '\n');
+              updatedTarget = (await this.getTicket(targetInfo.key)) || undefined;
+            }
+          }
+        } catch {}
+      }
+    }
+
+    const updatedSource = (await this.getTicket(sourceInfo.key))!;
+    return { source: updatedSource, target: updatedTarget };
   }
 }

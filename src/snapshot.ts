@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { EsedreTicket, TicketType, TicketCategory, TicketStatus, CURRENT_ESEDRE_VERSION } from './types.js';
+import { EsedreTicket, TicketType, TicketCategory, TicketStatus, TicketPriority, Milestone, MilestoneStatus, CURRENT_ESEDRE_VERSION, TicketLink } from './types.js';
 import { StorageAdapter } from './storage/adapter.js';
 
 export interface TicketSnapshotEntry {
@@ -10,11 +10,17 @@ export interface TicketSnapshotEntry {
   title: string;
   type: TicketType;
   category: TicketCategory;
+  priority?: TicketPriority;
   status: TicketStatus;
   complexity?: string;
   estimatedEffort?: string;
   project: string;
   summary?: string;
+  milestone?: string;
+  featureFlag?: string;
+  inheritedFeatureFlag?: string;
+  links?: TicketLink[];
+  isBlocked?: boolean;
   hasPlan: boolean;
   planMarkdown?: string;
 
@@ -28,12 +34,26 @@ export interface TicketSnapshotEntry {
   sha1: string;
 }
 
+export interface MilestoneSnapshotEntry {
+  id: number | string;
+  project: string;
+  title: string;
+  description?: string;
+  status: MilestoneStatus;
+  featureFlag?: string;
+  targetDate?: string;
+  totalTickets: number;
+  completedTickets: number;
+  progressPercent: number;
+}
+
 export interface ProjectSnapshot {
   version: string;
   projectCode: string;
   generatedAt: string;
   totalTickets: number;
   tickets: TicketSnapshotEntry[];
+  milestones?: MilestoneSnapshotEntry[];
 }
 
 export function computeTicketHash(ticket: {
@@ -42,6 +62,7 @@ export function computeTicketHash(ticket: {
     title: string;
     category: string;
     status: string;
+    priority?: string;
     complexity?: string;
     estimatedEffort?: string;
     project?: string;
@@ -58,9 +79,13 @@ export function computeTicketHash(ticket: {
     title: (ticket.meta.title || '').trim(),
     category: ticket.meta.category,
     status: ticket.meta.status,
+    priority: ticket.meta.priority || '',
     complexity: ticket.meta.complexity || '',
     effort: ticket.meta.estimatedEffort || '',
     project: ticket.meta.project || '',
+    milestone: (ticket.meta as any).milestone || '',
+    featureFlag: (ticket.meta as any).featureFlag || '',
+    links: (ticket.meta as any).links || [],
     revision: ticket.meta.revision || 1,
     completedAt: ticket.meta.completedAt || '',
     detailRaw: (ticket.detail?.raw || '').trim(),
@@ -120,11 +145,17 @@ export async function generateProjectSnapshot(
       title: ticketObj.meta.title,
       type: (ticketObj.meta.type || ticketObj.meta.category || 'Feature') as TicketType,
       category: (ticketObj.meta.type || ticketObj.meta.category || 'Feature') as TicketType,
+      priority: ticketObj.meta.priority,
       status: ticketObj.meta.status,
       complexity: ticketObj.meta.complexity,
       estimatedEffort: ticketObj.meta.estimatedEffort,
       project: pCode,
       summary: ticketObj.detail?.summary,
+      milestone: ticketObj.meta.milestone,
+      featureFlag: ticketObj.meta.featureFlag,
+      inheritedFeatureFlag: ticketObj.meta.inheritedFeatureFlag,
+      links: ticketObj.meta.links || [],
+      isBlocked: ticketObj.isBlocked || false,
       hasPlan: Boolean(plan && plan.trim().length > 0),
       planMarkdown: plan && plan.trim().length > 0 ? plan : undefined,
       createdAt,
@@ -136,12 +167,41 @@ export async function generateProjectSnapshot(
     });
   }
 
+  let milestoneSnapshots: MilestoneSnapshotEntry[] | undefined;
+  try {
+    const rawMilestones = await storage.listMilestones(projectCode);
+    milestoneSnapshots = rawMilestones.map((m) => {
+      const mTickets = entries.filter(
+        (t) =>
+          t.milestone &&
+          (t.milestone.toLowerCase() === String(m.id).toLowerCase() ||
+            t.milestone.toLowerCase() === m.title.toLowerCase())
+      );
+      const completed = mTickets.filter((t) => t.status === 'Completed').length;
+      const total = mTickets.length;
+      const progressPercent = total > 0 ? Math.round((completed / total) * 100) : 0;
+      return {
+        id: m.id,
+        project: m.project,
+        title: m.title,
+        description: m.description,
+        status: m.status,
+        featureFlag: m.featureFlag,
+        targetDate: m.targetDate,
+        totalTickets: total,
+        completedTickets: completed,
+        progressPercent,
+      };
+    });
+  } catch {}
+
   const snapshot: ProjectSnapshot = {
     version: CURRENT_ESEDRE_VERSION,
     projectCode,
     generatedAt: new Date().toISOString(),
     totalTickets: entries.length,
     tickets: entries,
+    ...(milestoneSnapshots && milestoneSnapshots.length > 0 ? { milestones: milestoneSnapshots } : {}),
   };
 
   const esedreDir = path.join(outputDir, '.esedre');

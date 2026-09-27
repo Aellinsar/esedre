@@ -13,13 +13,22 @@ All storage engines implement the `StorageAdapter` contract defined in `src/stor
 
 - `getProjects(): Promise<ProjectDescriptor[]>`
 - `registerProject(input: RegisterProjectInput): Promise<ProjectDescriptor>`
+- `updateProject(code: string, updates: Partial<ProjectDescriptor>): Promise<ProjectDescriptor>`
+- `renameProjectCode(oldCode: string, newCode: string): Promise<ProjectDescriptor>`
 - `listTickets(filter?: ListTicketsFilter): Promise<EsedreTicket[]>`
 - `getTicket(id: number | string): Promise<EsedreTicket | null>`
 - `createTicket(input: CreateTicketInput): Promise<EsedreTicket>`
 - `updateTicket(id: number | string, updates: Partial<TicketMeta>, lastHash?: string): Promise<EsedreTicket>`
+- `addTicketLink(sourceId: number | string, relation: TicketLinkRelation, targetId: number | string, options?: { author?: string; project?: string }): Promise<{ source: EsedreTicket; target?: EsedreTicket }>`
+- `removeTicketLink(sourceId: number | string, targetId: number | string, options?: { relation?: TicketLinkRelation; project?: string }): Promise<{ source: EsedreTicket; target?: EsedreTicket }>`
 - `getPlan(id: number | string): Promise<string | null>`
 - `savePlan(id: number | string, planMarkdown: string, lastHash?: string): Promise<void>`
 - `addComment(id: number | string, comment: { author: string; text: string }): Promise<TicketComment>`
+- `listMilestones(project?: string): Promise<Milestone[]>`
+- `getMilestone(id: number | string, project?: string): Promise<Milestone | null>`
+- `createMilestone(input: CreateMilestoneInput): Promise<Milestone>`
+- `updateMilestone(id: number | string, updates: UpdateMilestoneInput, project?: string): Promise<Milestone>`
+- `deleteMilestone(id: number | string, project?: string): Promise<boolean>`
 
 Methods accept both numeric IDs (`96`) and compound project keys (`Profe-96`, `Esedre-1`).
 
@@ -44,9 +53,10 @@ Methods accept both numeric IDs (`96`) and compound project keys (`Profe-96`, `E
 └── projects/
     └── <ProjectCode>/
         ├── project.json                  # Project descriptor
+        ├── milestones.json               # Project milestones & umbrella feature flags
         └── tickets/
             ├── 1/
-            │   ├── meta.json             # Core metadata (id, title, type, status, sha1)
+            │   ├── meta.json             # Core metadata (id, title, type, priority, milestone, sha1)
             │   ├── detail.md             # Markdown specification and breakdown
             │   ├── comments.json         # Historical developer and agent comments
             │   └── implementation_plan.md# Active implementation plan
@@ -66,6 +76,7 @@ Methods accept both numeric IDs (`96`) and compound project keys (`Profe-96`, `E
   "id": 104,
   "title": "Esedre Model Context Protocol (MCP) Server",
   "type": "Feature",
+  "priority": "High",
   "complexity": "Medium",
   "estimatedEffort": "3.0 - 4.5 hours",
   "submittedBy": "Developer",
@@ -73,9 +84,20 @@ Methods accept both numeric IDs (`96`) and compound project keys (`Profe-96`, `E
   "status": "In Development",
   "projectId": 3,
   "isActivePlanning": true,
-  "featureFlag": "ENABLE_ESEDRE_MCP"
+  "featureFlag": "ENABLE_ESEDRE_MCP",
+  "links": [
+    {
+      "relation": "blocks",
+      "targetKey": "Esedre-105",
+      "targetProject": "Esedre",
+      "targetId": 105,
+      "createdAt": "2026-09-08T02:05:00Z"
+    }
+  ]
 }
 ```
+
+Tickets with uncompleted `blocked-by` links have `isBlocked: true` projected dynamically in memory, snapshot, and API responses.
 
 ## 6. Case-Remembering Storage & Case-Insensitive Matching
 

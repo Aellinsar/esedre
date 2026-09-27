@@ -1,11 +1,16 @@
 import {
   TicketMeta,
   TicketType, TicketCategory,
+  TicketPriority,
   TicketComment,
   InlineComment,
   TicketHistorySnapshot,
   ProjectName,
   ProjectDescriptor,
+  Milestone,
+  CreateMilestoneInput,
+  UpdateMilestoneInput,
+  TicketLinkRelation,
 } from './types';
 
 export interface PlanningServiceProvider {
@@ -27,6 +32,7 @@ export interface PlanningServiceProvider {
     title: string;
     type?: TicketType;
     category?: TicketType;
+    priority?: TicketPriority;
     complexity?: string;
     focus?: string;
     rationale?: string;
@@ -34,12 +40,19 @@ export interface PlanningServiceProvider {
     openQuestions?: string[];
     submittedBy?: string;
     featureFlag?: string;
+    milestone?: string;
     projectId?: number;
     project?: ProjectName | string | number;
   }): Promise<{ ticketId: string; meta: TicketMeta }>;
   toggleFlag(ticketId: string | number, flagged?: boolean): Promise<TicketMeta>;
   updateMeta(ticketId: string | number, updates: Partial<TicketMeta>): Promise<TicketMeta>;
   saveInlineComment(ticketId: string | number, selectedText: string, comment: string, author?: string): Promise<InlineComment[]>;
+  listMilestones?(project?: string): Promise<Milestone[]>;
+  createMilestone?(data: CreateMilestoneInput): Promise<Milestone>;
+  updateMilestone?(id: string | number, data: UpdateMilestoneInput, project?: string): Promise<Milestone>;
+  deleteMilestone?(id: string | number, project?: string): Promise<boolean>;
+  linkTicket?(sourceId: string | number, relation: TicketLinkRelation, targetId: string | number, author?: string): Promise<{ success: boolean; source?: any; target?: any; error?: string }>;
+  unlinkTicket?(sourceId: string | number, targetId: string | number): Promise<{ success: boolean; source?: any; target?: any; error?: string }>;
   getProjects?(): Promise<ProjectDescriptor[]>;
   getAll?(): Promise<any>;
 }
@@ -76,12 +89,16 @@ export class EsedreHttpPlanningProvider implements PlanningServiceProvider {
         ...options,
       });
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        let errBody: any = null;
+        try { errBody = await res.json(); } catch {}
+        const msg = errBody?.error || `HTTP ${res.status}: ${res.statusText}`;
+        console.warn(`[Esedre API] Request failed for ${endpoint}:`, msg);
+        return { error: msg, success: false } as any;
       }
       return await res.json();
-    } catch (err) {
+    } catch (err: any) {
       console.warn(`[Esedre API] Request failed for ${endpoint}:`, err);
-      return {} as T;
+      return { error: err.message, success: false } as any;
     }
   }
 
@@ -180,6 +197,50 @@ export class EsedreHttpPlanningProvider implements PlanningServiceProvider {
       body: JSON.stringify({ ticketId: String(ticketId), selectedText, comment, author }),
     });
     return res?.inlineComments || [];
+  }
+
+  async listMilestones(project?: string): Promise<Milestone[]> {
+    const p = project && project !== 'all' ? `?project=${encodeURIComponent(project)}` : '';
+    const res = await this.request<{ milestones: Milestone[] }>(`/planning/milestones${p}`);
+    return res?.milestones || [];
+  }
+
+  async createMilestone(data: CreateMilestoneInput): Promise<Milestone> {
+    const res = await this.request<{ milestone: Milestone }>('/planning/milestones', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    return res?.milestone;
+  }
+
+  async updateMilestone(id: string | number, data: UpdateMilestoneInput, project?: string): Promise<Milestone> {
+    const res = await this.request<{ milestone: Milestone }>('/planning/update-milestone', {
+      method: 'POST',
+      body: JSON.stringify({ id, projectCode: project, ...data }),
+    });
+    return res?.milestone;
+  }
+
+  async deleteMilestone(id: string | number, project?: string): Promise<boolean> {
+    const res = await this.request<{ success: boolean }>('/planning/delete-milestone', {
+      method: 'POST',
+      body: JSON.stringify({ id, projectCode: project }),
+    });
+    return Boolean(res?.success);
+  }
+
+  async linkTicket(sourceId: string | number, relation: TicketLinkRelation, targetId: string | number, author?: string): Promise<{ success: boolean; source?: any; target?: any; error?: string }> {
+    return await this.request('/planning/link', {
+      method: 'POST',
+      body: JSON.stringify({ sourceId, relation, targetId, author }),
+    });
+  }
+
+  async unlinkTicket(sourceId: string | number, targetId: string | number): Promise<{ success: boolean; source?: any; target?: any; error?: string }> {
+    return await this.request('/planning/unlink', {
+      method: 'POST',
+      body: JSON.stringify({ sourceId, targetId }),
+    });
   }
 }
 

@@ -1,11 +1,15 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { X, Lightbulb, ShieldAlert, FileText, Search, ChevronRight, ChevronLeft, CheckCircle2, HelpCircle, Clock, Zap, List, Save, Edit3, Check, MessageSquare, Flag, Tag, User, Plus, Quote, Highlighter, Paperclip, GripHorizontal, ArrowRight, ArrowUp, ArrowDown, Trash2, Image as ImageIcon, RotateCcw, Columns, FileCode, Sliders, Split, History, Eye, XCircle, FolderKanban, Settings, Sun, Moon, ExternalLink } from 'lucide-react';
-import { TicketComment, TicketMeta, InlineComment, PlannedFeature, TicketHistorySnapshot, KNOWN_FEATURE_FLAGS, ProjectName, ALL_PROJECTS, ALL_PROJECT_NAMES, UNASSIGNED_PROJECT_COLORS, getProjectDescriptor, getProjectById, ProjectDescriptor, setRuntimeProjects, DEFAULT_ESEDRE_PORT } from './types';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { X, Lightbulb, ShieldAlert, FileText, Search, ChevronRight, ChevronLeft, CheckCircle2, HelpCircle, Clock, Zap, List, Save, Edit3, Check, MessageSquare, Flag, Tag, User, Plus, Quote, Highlighter, Paperclip, GripHorizontal, ArrowRight, ArrowUp, ArrowDown, Trash2, Image as ImageIcon, RotateCcw, Columns, FileCode, Sliders, Split, History, Eye, XCircle, FolderKanban, Settings, Sun, Moon, ExternalLink, Milestone as MilestoneIcon, Link2 } from 'lucide-react';
+import { TicketComment, TicketMeta, InlineComment, PlannedFeature, TicketHistorySnapshot, KNOWN_FEATURE_FLAGS, ProjectName, ALL_PROJECTS, ALL_PROJECT_NAMES, UNASSIGNED_PROJECT_COLORS, getProjectDescriptor, getProjectById, ProjectDescriptor, setRuntimeProjects, getRuntimeProjects, DEFAULT_ESEDRE_PORT, TicketPriority, PRIORITIES, PRIORITY_CONFIG, Milestone, LINK_RELATION_LABELS } from './types';
 import { activePlanningProvider } from './planningClient';
 import { parsePlannedWorkMarkdown } from './planParser';
 import { CreateTicketModal } from './CreateTicketModal';
 import { CreateProjectModal } from './CreateProjectModal';
+import { ProjectSettingsModal } from './ProjectSettingsModal';
 import { TicketHelpModal } from './TicketHelpModal';
+import { MilestonesView } from './MilestonesView';
+import { MilestoneModal } from './MilestoneModal';
+import { LinkTicketModal } from './LinkTicketModal';
 import { EsedreIcon } from './EsedreIcon';
 
 export interface PlannedWorkViewProps {
@@ -302,7 +306,7 @@ export function computeLineDiff(oldText: string, newText: string): DiffLine[] {
   return temp.reverse();
 }
 
-type TabType = 'features' | 'completed' | 'rejected' | 'flags';
+type TabType = 'features' | 'completed' | 'rejected' | 'milestones' | 'flags';
 
 
 const ESEDRE_THEME_FALLBACK_CSS = `
@@ -506,7 +510,7 @@ export function PlannedWorkView({
   const [activeTab, setActiveTab] = useState<TabType>(() => {
     if (typeof window !== 'undefined') {
       const saved = sessionStorage.getItem('dev_plan_modal_tab') as TabType;
-      if (['features', 'completed', 'rejected', 'flags'].includes(saved)) return saved;
+      if (['features', 'completed', 'rejected', 'milestones', 'flags'].includes(saved)) return saved;
     }
     return 'features';
   });
@@ -522,9 +526,21 @@ export function PlannedWorkView({
     }
     return 'all';
   });
+  const [priorityFilter, setPriorityFilter] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return sessionStorage.getItem('dev_plan_priority_filter') || 'all';
+    }
+    return 'all';
+  });
   const [typeFilter, setTypeFilter] = useState<string>(() => {
     if (typeof window !== 'undefined') {
       return sessionStorage.getItem('dev_plan_type_filter') || sessionStorage.getItem('dev_plan_category_filter') || 'all';
+    }
+    return 'all';
+  });
+  const [milestoneFilter, setMilestoneFilter] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return sessionStorage.getItem('dev_plan_milestone_filter') || 'all';
     }
     return 'all';
   });
@@ -538,7 +554,7 @@ export function PlannedWorkView({
         }
       }
     }
-    return (allowedProjects && allowedProjects.length > 0) ? allowedProjects[0] : 'Core';
+    return (allowedProjects && allowedProjects.length > 0) ? allowedProjects[0] : 'all';
   });
   const [availableProjects, setAvailableProjects] = useState<ProjectDescriptor[]>(() => {
     if (allowedProjects && allowedProjects.length > 0) {
@@ -547,6 +563,25 @@ export function PlannedWorkView({
     }
     return ALL_PROJECTS;
   });
+
+  const [milestones, setMilestones] = useState<Milestone[]>([]);
+  const [isMilestoneModalOpen, setIsMilestoneModalOpen] = useState(false);
+  const [editingMilestone, setEditingMilestone] = useState<Milestone | null>(null);
+  const [linkingTicket, setLinkingTicket] = useState<PlannedFeature | null>(null);
+
+  const loadMilestones = useCallback(async () => {
+    if (!activePlanningProvider.listMilestones) return;
+    try {
+      const ms = await activePlanningProvider.listMilestones(projectFilter === 'all' ? undefined : projectFilter);
+      setMilestones(ms || []);
+    } catch (err) {
+      console.error('Failed to load milestones:', err);
+    }
+  }, [projectFilter]);
+
+  useEffect(() => {
+    loadMilestones();
+  }, [loadMilestones]);
   type SortField = 'ticketNumber' | 'lastUpdated';
   type SortOrder = 'asc' | 'desc';
 
@@ -610,7 +645,7 @@ export function PlannedWorkView({
   const [mobileView, setMobileView] = useState<'list' | 'detail'>('detail');
   const [headerPopover, setHeaderPopover] = useState<{
     ticketId: string;
-    type: 'flag' | 'category' | 'complexity' | 'flagPicker' | 'status' | 'project';
+    type: 'flag' | 'category' | 'complexity' | 'priority' | 'flagPicker' | 'status' | 'project';
     x: number;
     y: number;
   } | null>(null);
@@ -618,6 +653,12 @@ export function PlannedWorkView({
   const [customFlagText, setCustomFlagText] = useState('');
   const [expandedFeatureId, setExpandedFeatureId] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
+      if (!isEmbedded && window.location.hash) {
+        const match = window.location.hash.match(/^#(?:ticket-|feature-)?(\d+)$/i);
+        if (match) {
+          return `feature-${match[1]}`;
+        }
+      }
       return sessionStorage.getItem('dev_plan_modal_expanded_feat') || 'feature-1';
     }
     return 'feature-1';
@@ -687,9 +728,29 @@ export function PlannedWorkView({
   const [structuredOpenQuestions, setStructuredOpenQuestions] = useState<string[]>([]);
   const [rawDetailDraft, setRawDetailDraft] = useState<string>('');
 
-  const [cardSubTabs, setCardSubTabs] = useState<Record<string, 'spec' | 'plan' | 'notes' | 'history'>>({});
+  const [cardSubTabs, setCardSubTabs] = useState<Record<string, 'spec' | 'plan' | 'notes' | 'history' | 'links'>>({});
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isCreateProjectOpen, setIsCreateProjectOpen] = useState(false);
+  const [isProjectSettingsOpen, setIsProjectSettingsOpen] = useState(false);
+  const [selectedSettingsProjectCode, setSelectedSettingsProjectCode] = useState<string | null>(null);
+
+  const currentProject = useMemo(() => {
+    if (projectFilter === 'all') return null;
+    const lower = projectFilter.toLowerCase();
+    return (
+      availableProjects.find((p) => p.code.toLowerCase() === lower || String(p.id) === projectFilter) ||
+      getProjectDescriptor(projectFilter) ||
+      null
+    );
+  }, [projectFilter, availableProjects]);
+
+  const activeSettingsProject = useMemo(() => {
+    if (selectedSettingsProjectCode) {
+      const found = availableProjects.find((p) => p.code.toLowerCase() === selectedSettingsProjectCode.toLowerCase());
+      if (found) return found;
+    }
+    return currentProject || (availableProjects.length > 0 ? availableProjects[0] : null);
+  }, [selectedSettingsProjectCode, currentProject, availableProjects]);
   const [editingAuthorTicketId, setEditingAuthorTicketId] = useState<string | null>(null);
   const [authorDraftText, setAuthorDraftText] = useState<string>('');
   const [editingTitleTicketId, setEditingTitleTicketId] = useState<string | null>(null);
@@ -804,6 +865,9 @@ export function PlannedWorkView({
     }
   };
 
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const handleRefresh = useCallback(() => setRefreshTrigger((v) => v + 1), []);
+
   useEffect(() => {
     const loadAsyncData = async () => {
       try {
@@ -818,12 +882,25 @@ export function PlannedWorkView({
             if (allData.planHistory) setPlanHistoryMap(allData.planHistory);
             if (allData.details) setDetailsMap(allData.details);
             if (allData.ticketHistory) setTicketHistoryMap(allData.ticketHistory);
+            const areProjectsEqual = (a: ProjectDescriptor[], b: ProjectDescriptor[]) =>
+              a.length === b.length &&
+              a.every((p, i) =>
+                p.id === b[i].id &&
+                p.code === b[i].code &&
+                p.name === b[i].name &&
+                p.description === b[i].description &&
+                p.guidelinesRef === b[i].guidelinesRef &&
+                JSON.stringify(p.techStack) === JSON.stringify(b[i].techStack) &&
+                JSON.stringify(p.groundingRules) === JSON.stringify(b[i].groundingRules) &&
+                p.colors?.badge === b[i].colors?.badge
+              );
+
             if (Array.isArray(allData.projects) && allData.projects.length > 0) {
               setRuntimeProjects(allData.projects);
               const filtered = (allowedProjects && allowedProjects.length > 0)
                 ? allData.projects.filter((p: ProjectDescriptor) => allowedProjects.map((a) => a.toUpperCase()).includes(p.code.toUpperCase()))
                 : allData.projects;
-              setAvailableProjects(filtered);
+              setAvailableProjects((prev) => areProjectsEqual(prev, filtered) ? prev : filtered);
             } else if (activePlanningProvider.getProjects) {
               const projs = await activePlanningProvider.getProjects();
               if (Array.isArray(projs) && projs.length > 0) {
@@ -831,7 +908,7 @@ export function PlannedWorkView({
                 const filtered = (allowedProjects && allowedProjects.length > 0)
                   ? projs.filter((p: ProjectDescriptor) => allowedProjects.map((a) => a.toUpperCase()).includes(p.code.toUpperCase()))
                   : projs;
-                setAvailableProjects(filtered);
+                setAvailableProjects((prev) => areProjectsEqual(prev, filtered) ? prev : filtered);
               }
             }
             return;
@@ -862,7 +939,19 @@ export function PlannedWorkView({
             const filtered = (allowedProjects && allowedProjects.length > 0)
               ? projs.filter((p: ProjectDescriptor) => allowedProjects.map((a) => a.toUpperCase()).includes(p.code.toUpperCase()))
               : projs;
-            setAvailableProjects(filtered);
+            const areProjectsEqual = (a: ProjectDescriptor[], b: ProjectDescriptor[]) =>
+              a.length === b.length &&
+              a.every((p, i) =>
+                p.id === b[i].id &&
+                p.code === b[i].code &&
+                p.name === b[i].name &&
+                p.description === b[i].description &&
+                p.guidelinesRef === b[i].guidelinesRef &&
+                JSON.stringify(p.techStack) === JSON.stringify(b[i].techStack) &&
+                JSON.stringify(p.groundingRules) === JSON.stringify(b[i].groundingRules) &&
+                p.colors?.badge === b[i].colors?.badge
+              );
+            setAvailableProjects((prev) => areProjectsEqual(prev, filtered) ? prev : filtered);
           }
         }
       } catch (err) {
@@ -878,7 +967,7 @@ export function PlannedWorkView({
       clearInterval(interval);
       window.removeEventListener('focus', loadAsyncData);
     };
-  }, []);
+  }, [refreshTrigger]);
 
   const [flagDescriptionsMap, setFlagDescriptionsMap] = useState<Record<string, string>>(() => {
     if (typeof window !== 'undefined') {
@@ -1406,7 +1495,23 @@ export function PlannedWorkView({
     if (typeof window !== 'undefined' && expandedFeatureId) {
       sessionStorage.setItem('dev_plan_modal_expanded_feat', expandedFeatureId);
     }
-  }, [expandedFeatureId]);
+    if (!isEmbedded && typeof window !== 'undefined') {
+      if (expandedFeatureId) {
+        const match = expandedFeatureId.match(/^feature-(\d+)$/);
+        const num = match ? match[1] : null;
+        if (num) {
+          const expectedHash = `#ticket-${num}`;
+          if (window.location.hash !== expectedHash && window.location.hash !== `#feature-${num}`) {
+            window.location.hash = `ticket-${num}`;
+          }
+        }
+      } else {
+        if (window.location.hash && /^#(?:ticket-|feature-)?\d+$/i.test(window.location.hash)) {
+          window.history.replaceState({}, '', window.location.pathname + window.location.search);
+        }
+      }
+    }
+  }, [expandedFeatureId, isEmbedded]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -1428,9 +1533,34 @@ export function PlannedWorkView({
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
+      sessionStorage.setItem('dev_plan_priority_filter', priorityFilter);
+    }
+  }, [priorityFilter]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
       sessionStorage.setItem('dev_plan_type_filter', typeFilter);
     }
   }, [typeFilter]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('dev_plan_milestone_filter', milestoneFilter);
+    }
+  }, [milestoneFilter]);
+
+  useEffect(() => {
+    if (milestoneFilter !== 'all' && milestoneFilter !== 'none') {
+      const existsInProject = milestones.some(
+        (m) =>
+          (projectFilter === 'all' || m.project.toLowerCase() === projectFilter.toLowerCase()) &&
+          m.title.toLowerCase() === milestoneFilter.toLowerCase()
+      );
+      if (!existsInProject && milestones.length > 0) {
+        setMilestoneFilter('all');
+      }
+    }
+  }, [projectFilter, milestones]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -1554,6 +1684,30 @@ export function PlannedWorkView({
     }, 100);
   };
 
+  // Standalone UI URL Hash Navigation (ticket deep-linking & history traversal)
+  useEffect(() => {
+    if (isEmbedded || typeof window === 'undefined') return;
+    const handleHash = () => {
+      const hash = window.location.hash;
+      const match = hash.match(/^#(?:ticket-|feature-)?(\d+)$/i);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        const featId = `feature-${num}`;
+        setExpandedFeatureId(featId);
+        setActiveTab('features');
+        handleJumpToFeature(featId, num);
+      } else if (!hash || hash === '#') {
+        setExpandedFeatureId(null);
+      }
+    };
+
+    window.addEventListener('hashchange', handleHash);
+    if (window.location.hash) {
+      setTimeout(handleHash, 150);
+    }
+    return () => window.removeEventListener('hashchange', handleHash);
+  }, [isEmbedded]);
+
 
 
   const isFeatureCompleted = React.useCallback(
@@ -1655,9 +1809,27 @@ export function PlannedWorkView({
       (typeFilter === "idea" && itemType === "Idea") ||
       (typeFilter === "bug" && itemType === "Bug");
 
+    const itemPriority = metasMap[f.ticketId]?.priority || f.priority;
+    const matchesPriority =
+      priorityFilter === 'all' ||
+      (priorityFilter === 'none' && !itemPriority) ||
+      (Boolean(itemPriority) && itemPriority!.toLowerCase() === priorityFilter.toLowerCase());
+
+    const itemMilestone = metasMap[f.ticketId]?.milestone || f.milestone;
+    const matchesMilestone =
+      milestoneFilter === 'all' ||
+      (milestoneFilter === 'none' && !itemMilestone) ||
+      (Boolean(itemMilestone) && (
+        itemMilestone!.toLowerCase() === milestoneFilter.toLowerCase() ||
+        milestones.some((m) =>
+          (m.title.toLowerCase() === milestoneFilter.toLowerCase() || String(m.id) === milestoneFilter) &&
+          (itemMilestone!.toLowerCase() === m.title.toLowerCase() || itemMilestone!.toLowerCase() === String(m.id).toLowerCase())
+        )
+      ));
+
     const matchesInDev = !inDevOnly || isFeatureInDevelopment(f);
 
-    return matchesSearch && matchesComplexity && matchesType && matchesInDev;
+    return matchesSearch && matchesComplexity && matchesPriority && matchesType && matchesMilestone && matchesInDev;
   });
 
   const getLastUpdated = React.useCallback(
@@ -1722,6 +1894,28 @@ export function PlannedWorkView({
       return sortOrder === 'asc' ? comparison : -comparison;
     });
   }, [filteredFeatures, sortBy, sortOrder, getLastUpdated]);
+
+  const maxTicketLabelLen = React.useMemo(() => {
+    if (sortedFeatures.length === 0) return 6;
+    const isSingleProject = projectFilter !== 'all';
+    let maxLen = 0;
+    for (const feat of sortedFeatures) {
+      const projDesc =
+        getProjectDescriptor(
+          metasMap[feat.ticketId]?.projectId ??
+          metasMap[feat.ticketId]?.project ??
+          feat.projectId ??
+          feat.project
+        ) || getProjectDescriptor(1);
+      const label = isSingleProject
+        ? `#${feat.number}`
+        : `${projDesc ? projDesc.code : 'Core'}-${feat.number}`;
+      if (label.length > maxLen) {
+        maxLen = label.length;
+      }
+    }
+    return Math.max(maxLen, 3);
+  }, [sortedFeatures, projectFilter, metasMap]);
 
   const getComplexityBadgeColor = (complexity: string) => {
     const c = (complexity || '').toLowerCase();
@@ -1826,6 +2020,20 @@ export function PlannedWorkView({
 
             <button
               type="button"
+              onClick={() => setActiveTab('milestones')}
+              className={`flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-2 text-xs font-semibold rounded-t-xl transition-colors border-t border-x cursor-pointer shrink-0 ${
+                activeTab === 'milestones'
+                  ? 'bg-[var(--bg-surface)] border-indigo-500/40 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                  : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-white/5'
+              }`}
+            >
+              <MilestoneIcon size={14} className="shrink-0" />
+              <span className="hidden sm:inline">Milestones ({milestones.length})</span>
+              <span className="sm:hidden">Milestones ({milestones.length})</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setActiveTab('flags')}
               className={`flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-2 text-xs font-semibold rounded-t-xl transition-colors border-t border-x cursor-pointer shrink-0 ${
                 activeTab === 'flags'
@@ -1878,6 +2086,22 @@ export function PlannedWorkView({
                   )}
                 </select>
               </div>
+            )}
+
+            {/* Project Settings Button */}
+            {availableProjects.length > 0 && isOwner && !isEmbedded && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedSettingsProjectCode(currentProject ? currentProject.code : (availableProjects[0]?.code || null));
+                  setIsProjectSettingsOpen(true);
+                }}
+                className="p-2 sm:px-2.5 sm:py-2 bg-[var(--bg-input)] hover:bg-[var(--accent-bg-subtle)] text-[var(--text-muted)] hover:text-[var(--accent-primary)] border border-[var(--border-subtle)] hover:border-[var(--border-accent)] rounded-xl text-xs font-semibold flex items-center justify-center transition-colors cursor-pointer shadow-xs shrink-0"
+                title={currentProject ? `Project Settings (${currentProject.name})` : 'Project Settings'}
+                aria-label={currentProject ? `Project Settings (${currentProject.name})` : 'Project Settings'}
+              >
+                <Settings size={15} />
+              </button>
             )}
 
             {isOwner && (
@@ -1974,22 +2198,25 @@ export function PlannedWorkView({
                         }`}
                         title={`${ticketLabel}: ${metasMap[feat.ticketId]?.title || feat.title}`}
                       >
-                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                          {isFeatureCompleted(feat) && (
-                            <Check size={11} strokeWidth={3} className="text-emerald-500 dark:text-emerald-400 shrink-0" />
-                          )}
-                          <span className="text-[10px] font-mono font-bold text-[var(--accent-primary)] shrink-0">
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <span
+                            className="text-[10px] font-mono font-bold text-[var(--accent-primary)] shrink-0 inline-block text-left whitespace-nowrap"
+                            style={{ width: `${maxTicketLabelLen}ch`, minWidth: `${maxTicketLabelLen}ch` }}
+                          >
                             {ticketLabel}
                           </span>
-                          <span className={`text-[11px] font-medium leading-tight truncate ${isFeatureCompleted(feat) ? 'line-through text-[var(--text-muted)]' : 'text-[var(--text-primary)]'}`}>
+                          <span
+                            className={`text-[11px] font-medium leading-tight truncate flex-1 min-w-0 ${
+                              isFeatureCompleted(feat) ? 'line-through text-[var(--text-muted)]' : 'text-[var(--text-primary)]'
+                            }`}
+                          >
                             {metasMap[feat.ticketId]?.title || feat.title}
                           </span>
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
-
-                          {/* 1. Category Pill (w-[56px]) */}
+                          {/* 1. Type Pill (w-[56px] h-[20px]) */}
                           <span
-                            className={`text-[10px] font-mono font-semibold h-[20px] rounded-md border shrink-0 w-[56px] text-center flex items-center justify-center ${
+                            className={`text-[10px] font-mono font-semibold h-[20px] rounded-md border shrink-0 w-[56px] text-center flex items-center justify-center select-none ${
                               (metasMap[feat.ticketId]?.type || metasMap[feat.ticketId]?.category || feat.category) === 'Bug'
                                 ? 'bg-rose-100 dark:bg-rose-500/20 text-rose-950 dark:text-rose-300 border-rose-300 dark:border-rose-500/30'
                                 : (metasMap[feat.ticketId]?.type || metasMap[feat.ticketId]?.category || feat.category) === 'Idea'
@@ -2012,34 +2239,17 @@ export function PlannedWorkView({
                               : 'Feature'}
                           </span>
 
-                          {/* 2. Feature Flag Pill (w-[20px] h-[20px]) */}
-                          {(() => {
-                            const isFlagged = !!(metasMap[feat.ticketId]?.featureFlag || feat.featureFlag);
-                            return (
-                              <span
-                                title={isFlagged ? `Feature Flagged: ${metasMap[feat.ticketId]?.featureFlag || feat.featureFlag || 'Active'}` : 'Not Feature Flagged'}
-                                className={`w-[20px] h-[20px] rounded-md border flex items-center justify-center shrink-0 ${
-                                  isFlagged
-                                    ? 'bg-purple-50 dark:bg-purple-500/20 text-purple-800 dark:text-purple-300 border-purple-200 dark:border-purple-500/30'
-                                    : 'bg-[var(--bg-surface)] text-[var(--text-muted)] border-[var(--border-subtle)] opacity-40'
-                                }`}
-                              >
-                                <Flag size={10} className={isFlagged ? 'text-purple-700 dark:text-purple-400' : 'text-[var(--text-muted)]'} />
-                              </span>
-                            );
-                          })()}
-
-                          {/* 3. Status Pill (w-[20px] h-[20px]) */}
+                          {/* 2. Status Pill (w-[20px] h-[20px]) */}
                           {(() => {
                             const isCompleted = isFeatureCompleted(feat);
                             const isRejected = isFeatureRejected(feat);
                             const isDev = isFeatureInDevelopment(feat);
-                            
+
                             if (isRejected) {
                               return (
                                 <span
                                   title="Rejected"
-                                  className="w-[20px] h-[20px] rounded-md border flex items-center justify-center shrink-0 bg-rose-50 dark:bg-rose-500/20 text-rose-800 dark:text-rose-300 border-rose-200 dark:border-rose-500/30"
+                                  className="w-[20px] h-[20px] rounded-md border flex items-center justify-center shrink-0 bg-rose-50 dark:bg-rose-500/20 text-rose-800 dark:text-rose-300 border-rose-200 dark:border-rose-500/30 select-none"
                                 >
                                   <XCircle size={10} className="text-rose-700 dark:text-rose-400" />
                                 </span>
@@ -2049,7 +2259,7 @@ export function PlannedWorkView({
                               return (
                                 <span
                                   title="Completed"
-                                  className="w-[20px] h-[20px] rounded-md border flex items-center justify-center shrink-0 bg-emerald-50 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-500/30"
+                                  className="w-[20px] h-[20px] rounded-md border flex items-center justify-center shrink-0 bg-emerald-50 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-500/30 select-none"
                                 >
                                   <Check size={10} strokeWidth={3} className="text-emerald-700 dark:text-emerald-400" />
                                 </span>
@@ -2058,7 +2268,7 @@ export function PlannedWorkView({
                             return (
                               <span
                                 title={isDev ? 'In Development' : 'Planned'}
-                                className={`w-[20px] h-[20px] rounded-md border flex items-center justify-center shrink-0 ${
+                                className={`w-[20px] h-[20px] rounded-md border flex items-center justify-center shrink-0 select-none ${
                                   isDev
                                     ? 'bg-emerald-50 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-500/30'
                                     : 'bg-[var(--bg-surface)] text-[var(--text-muted)] border-[var(--border-subtle)] opacity-40'
@@ -2092,104 +2302,158 @@ export function PlannedWorkView({
               {/* Right Main Content Area */}
               <div className={`${mobileView === 'detail' ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 h-full flex flex-col min-h-0 overflow-hidden gap-2 sm:gap-3`}>
                 {/* Search & Filter Toolbar opposing TOC */}
-                <div className="shrink-0 flex flex-col sm:flex-row gap-2 items-stretch sm:items-center justify-between bg-[var(--bg-surface-elevated)] p-2.5 sm:p-3 rounded-2xl border border-[var(--border-subtle)]">
-                  <div className="flex items-center gap-2 w-full sm:flex-1 min-w-0">
+                <div className="shrink-0 flex flex-col gap-1.5 bg-[var(--bg-surface-elevated)] px-3 py-2 rounded-2xl border border-[var(--border-subtle)]">
+                  {/* Row 1: Search */}
+                  <div className="flex items-center gap-2 w-full">
                     <button
                       type="button"
                       onClick={() => setMobileView('list')}
-                      className="md:hidden px-2.5 py-1.5 bg-[var(--bg-input)] hover:bg-[var(--accent-bg-subtle)] border border-[var(--border-subtle)] rounded-xl text-xs font-semibold text-[var(--accent-primary)] flex items-center gap-1 shrink-0 cursor-pointer"
+                      className="md:hidden px-2.5 py-1 bg-[var(--bg-input)] hover:bg-[var(--accent-bg-subtle)] border border-[var(--border-subtle)] rounded-lg text-xs font-semibold text-[var(--accent-primary)] flex items-center gap-1 shrink-0 cursor-pointer"
                       title="Back to Table of Contents list"
                     >
-                      <ChevronLeft size={14} />
+                      <ChevronLeft size={13} />
                       <span>TOC</span>
                     </button>
                     <div className="relative flex-1 min-w-0">
-                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
+                      <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
                       <input
                         type="text"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="Search..."
-                        className="w-full pl-9 pr-3 py-1.5 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded-xl text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--border-accent)]"
+                        placeholder="Search tickets by title, tag, or content..."
+                        className="w-full pl-8 pr-3 py-1 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded-xl text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--border-accent)]"
                       />
                     </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                    <div className="flex items-center gap-1">
-                      <span className="text-[10px] text-[var(--text-muted)] font-mono">Type:</span>
-                      <select
-                        value={typeFilter}
-                        onChange={(e) => setTypeFilter(e.target.value)}
-                        className="bg-[var(--bg-input)] border border-[var(--border-subtle)] text-xs text-[var(--text-primary)] rounded-xl px-2 py-1 focus:outline-none focus:border-[var(--border-accent)] cursor-pointer"
-                      >
-                        <option value="all" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">All</option>
-                        <option value="feature" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">Feature</option>
-                        <option value="technical" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">Tech Enh.</option>
-                        <option value="idea" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">Idea</option>
-                        <option value="bug" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">Bug</option>
-                      </select>
+
+                  {/* Row 2: Filter Selects & Sorting Controls */}
+                  <div className="flex flex-wrap items-center justify-between gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                      <div className="flex items-center gap-1">
+                        <span className="text-[10px] text-[var(--text-muted)] font-mono">Type:</span>
+                        <select
+                          value={typeFilter}
+                          onChange={(e) => setTypeFilter(e.target.value)}
+                          className="bg-[var(--bg-input)] border border-[var(--border-subtle)] text-xs text-[var(--text-primary)] rounded-lg px-2 py-0.5 focus:outline-none focus:border-[var(--border-accent)] cursor-pointer"
+                        >
+                          <option value="all" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">All</option>
+                          <option value="feature" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">Feature</option>
+                          <option value="technical" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">Tech Enh.</option>
+                          <option value="idea" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">Idea</option>
+                          <option value="bug" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">Bug</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className="text-[10px] text-[var(--text-muted)] font-mono">Complexity:</span>
+                        <select
+                          value={complexityFilter}
+                          onChange={(e) => setComplexityFilter(e.target.value)}
+                          className="bg-[var(--bg-input)] border border-[var(--border-subtle)] text-xs text-[var(--text-primary)] rounded-lg px-2 py-0.5 focus:outline-none focus:border-[var(--border-accent)] cursor-pointer"
+                        >
+                          <option value="all" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">All</option>
+                          <option value="low" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">Low</option>
+                          <option value="medium" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">Medium</option>
+                          <option value="high" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">High</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className="text-[10px] text-[var(--text-muted)] font-mono">Priority:</span>
+                        <select
+                          value={priorityFilter}
+                          onChange={(e) => setPriorityFilter(e.target.value)}
+                          className="bg-[var(--bg-input)] border border-[var(--border-subtle)] text-xs text-[var(--text-primary)] rounded-lg px-2 py-0.5 focus:outline-none focus:border-[var(--border-accent)] cursor-pointer"
+                        >
+                          <option value="all" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">All</option>
+                          <option value="critical" className="bg-[var(--bg-surface)] text-rose-600 dark:text-rose-400 font-semibold">Critical</option>
+                          <option value="high" className="bg-[var(--bg-surface)] text-amber-600 dark:text-amber-400 font-semibold">High</option>
+                          <option value="medium" className="bg-[var(--bg-surface)] text-blue-600 dark:text-blue-400">Medium</option>
+                          <option value="low" className="bg-[var(--bg-surface)] text-[var(--text-muted)]">Low</option>
+                          <option value="none" className="bg-[var(--bg-surface)] text-[var(--text-muted)] italic">None (Unset)</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className="text-[10px] text-[var(--text-muted)] font-mono">Milestone:</span>
+                        <select
+                          value={milestoneFilter}
+                          onChange={(e) => setMilestoneFilter(e.target.value)}
+                          className={`bg-[var(--bg-input)] border text-xs rounded-lg px-2 py-0.5 focus:outline-none cursor-pointer max-w-[150px] truncate ${
+                            milestoneFilter !== 'all'
+                              ? 'border-indigo-500/60 text-indigo-700 dark:text-indigo-300 font-semibold bg-indigo-500/10'
+                              : 'border-[var(--border-subtle)] text-[var(--text-primary)] focus:border-[var(--border-accent)]'
+                          }`}
+                        >
+                          <option value="all" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">All</option>
+                          <option value="none" className="bg-[var(--bg-surface)] text-[var(--text-muted)] italic">None (Unset)</option>
+                          {milestones
+                            .filter((m) => projectFilter === 'all' || m.project.toLowerCase() === projectFilter.toLowerCase())
+                            .map((m) => (
+                              <option key={`${m.project}-${m.id}`} value={m.title} className="bg-[var(--bg-surface)] text-[var(--text-primary)]">
+                                {projectFilter === 'all' ? `[${m.project}] ${m.title}` : m.title}
+                              </option>
+                            ))}
+                        </select>
+                        {milestoneFilter !== 'all' && (
+                          <button
+                            type="button"
+                            onClick={() => setMilestoneFilter('all')}
+                            className="text-[var(--text-muted)] hover:text-rose-500 p-0.5 transition-colors cursor-pointer"
+                            title="Clear milestone filter"
+                          >
+                            <X size={11} />
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1">
-                      <span className="text-[10px] text-[var(--text-muted)] font-mono">Complexity:</span>
-                      <select
-                        value={complexityFilter}
-                        onChange={(e) => setComplexityFilter(e.target.value)}
-                        className="bg-[var(--bg-input)] border border-[var(--border-subtle)] text-xs text-[var(--text-primary)] rounded-xl px-2 py-1 focus:outline-none focus:border-[var(--border-accent)] cursor-pointer"
+                    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                      <div className="flex items-center gap-1">
+                        <span className="text-[10px] text-[var(--text-muted)] font-mono">Sort By:</span>
+                        <select
+                          value={sortBy}
+                          onChange={(e) => {
+                            const val = e.target.value as SortField;
+                            setSortBy(val);
+                            try {
+                              localStorage.setItem('dev_plan_sort_by', val);
+                              sessionStorage.setItem('dev_plan_sort_by', val);
+                            } catch (err) {}
+                          }}
+                          className="bg-[var(--bg-input)] border border-[var(--border-subtle)] text-xs text-[var(--text-primary)] rounded-lg px-2 py-0.5 focus:outline-none focus:border-[var(--border-accent)] cursor-pointer"
+                        >
+                          <option value="ticketNumber" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">Ticket #</option>
+                          <option value="lastUpdated" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">Last Updated</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => toggleSortDirection(sortBy)}
+                          title={`Sort ${sortOrder === 'asc' ? 'Ascending (Click for Descending)' : 'Descending (Click for Ascending)'}`}
+                          className="p-1 bg-[var(--bg-input)] border border-[var(--border-subtle)] hover:border-[var(--border-strong)] rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex items-center justify-center cursor-pointer"
+                        >
+                          {sortOrder === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />}
+                        </button>
+                      </div>
+                      <label
+                        className={`flex items-center gap-1.5 text-[11px] font-mono font-semibold cursor-pointer select-none px-2 py-0.5 rounded-lg transition-colors border ${
+                          inDevOnly
+                            ? 'bg-[var(--accent-bg-subtle)] border-[var(--accent-primary)] text-[var(--accent-primary)] font-bold shadow-xs'
+                            : 'bg-[var(--bg-input)] border-[var(--border-subtle)] hover:border-[var(--border-strong)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                        }`}
                       >
-                        <option value="all" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">All</option>
-                        <option value="low" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">Low</option>
-                        <option value="medium" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">Medium</option>
-                        <option value="high" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">High</option>
-                      </select>
+                        <input
+                          type="checkbox"
+                          checked={inDevOnly}
+                          onChange={(e) => {
+                            setInDevOnly(e.target.checked);
+                            try {
+                              sessionStorage.setItem('dev_plan_in_dev_filter', String(e.target.checked));
+                            } catch (err) {}
+                          }}
+                          className="rounded bg-[var(--bg-surface)] border-[var(--border-strong)] text-[var(--accent-primary)] focus:ring-0 cursor-pointer w-3.5 h-3.5"
+                        />
+                        <span className={inDevOnly ? 'text-[var(--accent-primary)] font-bold' : 'text-[var(--text-secondary)] font-medium'}>
+                          In Development
+                        </span>
+                      </label>
                     </div>
-                    <div className="flex items-center gap-1">
-                      <span className="text-[10px] text-[var(--text-muted)] font-mono">Sort By:</span>
-                      <select
-                        value={sortBy}
-                        onChange={(e) => {
-                          const val = e.target.value as SortField;
-                          setSortBy(val);
-                          try {
-                            localStorage.setItem('dev_plan_sort_by', val);
-                            sessionStorage.setItem('dev_plan_sort_by', val);
-                          } catch (err) {}
-                        }}
-                        className="bg-[var(--bg-input)] border border-[var(--border-subtle)] text-xs text-[var(--text-primary)] rounded-xl px-2 py-1 focus:outline-none focus:border-[var(--border-accent)] cursor-pointer"
-                      >
-                        <option value="ticketNumber" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">Ticket #</option>
-                        <option value="lastUpdated" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">Last Updated</option>
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => toggleSortDirection(sortBy)}
-                        title={`Sort ${sortOrder === 'asc' ? 'Ascending (Click for Descending)' : 'Descending (Click for Ascending)'}`}
-                        className="p-1.5 bg-[var(--bg-input)] border border-[var(--border-subtle)] hover:border-[var(--border-strong)] rounded-xl text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex items-center justify-center cursor-pointer"
-                      >
-                        {sortOrder === 'asc' ? <ArrowUp size={13} /> : <ArrowDown size={13} />}
-                      </button>
-                    </div>
-                    <label
-                      className={`flex items-center gap-1.5 text-[11px] font-mono font-semibold cursor-pointer select-none px-2.5 py-1 rounded-xl transition-colors border ${
-                        inDevOnly
-                          ? 'bg-[var(--accent-bg-subtle)] border-[var(--accent-primary)] text-[var(--accent-primary)] font-bold shadow-xs'
-                          : 'bg-[var(--bg-input)] border-[var(--border-subtle)] hover:border-[var(--border-strong)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={inDevOnly}
-                        onChange={(e) => {
-                          setInDevOnly(e.target.checked);
-                          try {
-                            sessionStorage.setItem('dev_plan_in_dev_filter', String(e.target.checked));
-                          } catch (err) {}
-                        }}
-                        className="rounded bg-[var(--bg-surface)] border-[var(--border-strong)] text-[var(--accent-primary)] focus:ring-0 cursor-pointer w-3.5 h-3.5"
-                      />
-                      <span className={inDevOnly ? 'text-[var(--accent-primary)] font-bold' : 'text-[var(--text-secondary)] font-medium'}>
-                        In Development
-                      </span>
-                    </label>
                   </div>
                 </div>
 
@@ -2429,6 +2693,60 @@ export function PlannedWorkView({
                                   </span>
                                 )}
 
+                                {/* Priority Badge / Picker */}
+                                {(() => {
+                                  const prio = metasMap[feat.ticketId]?.priority || feat.priority;
+                                  if (!prio && !isOwner) return null;
+                                  const conf = prio ? PRIORITY_CONFIG[prio] : null;
+                                  if (isOwner) {
+                                    return (
+                                      <button
+                                        type="button"
+                                        data-popover-trigger="true"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const rect = e.currentTarget.getBoundingClientRect();
+                                          setHeaderPopover((prev) =>
+                                            prev?.ticketId === feat.ticketId && prev?.type === 'priority'
+                                              ? null
+                                              : { ticketId: feat.ticketId, type: 'priority', x: rect.left + rect.width / 2, y: rect.bottom + 4 }
+                                          );
+                                        }}
+                                        className={`text-center inline-flex items-center justify-center gap-1 text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full border transition-colors cursor-pointer ${
+                                          conf
+                                            ? `${conf.border} ${conf.bg} ${conf.text}`
+                                            : 'border-[var(--border-subtle)] bg-[var(--bg-input)] text-[var(--text-muted)] hover:border-[var(--border-strong)]'
+                                        }`}
+                                        title="Click to edit Priority"
+                                      >
+                                        {conf && <span className={`w-1.5 h-1.5 rounded-full ${conf.dot}`} />}
+                                        {prio || 'Priority'}
+                                      </button>
+                                    );
+                                  }
+                                  return (
+                                    <span
+                                      className={`text-center inline-flex items-center justify-center gap-1 text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full border cursor-default ${
+                                        conf ? `${conf.border} ${conf.bg} ${conf.text}` : ''
+                                      }`}
+                                    >
+                                      {conf && <span className={`w-1.5 h-1.5 rounded-full ${conf.dot}`} />}
+                                      {prio}
+                                    </span>
+                                  );
+                                })()}
+
+                                {/* Blocked Badge */}
+                                {(feat.isBlocked || metasMap[feat.ticketId]?.isBlocked) && (
+                                  <span
+                                    className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full border border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400 cursor-default"
+                                    title="Blocked by uncompleted ticket"
+                                  >
+                                    <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+                                    Blocked
+                                  </span>
+                                )}
+
                                 {/* 3. Status State Pill (Rightmost in Row 1, 112px) */}
                                 {isOwner ? (
                                   <button
@@ -2567,6 +2885,32 @@ export function PlannedWorkView({
                                     </button>
                                   ) : null;
                                 })()}
+
+                                {/* Milestone Pill */}
+                                {(() => {
+                                  const msRaw = metasMap[feat.ticketId]?.milestone || feat.milestone;
+                                  if (!msRaw) return null;
+                                  const projectCode = metasMap[feat.ticketId]?.project || feat.project;
+                                  const foundMs = milestones.find((m) => {
+                                    if (projectCode && m.project && projectCode.toLowerCase() !== m.project.toLowerCase()) return false;
+                                    return String(m.id) === String(msRaw) || m.title.toLowerCase() === String(msRaw).toLowerCase();
+                                  });
+                                  const msDisplay = foundMs ? foundMs.title : msRaw;
+                                  return (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setActiveTab('milestones');
+                                      }}
+                                      className="max-w-[140px] truncate flex items-center justify-center gap-1.5 px-2.5 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-500/20 text-indigo-950 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-500/40 hover:bg-indigo-200/70 dark:hover:bg-indigo-500/30 text-[10px] font-mono font-semibold transition-colors cursor-pointer shrink-0"
+                                      title={`Milestone: ${msDisplay}. Click to open Milestones view.`}
+                                    >
+                                      <MilestoneIcon size={10} className="text-indigo-700 dark:text-indigo-400 shrink-0" />
+                                      <span className="truncate">{msDisplay}</span>
+                                    </button>
+                                  );
+                                })()}
                               </div>
                             </div>
                             <ChevronRight
@@ -2668,6 +3012,27 @@ export function PlannedWorkView({
                                         }`}>
                                           {totalRevisionsCount}
                                         </span>
+                                      </button>
+
+                                      {/* Tab 5: Linked Issues */}
+                                      <button
+                                        type="button"
+                                        onClick={() => setCardSubTabs((prev) => ({ ...prev, [feat.ticketId]: 'links' }))}
+                                        className={`px-3 py-1 rounded-lg font-semibold flex items-center gap-1.5 transition-colors cursor-pointer text-[11px] ${
+                                          currentCardTab === 'links'
+                                            ? 'bg-[var(--bg-surface-elevated)] text-cyan-400 border border-cyan-500/40 font-bold shadow-xs'
+                                            : 'text-[var(--text-muted)] hover:text-cyan-400 hover:bg-cyan-500/10'
+                                        }`}
+                                      >
+                                        <Link2 size={12} />
+                                        <span>Links</span>
+                                        {((feat.links || metasMap[feat.ticketId]?.links || []).length > 0) && (
+                                          <span className={`text-[9px] px-1.5 py-0.2 rounded-full font-mono ${
+                                            currentCardTab === 'links' ? 'bg-cyan-100 text-cyan-800 dark:bg-cyan-700 dark:text-cyan-100' : 'bg-cyan-50 text-cyan-800 border border-cyan-200 dark:bg-cyan-500/20 dark:text-cyan-300 dark:border-cyan-500/30'
+                                          }`}>
+                                            {(feat.links || metasMap[feat.ticketId]?.links || []).length}
+                                          </span>
+                                        )}
                                       </button>
                                     </div>
 
@@ -3428,6 +3793,130 @@ export function PlannedWorkView({
                                       </div>
                                     );
                                   })()}
+
+                                  {/* SUB-TAB 5: LINKED ISSUES */}
+                                  {currentCardTab === 'links' && (
+                                    <div className="space-y-3 animate-fade-in">
+                                      <div className="p-3.5 bg-[var(--bg-surface-elevated)] border border-[var(--border-subtle)] rounded-2xl space-y-3">
+                                        <div className="flex items-center justify-between">
+                                          <div className="flex items-center gap-2">
+                                            <h4 className="font-bold text-[var(--text-primary)] text-xs flex items-center gap-1.5">
+                                              <Link2 size={14} className="text-cyan-600 dark:text-cyan-400" />
+                                              Linked Issues ({((feat.links || metasMap[feat.ticketId]?.links || []) as any[]).length})
+                                            </h4>
+                                            {(feat.isBlocked || metasMap[feat.ticketId]?.isBlocked) && (
+                                              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400 font-semibold">
+                                                Blocked
+                                              </span>
+                                            )}
+                                          </div>
+                                          {isOwner && (
+                                            <button
+                                              type="button"
+                                              onClick={() => setLinkingTicket(feat)}
+                                              className="px-2.5 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer shadow-xs"
+                                            >
+                                              <Plus size={12} /> Link Ticket
+                                            </button>
+                                          )}
+                                        </div>
+
+                                        {((feat.links || metasMap[feat.ticketId]?.links || []) as any[]).length > 0 ? (
+                                          <div className="space-y-2">
+                                            {((feat.links || metasMap[feat.ticketId]?.links || []) as any[]).map((link, lIdx) => {
+                                              const relLabel = LINK_RELATION_LABELS[link.relation as keyof typeof LINK_RELATION_LABELS] || link.relation;
+                                              const isBlocksOrBlocked = link.relation === 'blocks' || link.relation === 'blocked-by';
+                                              const isBlockerUncompleted = link.relation === 'blocked-by' && !link.isTargetCompleted;
+
+                                              return (
+                                                <div
+                                                  key={lIdx}
+                                                  className={`p-2.5 rounded-xl border flex items-center justify-between gap-3 text-xs ${
+                                                    isBlockerUncompleted
+                                                      ? 'bg-red-500/5 border-red-500/30'
+                                                      : 'bg-[var(--bg-surface)] border-[var(--border-subtle)]'
+                                                  }`}
+                                                >
+                                                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                                    <span
+                                                      className={`shrink-0 text-[10px] font-mono font-semibold px-2 py-0.5 rounded-md border ${
+                                                        isBlocksOrBlocked
+                                                          ? 'bg-rose-500/10 border-rose-500/30 text-rose-700 dark:text-rose-400'
+                                                          : link.relation === 'parent-of' || link.relation === 'child-of'
+                                                          ? 'bg-purple-500/10 border-purple-500/30 text-purple-700 dark:text-purple-400'
+                                                          : 'bg-cyan-500/10 border-cyan-500/30 text-cyan-700 dark:text-cyan-400'
+                                                      }`}
+                                                    >
+                                                      {relLabel}
+                                                    </span>
+
+                                                    <div className="min-w-0 flex-1 flex items-center gap-2">
+                                                      <span className="font-mono font-semibold text-slate-900 dark:text-slate-100 shrink-0">
+                                                        {link.targetKey || `#${link.targetId}`}
+                                                      </span>
+                                                      {link.targetTitle && (
+                                                        <span className="truncate text-slate-700 dark:text-slate-300">
+                                                          {link.targetTitle}
+                                                        </span>
+                                                      )}
+                                                    </div>
+
+                                                    {link.targetStatus && (
+                                                      <span
+                                                        className={`shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded-md border ${
+                                                          link.isTargetCompleted
+                                                            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-400 font-semibold'
+                                                            : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'
+                                                        }`}
+                                                      >
+                                                        {link.targetStatus}
+                                                      </span>
+                                                    )}
+                                                  </div>
+
+                                                  {isOwner && (
+                                                    <button
+                                                      type="button"
+                                                      onClick={async () => {
+                                                        try {
+                                                          if (activePlanningProvider.unlinkTicket) {
+                                                            await activePlanningProvider.unlinkTicket(
+                                                              feat.ticketId || feat.id,
+                                                              link.targetKey || link.targetId
+                                                            );
+                                                            handleRefresh();
+                                                          }
+                                                        } catch (err) {
+                                                          console.error('Failed to unlink ticket:', err);
+                                                        }
+                                                      }}
+                                                      className="shrink-0 p-1 text-slate-400 hover:text-red-500 transition-colors rounded-lg hover:bg-red-500/10"
+                                                      title="Remove link"
+                                                    >
+                                                      <Trash2 size={13} />
+                                                    </button>
+                                                  )}
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        ) : (
+                                          <div className="p-6 bg-[var(--bg-surface-elevated)] rounded-xl border border-dashed border-[var(--border-subtle)] flex flex-col items-center justify-center gap-2 text-center text-xs text-[var(--text-muted)]">
+                                            <span>No linked issues yet for Ticket #{feat.ticketId}.</span>
+                                            {isOwner && (
+                                              <button
+                                                type="button"
+                                                onClick={() => setLinkingTicket(feat)}
+                                                className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs mt-1"
+                                              >
+                                                <Plus size={13} /> Link Ticket
+                                              </button>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
                                 </>
                               );
                             })()}
@@ -3440,6 +3929,44 @@ export function PlannedWorkView({
               </div>
             </div>
           </div>
+          )}
+
+          {/* TAB: MILESTONES */}
+          {activeTab === 'milestones' && (
+            <MilestonesView
+              milestones={milestones}
+              plannedFeatures={parsedData.plannedFeatures}
+              metasMap={metasMap}
+              projectFilter={projectFilter}
+              isOwner={isOwner}
+              onOpenCreateMilestone={() => {
+                setEditingMilestone(null);
+                setIsMilestoneModalOpen(true);
+              }}
+              onEditMilestone={(m) => {
+                setEditingMilestone(m);
+                setIsMilestoneModalOpen(true);
+              }}
+              onMilestonesChanged={loadMilestones}
+              onSelectTicket={(ticketId) => {
+                setActiveTab('features');
+                setExpandedFeatureId(`feature-${ticketId}`);
+                handleJumpToFeature(`feature-${ticketId}`, Number(ticketId));
+              }}
+              onSelectMilestone={(msTitle, msProject) => {
+                if (msProject && projectFilter !== 'all' && projectFilter.toLowerCase() !== msProject.toLowerCase()) {
+                  setProjectFilter(msProject);
+                  try {
+                    sessionStorage.setItem('dev_plan_project_filter', msProject);
+                    localStorage.setItem('dev_plan_project_filter', msProject);
+                    updateProjectUrlSearchParam(msProject, isEmbedded);
+                  } catch (e) {}
+                }
+                setMilestoneFilter(msTitle);
+                setActiveTab('features');
+              }}
+              availableProjects={availableProjects}
+            />
           )}
 
           {/* TAB 2: FEATURE FLAGS */}
@@ -3929,6 +4456,69 @@ export function PlannedWorkView({
             </div>
           )}
 
+          {/* Popover: Priority Picker */}
+          {headerPopover.type === 'priority' && (
+            <div className="space-y-1 w-44">
+              <div className="text-[10px] font-mono font-bold text-[var(--text-muted)] uppercase tracking-wider px-2 py-0.5">
+                Set Priority
+              </div>
+              {PRIORITIES.map((prio) => {
+                const conf = PRIORITY_CONFIG[prio];
+                const currentPrio = metasMap[headerPopover.ticketId]?.priority;
+                const isSelected = currentPrio === prio;
+                return (
+                  <button
+                    key={prio}
+                    type="button"
+                    onClick={async () => {
+                      const ticketId = headerPopover.ticketId;
+                      setHeaderPopover(null);
+                      try {
+                        await activePlanningProvider.updateMeta(ticketId, { priority: prio });
+                        setMetasMap((prev) => ({
+                          ...prev,
+                          [ticketId]: { ...prev[ticketId], priority: prio },
+                        }));
+                      } catch (err) {
+                        console.error('Failed to update priority:', err);
+                      }
+                    }}
+                    className={`w-full text-left px-2.5 py-1 rounded-lg text-xs font-mono font-semibold flex items-center justify-between transition-colors cursor-pointer border ${conf.border} ${conf.bg} ${conf.text} hover:brightness-105`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span className={`w-2 h-2 rounded-full ${conf.dot}`} />
+                      <span>{prio}</span>
+                    </div>
+                    {isSelected && <Check size={12} className="shrink-0" />}
+                  </button>
+                );
+              })}
+              <div className="pt-1 border-t border-[var(--border-subtle)]">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const ticketId = headerPopover.ticketId;
+                    setHeaderPopover(null);
+                    try {
+                      await activePlanningProvider.updateMeta(ticketId, { priority: null as any });
+                      setMetasMap((prev) => {
+                        const copy = { ...prev[ticketId] };
+                        delete copy.priority;
+                        return { ...prev, [ticketId]: copy };
+                      });
+                    } catch (err) {
+                      console.error('Failed to clear priority:', err);
+                    }
+                  }}
+                  className="w-full text-left px-2.5 py-1 rounded-lg text-xs font-mono text-[var(--text-muted)] hover:text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer flex items-center gap-1.5"
+                >
+                  <XCircle size={11} className="shrink-0" />
+                  <span>Clear Priority</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Popover 5: Status Picker */}
           {headerPopover.type === 'status' && (
             <div className="space-y-1 w-44">
@@ -4039,11 +4629,83 @@ export function PlannedWorkView({
         onCreated={(proj) => setProjectFilter(String(proj.id))}
       />
 
+      {/* Project Settings Modal */}
+      <ProjectSettingsModal
+        isOpen={isProjectSettingsOpen}
+        onClose={() => {
+          setIsProjectSettingsOpen(false);
+          setSelectedSettingsProjectCode(null);
+        }}
+        project={activeSettingsProject}
+        availableProjects={availableProjects}
+        onSelectProject={(proj) => setSelectedSettingsProjectCode(proj.code)}
+        onUpdated={(updatedProj, renamedCode) => {
+          setAvailableProjects((prev) => {
+            const oldCode = renamedCode?.oldCode?.toLowerCase() || updatedProj.code.toLowerCase();
+            const exists = prev.some((p) => p.code.toLowerCase() === oldCode);
+            if (exists) {
+              return prev.map((p) => (p.code.toLowerCase() === oldCode ? updatedProj : p));
+            }
+            return [...prev, updatedProj];
+          });
+
+          const currentDynamic = getRuntimeProjects();
+          const oldCode = renamedCode?.oldCode?.toLowerCase() || updatedProj.code.toLowerCase();
+          const nextDynamic = currentDynamic.map((p) => (p.code.toLowerCase() === oldCode ? updatedProj : p));
+          setRuntimeProjects(nextDynamic);
+
+          if (renamedCode) {
+            setProjectFilter(renamedCode.newCode);
+            try {
+              sessionStorage.setItem('dev_plan_project_filter', renamedCode.newCode);
+              localStorage.setItem('dev_plan_project_filter', renamedCode.newCode);
+              updateProjectUrlSearchParam(renamedCode.newCode, isEmbedded);
+            } catch (e) {}
+
+            setMetasMap((prev) => {
+              const next = { ...prev };
+              for (const [k, meta] of Object.entries(next)) {
+                if (meta.project?.toLowerCase() === renamedCode.oldCode.toLowerCase()) {
+                  next[k] = { ...meta, project: renamedCode.newCode };
+                }
+              }
+              return next;
+            });
+          }
+        }}
+      />
+
+      {/* Milestone Modal */}
+      <MilestoneModal
+        isOpen={isMilestoneModalOpen}
+        onClose={() => {
+          setIsMilestoneModalOpen(false);
+          setEditingMilestone(null);
+        }}
+        onSaved={loadMilestones}
+        editingMilestone={editingMilestone}
+        defaultProjectCode={projectFilter === 'all' ? (availableProjects[0]?.code || '') : projectFilter}
+        availableProjects={availableProjects}
+      />
+
       {/* Ticket Types & Planning Reference Modal */}
       <TicketHelpModal
         isOpen={isHelpModalOpen}
         onClose={() => setIsHelpModalOpen(false)}
       />
+
+      {/* Ticket Linking Modal */}
+      {linkingTicket && (
+        <LinkTicketModal
+          isOpen={Boolean(linkingTicket)}
+          onClose={() => setLinkingTicket(null)}
+          sourceTicket={linkingTicket}
+          availableTickets={parsedData.plannedFeatures}
+          onLinked={() => {
+            handleRefresh();
+          }}
+        />
+      )}
     </div>
     </div>
   );

@@ -110,6 +110,7 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
           const status = (url.searchParams.get('status') as any) || undefined;
           const type = ((url.searchParams.get('type') || url.searchParams.get('category')) as any) || undefined;
           const category = type;
+          const priority = (url.searchParams.get('priority') as any) || undefined;
           const search = url.searchParams.get('search') || undefined;
 
           const tickets = await reqStorage.listTickets({
@@ -117,6 +118,7 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
             status,
             type,
             category,
+            priority,
             search,
           });
           sendJson(res, 200, tickets);
@@ -157,9 +159,10 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
             const code = t.projectDescriptor?.code || t.meta.project || 'Profe';
             const prefixedKey = `${code}-${t.meta.id}`;
 
-            metasMap[prefixedKey] = t.meta;
+            const metaWithLinks = { ...t.meta, links: t.links || t.meta.links || [], isBlocked: t.isBlocked };
+            metasMap[prefixedKey] = metaWithLinks;
             if (!metasMap[numKey] || code.toUpperCase() === 'PROF') {
-              metasMap[numKey] = t.meta;
+              metasMap[numKey] = metaWithLinks;
             }
             commentsMap[prefixedKey] = t.comments || [];
             if (!commentsMap[numKey] || code.toUpperCase() === 'PROF') {
@@ -273,6 +276,13 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
           sendJson(res, 200, snapshot);
           return true;
         }
+
+        if (pathname === '/api/planning/milestones') {
+          const project = url.searchParams.get('project') || undefined;
+          const milestones = await reqStorage.listMilestones(project);
+          sendJson(res, 200, { milestones });
+          return true;
+        }
       }
 
       if (req.method === 'POST') {
@@ -310,6 +320,61 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
             hub,
           });
           sendJson(res, 201, project);
+          return true;
+        }
+
+        if (pathname === '/api/planning/update-project') {
+          const { code, name, description, colors, techStack, groundingRules, guidelinesRef } = body;
+          if (!code) {
+            sendJson(res, 400, { error: 'Project code is required.' });
+            return true;
+          }
+          if (name !== undefined) {
+            const nameVal = validateProjectName(name);
+            if (!nameVal.valid) {
+              sendJson(res, 400, { error: nameVal.error });
+              return true;
+            }
+          }
+          invalidateApiCache();
+          const updated = await reqStorage.updateProject({
+            code,
+            name,
+            description,
+            colors,
+            techStack,
+            groundingRules,
+            guidelinesRef,
+          });
+          sendJson(res, 200, updated);
+          return true;
+        }
+
+        if (pathname === '/api/planning/rename-project') {
+          const { oldCode, newCode, newName } = body;
+          if (!oldCode || !newCode) {
+            sendJson(res, 400, { error: 'Both oldCode and newCode are required to rename a project.' });
+            return true;
+          }
+          const codeVal = validateProjectCode(newCode);
+          if (!codeVal.valid) {
+            sendJson(res, 400, { error: codeVal.error });
+            return true;
+          }
+          if (newName !== undefined) {
+            const nameVal = validateProjectName(newName);
+            if (!nameVal.valid) {
+              sendJson(res, 400, { error: nameVal.error });
+              return true;
+            }
+          }
+          invalidateApiCache();
+          const result = await reqStorage.renameProjectCode({
+            oldCode,
+            newCode,
+            newName,
+          });
+          sendJson(res, 200, result);
           return true;
         }
 
@@ -352,6 +417,53 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
             await reqStorage.updateTicket(ticketId, metaUpdates);
           }
           sendJson(res, 200, { success: true, detail: detailMarkdown });
+          return true;
+        }
+
+        if (pathname === '/api/planning/milestones') {
+          invalidateApiCache();
+          const created = await reqStorage.createMilestone(body);
+          sendJson(res, 201, { milestone: created });
+          return true;
+        }
+
+        if (pathname === '/api/planning/update-milestone') {
+          invalidateApiCache();
+          const { id, projectCode, ...updates } = body;
+          const updated = await reqStorage.updateMilestone(id, updates, projectCode);
+          sendJson(res, 200, { milestone: updated });
+          return true;
+        }
+
+        if (pathname === '/api/planning/delete-milestone') {
+          invalidateApiCache();
+          const { id, projectCode } = body;
+          const success = await reqStorage.deleteMilestone(id, projectCode);
+          sendJson(res, 200, { success });
+          return true;
+        }
+
+        if (pathname === '/api/planning/link') {
+          invalidateApiCache();
+          const { sourceId, relation, targetId, author, project } = body;
+          if (!sourceId || !relation || !targetId) {
+            sendJson(res, 400, { error: 'sourceId, relation, and targetId are required.' });
+            return true;
+          }
+          const result = await reqStorage.addTicketLink(sourceId, relation, targetId, { author, project });
+          sendJson(res, 200, { success: true, source: result.source, target: result.target });
+          return true;
+        }
+
+        if (pathname === '/api/planning/unlink') {
+          invalidateApiCache();
+          const { sourceId, targetId, relation, project } = body;
+          if (!sourceId || !targetId) {
+            sendJson(res, 400, { error: 'sourceId and targetId are required.' });
+            return true;
+          }
+          const result = await reqStorage.removeTicketLink(sourceId, targetId, { relation, project });
+          sendJson(res, 200, { success: true, source: result.source, target: result.target });
           return true;
         }
       }

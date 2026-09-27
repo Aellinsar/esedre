@@ -1,6 +1,53 @@
 export type TicketType = 'Feature' | 'Platform' | 'Tools' | 'Idea' | 'Bug';
 export type TicketCategory = TicketType; // Back-compat alias
 export type TicketStatus = 'Planned' | 'In Development' | 'Completed' | 'Rejected';
+export type TicketPriority = 'Critical' | 'High' | 'Medium' | 'Low';
+export const PRIORITIES: readonly TicketPriority[] = ['Critical', 'High', 'Medium', 'Low'] as const;
+
+export const PRIORITY_CONFIG: Record<
+  TicketPriority,
+  {
+    name: TicketPriority;
+    badge: string;
+    dot: string;
+    border: string;
+    bg: string;
+    text: string;
+  }
+> = {
+  Critical: {
+    name: 'Critical',
+    badge: 'border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400 font-semibold',
+    dot: 'bg-red-500',
+    border: 'border-red-500/40',
+    bg: 'bg-red-500/10',
+    text: 'text-red-700 dark:text-red-400',
+  },
+  High: {
+    name: 'High',
+    badge: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400 font-semibold',
+    dot: 'bg-amber-500',
+    border: 'border-amber-500/40',
+    bg: 'bg-amber-500/10',
+    text: 'text-amber-700 dark:text-amber-400',
+  },
+  Medium: {
+    name: 'Medium',
+    badge: 'border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-400 font-semibold',
+    dot: 'bg-blue-500',
+    border: 'border-blue-500/40',
+    bg: 'bg-blue-500/10',
+    text: 'text-blue-700 dark:text-blue-400',
+  },
+  Low: {
+    name: 'Low',
+    badge: 'border-slate-400/40 bg-slate-500/10 text-slate-700 dark:text-slate-400 font-semibold',
+    dot: 'bg-slate-400',
+    border: 'border-slate-400/40',
+    bg: 'bg-slate-500/10',
+    text: 'text-slate-700 dark:text-slate-400',
+  },
+};
 
 export const DEFAULT_ESEDRE_PORT = 5674;
 
@@ -18,7 +65,19 @@ export interface ProjectDescriptor {
   name: string;
   description: string;
   colors: ProjectColors;
+  techStack?: Record<string, string> | string[];
+  groundingRules?: string[];
+  guidelinesRef?: string;
 }
+
+export const PALETTES = [
+  { name: 'Cyan', badge: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300', dot: 'bg-cyan-400', border: 'border-cyan-500/40' },
+  { name: 'Indigo', badge: 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300', dot: 'bg-indigo-400', border: 'border-indigo-500/40' },
+  { name: 'Emerald', badge: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300', dot: 'bg-emerald-400', border: 'border-emerald-500/40' },
+  { name: 'Fuchsia', badge: 'border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-300', dot: 'bg-fuchsia-400', border: 'border-fuchsia-500/40' },
+  { name: 'Amber', badge: 'border-amber-500/30 bg-amber-500/10 text-amber-300', dot: 'bg-amber-400', border: 'border-amber-500/40' },
+  { name: 'Rose', badge: 'border-rose-500/30 bg-rose-500/10 text-rose-300', dot: 'bg-rose-400', border: 'border-rose-500/40' },
+];
 
 export const ALL_PROJECTS: ProjectDescriptor[] = [
   {
@@ -128,11 +187,79 @@ export function getProjectDescriptor(input?: number | string): ProjectDescriptor
   return undefined;
 }
 
+export type MilestoneStatus = 'Planned' | 'Active' | 'Completed' | 'Closed';
+
+export interface Milestone {
+  id: number | string;
+  project: string;
+  title: string;
+  description?: string;
+  status: MilestoneStatus;
+  featureFlag?: string;
+  targetDate?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  completedAt?: string;
+}
+
+export interface CreateMilestoneInput {
+  projectCode?: string;
+  title: string;
+  description?: string;
+  status?: MilestoneStatus;
+  featureFlag?: string;
+  targetDate?: string;
+}
+
+export interface UpdateMilestoneInput {
+  title?: string;
+  description?: string;
+  status?: MilestoneStatus;
+  featureFlag?: string | null;
+  targetDate?: string | null;
+}
+
+export type TicketLinkRelation =
+  | 'blocks'
+  | 'blocked-by'
+  | 'relates-to'
+  | 'parent-of'
+  | 'child-of'
+  | 'duplicates'
+  | 'duplicated-by';
+
+export const LINK_RELATION_LABELS: Record<TicketLinkRelation, string> = {
+  'relates-to': 'Relates to',
+  'blocks': 'Blocks',
+  'blocked-by': 'Blocked by',
+  'parent-of': 'Parent of',
+  'child-of': 'Child of',
+  'duplicates': 'Duplicates',
+  'duplicated-by': 'Duplicated by',
+};
+
+export interface TicketLink {
+  relation: TicketLinkRelation;
+  targetKey: string;
+  targetProject: string;
+  targetId: number;
+  createdAt?: string;
+  createdBy?: string;
+}
+
+export interface EnrichedTicketLink extends TicketLink {
+  targetTitle?: string;
+  targetStatus?: TicketStatus;
+  targetType?: TicketType;
+  isTargetCompleted?: boolean;
+}
+
 export interface TicketMeta {
   id: number;
   title: string;
   type: TicketType;
   category?: TicketType; // Back-compat alias
+  priority?: TicketPriority;
   complexity: string;
   estimatedEffort?: string;
   submittedBy?: string;
@@ -144,10 +271,14 @@ export interface TicketMeta {
   status: TicketStatus;
   isActivePlanning?: boolean;
   featureFlag?: string;
+  milestone?: string;
+  inheritedFeatureFlag?: string;
   projectId?: number;
   project?: string;
   lastHash?: string;
   sha1?: string;
+  links?: TicketLink[];
+  isBlocked?: boolean;
 }
 
 export interface TicketComment {
@@ -186,6 +317,7 @@ export interface PlannedFeature {
   title: string;
   type: TicketType;
   category: TicketCategory;
+  priority?: TicketPriority;
   complexity: string;
   estimatedEffort?: string;
   status?: TicketStatus;
@@ -196,6 +328,8 @@ export interface PlannedFeature {
   rationale?: string;
   rawDetail?: string;
   featureFlag?: string;
+  milestone?: string;
+  inheritedFeatureFlag?: string;
   projectId?: number;
   project?: string;
   projectDescriptor?: ProjectDescriptor;
@@ -213,6 +347,8 @@ export interface PlannedFeature {
   historySnapshots?: TicketHistorySnapshot[];
   rawMarkdown?: string;
   sha1?: string;
+  links?: EnrichedTicketLink[];
+  isBlocked?: boolean;
 }
 
 export const KNOWN_FEATURE_FLAGS: readonly string[] = [] as const;

@@ -26,12 +26,18 @@ When Esedre MCP is active in your agent session (`.agents/mcp_config.json`), use
 
 | Tool | Purpose | Key Arguments |
 |---|---|---|
-| `esedre_list_tickets` | List roadmap tickets with filters | `project` (e.g. `Profe`, `Esedre`, `Alce`), `status`, `type`, `search` |
-| `esedre_get_ticket` | Full specification, summary, comments, revision & sha1 | `ticketId` (numeric e.g. `96` or compound e.g. `Profe-96`) |
+| `esedre_list_tickets` | List roadmap tickets with filters | `project` (e.g. `Profe`, `Esedre`, `Alce`), `status`, `type`, `priority`, `milestone`, `isBlocked`, `linkedTo`, `search` |
+| `esedre_get_ticket` | Full specification, summary, comments, links, revision & sha1 | `ticketId` (numeric e.g. `96` or compound e.g. `Profe-96`) |
 | `esedre_get_plan` | Active implementation plan markdown | `ticketId` (numeric or compound) |
 | `esedre_save_plan` | Save implementation plan markdown with OCC | `ticketId`, `planMarkdown`, `lastHash` |
-| `esedre_create_ticket` | Mint a new ticket with auto sequential ID | `title` (max 48 chars), `type`, `project`, `effort`, `summary`, `detail` |
-| `esedre_update_ticket` | Update ticket attributes with OCC | `ticketId`, `status`, `type`, `title`, `complexity`, `effort`, `inDevelopment`, `featureFlag`, `lastHash` |
+| `esedre_create_ticket` | Mint a new ticket with auto sequential ID | `title` (max 48 chars), `type`, `project`, `priority`, `milestone`, `effort`, `summary`, `detail` |
+| `esedre_update_ticket` | Update ticket attributes with OCC | `ticketId`, `status`, `type`, `priority`, `milestone`, `title`, `complexity`, `effort`, `inDevelopment`, `featureFlag`, `lastHash` |
+| `esedre_link_ticket` | Establish bi-directional ticket relationship | `sourceTicketId`, `relation` (`relates-to` \| `blocks` \| `parent-of` \| `duplicates`), `targetTicketId`, `author` |
+| `esedre_unlink_ticket` | Remove bi-directional ticket relationship | `sourceTicketId`, `targetTicketId`, `relation` |
+| `esedre_list_milestones` | List project milestones and deliverables progress | `project` |
+| `esedre_get_milestone` | Get milestone specs, umbrella flag, and member tickets | `milestoneId` (numeric or title), `project` |
+| `esedre_create_milestone` | Create a project milestone with optional umbrella flag | `title`, `project`, `featureFlag`, `status`, `targetDate`, `description` |
+| `esedre_update_milestone` | Update milestone status, umbrella flag, or title | `milestoneId`, `project`, `title`, `featureFlag`, `status`, `targetDate`, `description` |
 | `esedre_add_comment` | Append developer or agent comment | `ticketId`, `text`, `author` |
 
 ## 2. Core CLI Commands (Fallback via `run_command`)
@@ -40,7 +46,7 @@ Both `esedre` and `ese` work interchangeably:
 
 ### List Tickets
 ```bash
-.esedre/ese list [-p|--project <code|all>] [-s|--status <status>] [-t|--type <type>] [-q|--search <q>] [--json]
+.esedre/ese list [-p|--project <code|all>] [-s|--status <status>] [-t|--type <type>] [-P|--priority <priority>] [-m|--milestone <name>] [--blocked] [--linked-to <ticketKey>] [-q|--search <q>] [--json]
 ```
 
 ### Read Ticket Details
@@ -57,14 +63,34 @@ Both `esedre` and `ese` work interchangeably:
 
 ### Create a Ticket
 ```bash
-.esedre/ese create --title "..." [-p|--project <code>] [-t|--type Feature] [--complexity Medium] [--effort "2.0 - 4.0 hours"] [--detail "<md>"] [--file <path>] [--json]
+.esedre/ese create --title "..." [-p|--project <code>] [-t|--type Feature] [-P|--priority High] [-m|--milestone <name>] [--complexity Medium] [--effort "2.0 - 4.0 hours"] [--detail "<md>"] [--file <path>] [--json]
 ```
 
 ### Update Ticket Status & Attributes
 ```bash
 .esedre/ese update <ticketId> --status "In Development"
 .esedre/ese update <ticketId> --status "Completed"
-.esedre/ese update <ticketId> --type Feature --complexity Medium --effort "2.0 - 4.0 hours"
+.esedre/ese update <ticketId> --type Feature -P High --complexity Medium --effort "2.0 - 4.0 hours"
+.esedre/ese update <ticketId> -P none           # Clears priority
+.esedre/ese update <ticketId> -m "Release 1.0"  # Links ticket to milestone (inherits umbrella feature flag)
+.esedre/ese update <ticketId> -m none           # Unlinks ticket from milestone
+```
+
+### Link or Unlink Tickets
+```bash
+.esedre/ese link <sourceId> <relation> <targetId> [--author "..."]
+.esedre/ese unlink <sourceId> <targetId> [--relation <relation>]
+# Supported relations: relates-to, blocks, parent-of, duplicates
+# Inverse reciprocal links are automatically synchronized.
+```
+
+### Manage Milestones & Umbrella Feature Flags
+```bash
+.esedre/ese milestone list [-p|--project <code>] [--json]
+.esedre/ese milestone get <id|title> [-p|--project <code>] [--json]
+.esedre/ese milestone create --title "..." [-p|--project <code>] [--flag <flag>] [--status <status>] [--target-date <YYYY-MM-DD>] [--description "..."] [--json]
+.esedre/ese milestone update <id|title> [-p|--project <code>] [--title "..."] [--flag <flag|none>] [--status <status>] [--target-date <YYYY-MM-DD>] [--description "..."] [--json]
+.esedre/ese milestone delete <id|title> [-p|--project <code>] [--json]
 ```
 
 ### Append Comments or Notes
@@ -116,6 +142,8 @@ If the host application declares any or all of the 12 core design tokens on `:ro
 - **Always use `--json`** for CLI programmatic inspection.
 - **Optimistic Concurrency**: Writes support `--last-hash <hash>` to prevent overwriting concurrent updates.
 - **Universal Type Naming**: Always use `type` (`Feature`, `Platform`, `Tools`, `Idea`, `Bug`). The legacy name `category` is deprecated.
+- **Ticket Priority**: The `priority` field is optional (`Critical`, `High`, `Medium`, `Low`, or unset/null). Backwards compatible with legacy tickets lacking a priority field. To clear via CLI use `-P none` or `--priority none` (in code/MCP, pass `null` or `'none'`).
+- **Milestones & Umbrella Feature Flags**: Milestones group tickets into deliverables with completion metrics. Milestones can declare an optional umbrella feature flag which member tickets inherit automatically. Unlinking a ticket (`-m none`) removes inherited flags.
 - **Compound IDs for Multi-Project Portfolios**: In `project=all`, ticket IDs are `${projectCode}-${id}` (e.g. `Profe-1`, `Esedre-1`). DOM anchors strictly use `feature-card-${projectCode}-${id}`.
 - **Never delete tickets** directly via filesystem.
 - **Workspace Scoping**: An LLM coding partner operates strictly within the authorized project scope declared in the local repository configuration. Central repository linking and system-level configuration are managed separately; focus roadmap work, implementation plans, and verification notes on this project.

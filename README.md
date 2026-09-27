@@ -39,6 +39,7 @@ LLM coding agents possess extraordinary implementation speed, but face a fundame
 4. **Agent Project Allow-List (Multi-Project Isolation)**: Informs each LLM agent only of the projects it is authorized to access, keeping unrelated project tickets, specifications, and plans completely isolated.
 5. **Optimistic Concurrency Control**: SHA-1 content hashing on all tickets and plans, preventing concurrent agents or humans from clobbering each other's edits.
 6. **Local Web Dashboard & Embeddable Component**: Run a visual dashboard with `ese start` to manage tickets in your browser, or embed `<esedre-planner>` into any web app without adding UI framework dependencies to your project.
+7. **Project Milestones & Umbrella Flags**: Group tickets into release deliverables with real-time completion progress and umbrella feature flag propagation.
 
 ---
 
@@ -93,7 +94,7 @@ The server launches with unconstrained portfolio visibility across all registere
 ### 4. Create Your First Ticket
 
 ```bash
-ese create --title "Build authentication flow" --type Feature
+ese create --title "Build authentication flow" --type Feature --priority High
 ese list
 ese get 1
 ```
@@ -112,11 +113,14 @@ Core day-to-day workflow commands for scoping, viewing, planning, and verifying 
 
 | Command | Usage | Description |
 |---|---|---|
-| `list` | `ese list [-p\|--project <code\|all>] [-s\|--status <status>] [-t\|--type <type>] [--json]` | List roadmap tickets with optional filters. Defaults to the active project. |
-| `get` | `ese get <id> [--json]` | View ticket specifications, feature breakdown, comments, and SHA-1 hash. |
+| `list` | `ese list [-p\|--project <code\|all>] [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name>] [--blocked] [--linked-to <key>] [--json]` | List roadmap tickets with optional filters. Defaults to the active project. |
+| `get` | `ese get <id> [--json]` | View ticket specifications, feature breakdown, comments, links, and SHA-1 hash. |
 | `plan` | `ese plan <id> [--set "<markdown>"] [--file <path>] [--last-hash <h>]` | Read or update the active implementation plan markdown. |
-| `create` | `ese create --title "..." [-p\|--project <code>] [-t\|--type <type>] [--detail "<md>"] [--file <path>]` | Create a new ticket with auto-sequential ID and optional specification markdown. Title strictly capped at 48 chars. |
-| `update` | `ese update <id> [-s\|--status <status>] [-t\|--type <type>] [--title "..."] [--last-hash <h>]` | Update ticket status, type, or title with optimistic concurrency protection. |
+| `create` | `ese create --title "..." [-p\|--project <code>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name>] [--detail "<md>"] [--file <path>]` | Create a new ticket with auto-sequential ID, optional priority, optional milestone, and specification markdown. Title strictly capped at 48 chars. |
+| `update` | `ese update <id> [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority\|none>] [-m\|--milestone <name\|none>] [--title "..."] [--last-hash <h>]` | Update ticket status, type, priority, milestone, or title with optimistic concurrency protection. |
+| `link` | `ese link <sourceId> <relation> <targetId> [--author "..."]` | Establish a bi-directional link between two tickets. Relations: `relates-to`, `blocks`, `parent-of`, `duplicates`. |
+| `unlink` | `ese unlink <sourceId> <targetId> [--relation <relation>]` | Remove a bi-directional link between two tickets. |
+| `milestone` | `ese milestone [list\|get\|create\|update\|delete] [args...]` | Manage project milestones and umbrella feature flags with deliverables tracking. |
 | `comment` | `ese comment <id> ["<text>"] [--text "..."] [--author "..."]` | Append a developer or LLM agent note to ticket history. |
 | `snapshot`, `refresh` | `ese snapshot [--project <code>] [--json]` | Generate or refresh projection `.esedre/snapshot.json` for zero-latency agent context. |
 | `projects` | `ese projects [--json]` | List registered projects within authorized scope. |
@@ -141,6 +145,8 @@ Commands for repository onboarding, central machine linking, and maintenance:
 |---|---|---|
 | `init` | `ese init [<path>] [--project <code>] [--name <name>] [--hub <name\|path>] [-y]` | Bring a project repository online, bootstrap a dedicated data hub (`--hub`), or create a project directly in a data hub (`--project <code>`). |
 | `configure` | `ese configure [add <path> \| remove <code\|path> \| set <k> <v>]` | Inspect or mutate central configuration (`~/.esedre/config.json`). Link external project repositories or data hubs. |
+| `rename-project` | `ese rename-project <oldCode> <newCode> [--name "<name>"]` | Rename a project code across directory storage paths, manifests, and tickets. |
+| `project set` | `ese project set <code> [--name "<name>"]` | Update metadata for an existing project (e.g. display name). |
 | `upgrade` | `ese upgrade [<path>] [--force \| -f]` | Upgrade workspace configuration schema, in-repo wrappers, and agent skills. |
 
 > **Human vs LLM Agent Workflows**: Developer Administration commands (`init`, `configure`, `upgrade`) manage system-level repository linking and central machine configuration. They are intended for human developers during initial setup. Autonomous LLM coding partners operate within the authorized workspace scope using Roadmap and Service Daemon commands (`list`, `get`, `plan`, `create`, `update`, `comment`, `snapshot`, `start`, `status`).
@@ -183,12 +189,45 @@ To connect Esedre to **Google Antigravity**, **Claude Code**, **Cursor**, or any
 ```
 
 ### Registered Tools
-- `esedre_list_tickets`: List tickets with optional project, status, category, or search filter.
-- `esedre_get_ticket`: Retrieve full specification, summary, comments, revision, and content hash (`sha1`).
+- `esedre_list_tickets`: List tickets with optional project, status, type, priority, milestone, isBlocked, linkedTo, or search filter.
+- `esedre_get_ticket`: Retrieve full specification, summary, comments, revision, links, blocker status, and content hash (`sha1`).
 - `esedre_get_plan` & `esedre_save_plan`: Inspect and update implementation plans with optimistic concurrency (`lastHash`).
-- `esedre_create_ticket`: Mint new roadmap tickets with project code validation (up to 8 chars) and optional specification detail markdown.
-- `esedre_update_ticket`: Modify status, title, complexity, or effort with optimistic concurrency (`lastHash`).
+- `esedre_create_ticket`: Mint new roadmap tickets with project code validation (up to 8 chars), optional priority, optional milestone, and specification detail markdown.
+- `esedre_update_ticket`: Modify status, title, type, priority, milestone, complexity, or effort with optimistic concurrency (`lastHash`).
+- `esedre_link_ticket`: Establish a bi-directional link between two tickets (`relates-to`, `blocks`, `parent-of`, `duplicates`).
+- `esedre_unlink_ticket`: Remove a bi-directional relationship between two tickets.
+- `esedre_list_milestones`: List milestones and progress metrics for a project.
+- `esedre_get_milestone`: Retrieve milestone specifications, umbrella feature flag, and member tickets.
+- `esedre_create_milestone`: Create a project milestone with optional umbrella feature flag and target date.
+- `esedre_update_milestone`: Update milestone status, title, description, or umbrella feature flag.
 - `esedre_add_comment`: Append developer or LLM agent verification notes.
+
+### Cross-Project Linked Issues & Dependencies
+
+Esedre supports bi-directional ticket relationships across tickets within the same project or across different projects:
+
+- **Semantic Relations**:
+  - `relates-to` <-> `relates-to` (symmetric)
+  - `blocks` <-> `blocked-by` (inverse)
+  - `parent-of` <-> `child-of` (inverse)
+  - `duplicates` <-> `duplicated-by` (inverse)
+- **Automatic Reciprocal Linking**: Creating a link on Ticket A automatically establishes the reciprocal inverse relationship on Ticket B when both are in writable storage scope. Unlinking either removes both sides.
+- **Blocker Tracking & Dependency Awareness**: Tickets with uncompleted `blocked-by` links are computed as `isBlocked: true`. The CLI highlights blocked items with `[BLOCKED]` warning badges, and LLM agents can query ready work via `ese list --blocked` or `isBlocked: false` in MCP.
+- **Cycle Prevention**: Cycle detection on `blocks` and `parent-of` chains rejects circular dependencies that would deadlock workflows.
+- **Agent Allow-List Redaction**: Links to external projects outside the active workspace's `allowedProjects` have target metadata redacted to `[Restricted Project]` to prevent cross-workspace information leakage.
+
+### Project Milestones & Umbrella Feature Flags
+
+Esedre introduces first-class milestone management to group related tickets toward target deliverables and release cycles:
+
+- **Target Deliverables**: Organize tickets under sequential project milestones (e.g. `#1 Lab 151 Platform Foundation`, `#2 Public Release`).
+- **Umbrella Feature Flag Inheritance**: Milestones can optionally link to an umbrella feature flag, which automatically propagates to all tickets in the milestone unless individually overridden.
+- **Visual Progress Tracking**: Real-time progress bars, completion metrics, and assigned ticket chips in the Web UI dashboard.
+- **Full CLI & MCP Parity**: Manage milestones from the terminal via `ese milestone list`, `ese milestone create`, and `ese milestone update`, or let autonomous LLM coding agents inspect deliverables via MCP tools (`esedre_list_milestones`, `esedre_get_milestone`).
+
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/npm/esedre/docs/assets/esedre-milestones.png" alt="Esedre Milestones & Deliverables Tracking" width="100%" />
+</p>
 
 ### Resources
 - URI Scheme: `esedre://tickets/{id}` (MIME type: `text/markdown`)

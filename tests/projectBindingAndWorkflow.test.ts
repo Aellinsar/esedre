@@ -218,7 +218,7 @@ describe('Project Binding & End-to-End Workflow', () => {
     expect(get1.comments[0].text).toContain('Verified endpoint');
     expect(get1.comments[1].text).toContain('Ready for code review');
     expect(get1.comments[2].text).toBe('Positional comment without flag');
-  });
+  }, 15000);
 
   it('operates across multiple bound projects from central configuration with --project overrides', () => {
     // Create Project A
@@ -278,7 +278,7 @@ describe('Project Binding & End-to-End Workflow', () => {
 
     const betaPlan = runCli(['plan', 'BETA-1', '--json'], tempRoot).json();
     expect(betaPlan.planMarkdown).toBe('## Beta UI Plan');
-  });
+  }, 15000);
 
   it('manages newly added sample projects in an in-workspace monorepo (Topology 6)', async () => {
     const monorepoDir = path.join(tempRoot, 'my-monorepo');

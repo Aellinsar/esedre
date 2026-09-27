@@ -355,8 +355,8 @@ describe('Upgrade & 3-Way Hash Detection', () => {
       expect(esedreCmdContent).toContain('call ese %*');
       expect(esedreCmdContent).toContain('call esedre %*');
       expect(esedreCmdContent).toContain('goto done');
-      expect(esedreCmdContent).toContain(':done');
-      expect(esedreCmdContent).not.toMatch(/\(\s*[^)]*goto\s+done/i);
+      expect(esedreCmdContent).toContain('endlocal & exit /b %ERRORLEVEL%');
+      expect(esedreCmdContent).not.toMatch(/\(\s*[^)]*goto\s+:?done/i);
 
       const eseCmdContent = fs.readFileSync(path.join(tempDir, '.esedre', 'ese.cmd'), 'utf-8');
       expect(eseCmdContent).toContain('call "%~dp0esedre.cmd" %*');
@@ -377,4 +377,44 @@ describe('Upgrade & 3-Way Hash Detection', () => {
       }
     }
   });
+
+  it('upgrades legacy Windows CMD batch wrappers that had parenthesized goto blocks', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-legacy-wrapper-'));
+    try {
+      const esedreDir = path.join(tempDir, '.esedre');
+      fs.mkdirSync(esedreDir, { recursive: true });
+
+      // Plant legacy wrapper with compound parenthesized block containing goto :done
+      const legacyCmd = `@echo off\r\nsetlocal\r\nif exist "%~dp0..\\esedre.json" (\r\n  echo legacy\r\n  goto :done\r\n)\r\n:done\r\nendlocal\r\n`;
+      fs.writeFileSync(path.join(esedreDir, 'esedre.cmd'), legacyCmd, 'utf-8');
+      fs.writeFileSync(path.join(esedreDir, 'ese.cmd'), `@echo off\r\ncall "%~dp0esedre.cmd" %*\r\n`, 'utf-8');
+
+      // Configure / upgrade workspace
+      configureWorkspace(tempDir, {
+        projectCode: 'LEGACY',
+        projectName: 'Legacy Project',
+      });
+
+      const updatedCmd = fs.readFileSync(path.join(esedreDir, 'esedre.cmd'), 'utf-8');
+      expect(updatedCmd).not.toMatch(/\(\s*[^)]*goto\s+:?done/i);
+      expect(updatedCmd).toContain('goto done');
+      expect(updatedCmd).toContain(':done');
+      expect(updatedCmd).toContain('endlocal & exit /b %ERRORLEVEL%');
+
+      if (process.platform === 'win32') {
+        const eseCmdPath = path.join(esedreDir, 'ese.cmd');
+        const output = child_process.execSync(`cmd.exe /c "${eseCmdPath}" --version`, {
+          encoding: 'utf-8',
+          windowsHide: true,
+        });
+        expect(output).not.toContain('The system cannot find the batch label specified');
+        expect(output).toContain('esedre v');
+      }
+    } finally {
+      if (fs.existsSync(tempDir)) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }
+  });
 });
+

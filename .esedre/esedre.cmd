@@ -41,5 +41,4 @@ call "%~dp0..\node_modules\.bin\esedre.cmd" %*
 goto done
 
 :done
-endlocal
-exit /b %ERRORLEVEL%
+endlocal & exit /b %ERRORLEVEL%

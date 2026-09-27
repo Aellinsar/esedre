@@ -51,8 +51,8 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
    - Each project repository running Esedre maintains an authoritative read-only projection at `.esedre/snapshot.json`.
    - Agents interacting with tickets MUST strictly adhere to this positive access hierarchy:
      1. **Primary Read-Only Inspection**: Always check `.esedre/snapshot.json` in the workspace root first. It provides an immediate, zero-latency projection of all active and completed tickets, summaries, implementation plans, and revision hashes without network calls.
-     2. **Dynamic Lookups & Mutations (MCP)**: Use Esedre MCP tools (`esedre_list_tickets`, `esedre_get_ticket`, `esedre_get_plan`, `esedre_save_plan`, `esedre_create_ticket`, `esedre_update_ticket`, `esedre_add_comment`) when MCP is active in the session.
-     3. **CLI Ingress**: Use `.esedre/ese` or global `ese` (`ese get`, `ese plan`, `ese update`, `ese create`, `ese snapshot`, `ese refresh`) for terminal workflows.
+     2. **Dynamic Lookups & Mutations (MCP)**: Use Esedre MCP tools (`esedre_list_tickets`, `esedre_get_ticket`, `esedre_get_plan`, `esedre_save_plan`, `esedre_create_ticket`, `esedre_update_ticket`, `esedre_link_ticket`, `esedre_unlink_ticket`, `esedre_add_comment`) when MCP is active in the session.
+     3. **CLI Ingress**: Use `.esedre/ese` or global `ese` (`ese get`, `ese plan`, `ese update`, `ese create`, `ese link`, `ese unlink`, `ese snapshot`, `ese refresh`) for terminal workflows.
      4. **Storage Boundary**: Registered data hubs (such as `esedre-data`) represent backing storage for the engine. Agent ticket discovery and management strictly flows through the snapshot projection, MCP tools, or the `ese` CLI.
 
 ---
@@ -101,9 +101,11 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
    - **Workspace Local Config (`.esedre/esedre.json`)**: Declares the active repository's local identity (`projectCode`) and authorized access scope (`allowedProjects`). Initialized via `ese init`.
    - **Upward Resolution & Merging**: The CLI and MCP server crawl upward from `cwd` for `.esedre/esedre.json`. Local workspace settings take precedence, while infrastructure defaults (`dataDir`, `projects`, `port`) automatically inherit from `~/.esedre/config.json` when omitted locally. Outside any workspace, the central global configuration is used directly.
 
-2. **Command Split: `ese init` vs `ese configure`**:
+2. **Command Inventory: `ese init`, `ese configure`, `ese rename-project`, and `ese project set`**:
    - `ese init [path]`: Brings a project repository online (creates `.esedre/esedre.json`, wrappers, initial snapshot) or bootstraps a data hub repository (`ese init --hub`). Also supports workspaceless or data hub-targeted project creation via `ese init --project <Code> [--name <Name>] [--hub <hub>]`. When a single `dataDir` is configured, `--hub` is automatically resolved; when multiple hubs are configured, `--hub` disambiguates the target hub by directory basename or path without overwriting existing workspace configurations.
    - `ese configure`: Inspects and mutates the central configuration in `~/.esedre/config.json` (`ese configure add <path>`, `ese configure remove <target>`, `ese configure set <k> <v>`).
+   - `ese rename-project <oldCode> <newCode> [--name "<name>"]`: Renames a project code across directory storage paths, manifests, and tickets, with validation against registered codes.
+   - `ese project set <code> [--name "<name>"]`: Updates project metadata such as display name.
 
 3. **Multi-Project Agent Isolation (Zero Cross-Project Leaks)**:
    - Each agent or tool execution is strictly informed and scoped only to the projects declared in its workspace's `allowedProjects`. Neither the CLI tool nor the MCP server may expose, list, query, create, update, or mutate tickets, plans, or comments belonging to projects outside `allowedProjects`.
@@ -207,21 +209,63 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 ---
 
-## 9. Universal "Type" Standardization & Schema Invariants
+## 9. Universal "Type" & "Priority" Standardization & Schema Invariants
 
 1. **Strict "Type" Field Invariant**:
    - All layers (storage manifests `meta.json`, CLI options `--type` / `-t`, Web UI filters, and REST/MCP payloads) strictly standardize on **`type`** (`"Feature" | "Platform" | "Tools" | "Idea" | "Bug"`).
    - The pre-v2 legacy field `category` is permanently deprecated. Never introduce `category` into new ticket templates, schemas, or tests.
 
-2. **CLI Shorthand Flags**:
+2. **Ticket "Priority" Field & Backwards Compatibility**:
+   - Priority is an optional field supporting `"Critical" | "High" | "Medium" | "Low"` (or unset/null/undefined for backwards compatibility).
+   - CLI flags: `-P` / `--priority <priority>` for filtering or assignment. To clear priority, pass `-P none` or `--priority none` (in code/MCP, pass `null` or `'none'`).
+   - Legacy tickets without a priority field are valid and render cleanly without priority badges.
+
+3. **Dedicated Milestones & Umbrella Feature Flags**:
+   - Milestones are first-class dedicated entities stored in `projects/<Code>/milestones.json` (or `.esedre/milestones.json` in standalone repo mode), completely distinct from tickets.
+   - Milestone schema: `{ id: number, project: string, title: string, description?: string, status: 'Planned' | 'Active' | 'Completed' | 'Closed', featureFlag?: string, targetDate?: string, createdAt: string, updatedAt: string, completedAt?: string }`.
+   - **Umbrella Feature Flag Inheritance**: When a milestone declares an optional `featureFlag`, all member tickets linked to that milestone inherit the flag automatically (`meta.inheritedFeatureFlag = milestone.featureFlag`). If a member ticket does not specify its own `featureFlag`, it defaults to the milestone's umbrella flag. Setting `milestone: 'none'` unlinks the ticket and clears inherited flags.
+   - Dedicated CLI commands: `ese milestone [list|get|create|update|delete]`.
+   - Dedicated MCP tools: `esedre_list_milestones`, `esedre_get_milestone`, `esedre_create_milestone`, `esedre_update_milestone`.
+
+4. **CLI Shorthand Flags**:
    - `-t` / `--type`: Ticket type filter or assignment.
+   - `-P` / `--priority`: Ticket priority filter or assignment (`Critical`, `High`, `Medium`, `Low`, or `none` to clear).
+   - `-m` / `--milestone`: Milestone filter or assignment (`-m none` to unlink).
    - `-p` / `--project`: Project code selector.
    - `-s` / `--status`: Ticket status filter or assignment.
    - `-q` / `--search`: Substring search query.
 
 ---
 
-## 10. Multi-Project Ticket ID & Performance Architecture
+## 10. Cross-Project Ticket Linking & Dependency Graph Architecture
+
+1. **Semantic Relations & Inverse Mapping**:
+   - Tickets support bi-directional linked relationships across the same project or across different projects.
+   - Standard relations:
+     - `relates-to` <-> `relates-to` (symmetric)
+     - `blocks` <-> `blocked-by` (inverse asymmetric)
+     - `parent-of` <-> `child-of` (inverse hierarchy)
+     - `duplicates` <-> `duplicated-by` (inverse deduplication)
+
+2. **Bi-Directional Synchronization & Consistency**:
+   - Adding a link on Ticket A automatically registers the reciprocal inverse link on Ticket B when both are in storage scope.
+   - Removing a link on either ticket automatically clears both sides.
+
+3. **Dependency & Blocker Awareness**:
+   - When any link with relation `blocked-by` points to a target ticket with status !== 'Completed', the ticket is dynamically projected with `isBlocked: true`.
+   - The CLI formatter decorates blocked tickets with `[BLOCKED]` warning badges.
+   - LLM agents query unblocked ready work via `ese list --blocked` or `esedre_list_tickets` with `isBlocked: false`.
+
+4. **Cycle Detection Invariant**:
+   - Cycle detection inspects `blocks` and `parent-of` relationship trees before persisting links.
+   - Attempting to establish a circular dependency throws an error (`Cannot link ... would create a cycle`).
+
+5. **Agent Project Allow-List Redaction**:
+   - If an authorized ticket links to a target in a project outside the active workspace's `allowedProjects`, the link record is preserved, but target metadata is redacted to `targetTitle: '[Restricted Project]'` and target status/type are stripped.
+
+---
+
+## 11. Multi-Project Ticket ID & Performance Architecture
 
 1. **Compound ID Uniqueness**:
    - In cross-project or portfolio mode (`project=all`), numeric ticket IDs collide across repositories (e.g. `Profe-1` vs `Esedre-1`). All storage lookup maps, URL anchors, and React keys must use the compound key `${projectCode}-${ticketNumber}`.
@@ -233,7 +277,7 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 ---
 
-## 11. Standalone Mode vs Embedded View & 0-Effort Drop-in Theme Contract
+## 12. Standalone Mode vs Embedded View & 0-Effort Drop-in Theme Contract
 
 1. **Standalone Mode vs Embedded View**:
    - **Standalone Mode**: Normal, primary operation of Esedre accessed via its dedicated web UI (port 5674 / `/app`). The unified server is ALWAYS run whenever Esedre is utilized (`ese start`).
@@ -243,19 +287,19 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
    - `<PlannedWorkView />` embeds an internal CSS fallback bridge (`.esedre-host-bridge` / `.esedre-theme-root` with `ESEDRE_THEME_FALLBACK_CSS`).
    - If an embedding host application provides zero CSS variables, the planner automatically renders high-contrast, beautiful light or dark themes matching the user's OS preference (`prefers-color-scheme`) or `.dark` / `[data-theme]` classes.
 
-2. **Custom Theme Token Inheritance**:
+3. **Custom Theme Token Inheritance**:
    - When the host application defines any of the 12 core design tokens, `PlannedWorkView` seamlessly inherits them without clashing:
      - Surface: `--bg-surface`, `--bg-surface-elevated`, `--bg-input`
      - Borders: `--border-subtle`, `--border-strong`, `--border-accent`
      - Text: `--text-primary`, `--text-secondary`, `--text-muted`
      - Accent: `--accent-primary`, `--accent-bg-subtle`, `--accent-border-subtle`
 
-3. **Tunnel & HMR Non-Interference**:
+4. **Tunnel & HMR Non-Interference**:
    - Reverse proxies and gateway routes must never intercept or block WebSocket HMR channels (`/ws`, port 443 / `clientPort` tunnel traffic).
 
 ---
 
-## 12. Terminology Standard: Strict "LLM" over "AI" & Ban on "LLM Companion"
+## 13. Terminology Standard: Strict "LLM" over "AI" & Ban on "LLM Companion"
 
 1. **Strict Preference for "LLM" over "AI"**:
    - In documentation, code comments, schemas, CLI descriptions, commit messages, and agent instructions, strictly use the term **LLM** (e.g. "autonomous LLM coding agents", "LLM coding partner", "LLM-driven workflows") rather than the generic term "AI".
@@ -269,13 +313,13 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 ---
 
-## 13. STRICT PROHIBITION ON EM DASHES (ZERO EXCEPTIONS)
+## 14. STRICT PROHIBITION ON EM DASHES (ZERO EXCEPTIONS)
 
 - **ABSOLUTE BAN ON EM DASHES (U+2014 / em dash)**: Never use em dashes anywhere in documentation, code, comments, CLI output, commit messages, or metadata. Use standard hyphens `-`, colons `:`, parentheses `()`, or rewrite sentences naturally without dashes.
 
 ---
 
-## 14. Core Architectural Pillar: Long-Term Grounding for LLM Agent Context
+## 15. Core Architectural Pillar: Long-Term Grounding for LLM Agent Context
 
 1. **Primary Value Proposition & Biggest Core Feature**:
    - The single biggest core feature of Esedre is providing **long-term grounding to LLM agent context**.
@@ -298,7 +342,7 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 ---
 
-## 15. Planning Mode, Change Authorization & Problem Solving Philosophy
+## 16. Planning Mode, Change Authorization & Problem Solving Philosophy
 
 1. **Explicit Approval Required Before Code Changes**:
    - When in Planning Mode or presenting an implementation plan or design proposal, you are strictly forbidden from modifying source code, running build modifying tasks, or executing changes until the user explicitly responds with unambiguous confirmation.
@@ -316,7 +360,7 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 ---
 
-## 16. Package Distribution, Versioning & Release Workflow
+## 17. Package Distribution, Versioning & Release Workflow
 
 1. **Dual Version Synchronization & Registry Pre-Check**:
    - Package version numbers must strictly stay synchronized across `package.json` (`"version"`), `package-lock.json`, and `src/types.ts` (`CURRENT_ESEDRE_VERSION`).
@@ -335,7 +379,7 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 
 ---
 
-## 17. Windows Shell & Batch Wrapper Invariants
+## 18. Windows Shell & Batch Wrapper Invariants
 
 1. **Windows CMD Batch Wrapper (`ese.cmd` / `esedre.cmd`)**:
    - Jump labels MUST reside strictly at the top level outside of parenthesized `if (...)` blocks.

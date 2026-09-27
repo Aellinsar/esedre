@@ -82,8 +82,7 @@ call "%~dp0..\\node_modules\\.bin\\esedre.cmd" %*
 goto done
 
 :done
-endlocal
-exit /b %ERRORLEVEL%
+endlocal & exit /b %ERRORLEVEL%
 `;
 
 export const WRAPPER_PS1 = `# Esedre Autonomous Ticketing & Project Planning Engine Wrapper (PowerShell)

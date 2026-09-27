@@ -1,8 +1,8 @@
 import { ConfirmationModal } from './ConfirmationModal';
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { X, Plus, HelpCircle, User, Tag, Zap, FileText, CheckCircle2, Flag, FolderKanban } from 'lucide-react';
+import { X, Plus, HelpCircle, User, Tag, Zap, FileText, CheckCircle2, Flag, FolderKanban, AlertCircle, Milestone as MilestoneIcon } from 'lucide-react';
 import { activePlanningProvider } from './planningClient';
-import { TicketMeta, TicketType, TicketCategory, ProjectName, ALL_PROJECTS, getProjectDescriptor, getProjectById, ProjectDescriptor } from './types';
+import { TicketMeta, TicketType, TicketCategory, TicketPriority, ProjectName, ALL_PROJECTS, getProjectDescriptor, getProjectById, ProjectDescriptor, Milestone } from './types';
 import { CreateProjectModal } from './CreateProjectModal';
 import { TicketHelpModal } from './TicketHelpModal';
 
@@ -37,7 +37,11 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
   );
   const [type, setType] = useState<TicketType>('Feature');
   const [complexity, setComplexity] = useState('Medium');
+  const [priority, setPriority] = useState<TicketPriority | ''>('');
   const [featureFlag, setFeatureFlag] = useState('');
+  const [milestone, setMilestone] = useState('');
+  const [availableMilestones, setAvailableMilestones] = useState<Milestone[]>([]);
+  const [isCustomMilestone, setIsCustomMilestone] = useState(false);
   const [rationale, setRationale] = useState('');
   const [breakdown, setBreakdown] = useState('');
   const [openQuestionsText, setOpenQuestionsText] = useState('');
@@ -50,11 +54,13 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
   const hasUnsavedChanges = useMemo(() => {
     return Boolean(
       title.trim() ||
+      priority ||
+      milestone.trim() ||
       rationale.trim() ||
       breakdown.trim() ||
       openQuestionsText.trim()
     );
-  }, [title, rationale, breakdown, openQuestionsText]);
+  }, [title, priority, milestone, rationale, breakdown, openQuestionsText]);
 
   const handleRequestClose = useCallback(() => {
     if (hasUnsavedChanges) {
@@ -98,6 +104,19 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
     }
   }, [projectId]);
 
+  // Load available milestones for current project
+  React.useEffect(() => {
+    if (isOpen && activePlanningProvider.listMilestones) {
+      const targetProject = projectId !== undefined ? getProjectById(projectId) : undefined;
+      activePlanningProvider
+        .listMilestones(targetProject?.code)
+        .then((ms) => {
+          setAvailableMilestones(ms || []);
+        })
+        .catch(() => setAvailableMilestones([]));
+    }
+  }, [isOpen, projectId]);
+
   if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -130,8 +149,10 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
         project: targetProject.name,
         type,
         category: type,
+        priority: priority || undefined,
         complexity,
         featureFlag: featureFlag || undefined,
+        milestone: milestone.trim() || undefined,
         rationale: rationale.trim(),
         breakdown: breakdown.trim(),
         openQuestions,
@@ -204,8 +225,8 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
             />
           </div>
 
-          {/* Project & Category & Complexity & Feature Flag & SubmittedBy Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-5 gap-2.5">
+          {/* Project & Category & Complexity & Priority & Feature Flag & SubmittedBy Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
             <div className="space-y-1">
               <label className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
                 <FolderKanban size={13} className="text-[var(--accent-primary)]" /> Project
@@ -287,6 +308,23 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
 
             <div className="space-y-1">
               <label className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+                <AlertCircle size={13} className="text-[var(--accent-primary)]" /> Priority
+              </label>
+              <select
+                value={priority}
+                onChange={(e) => setPriority(e.target.value as TicketPriority | '')}
+                className="w-full p-2 bg-[var(--bg-input)] border border-[var(--border-subtle)] focus:border-[var(--border-accent)] rounded-xl text-xs text-[var(--text-primary)] focus:outline-none"
+              >
+                <option value="" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">None (Unset)</option>
+                <option value="Critical" className="bg-[var(--bg-surface)] text-rose-600 dark:text-rose-400 font-semibold">Critical</option>
+                <option value="High" className="bg-[var(--bg-surface)] text-amber-600 dark:text-amber-400 font-semibold">High</option>
+                <option value="Medium" className="bg-[var(--bg-surface)] text-blue-600 dark:text-blue-400">Medium</option>
+                <option value="Low" className="bg-[var(--bg-surface)] text-[var(--text-muted)]">Low</option>
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
                 <Flag size={13} className="text-purple-400" /> Feature Flag
               </label>
               <select
@@ -301,6 +339,69 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+                  <MilestoneIcon size={13} className="text-indigo-400" /> Milestone
+                </label>
+                {availableMilestones.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCustomMilestone(!isCustomMilestone);
+                      if (isCustomMilestone) setMilestone('');
+                    }}
+                    className="text-[10px] text-[var(--text-muted)] hover:text-[var(--accent-primary)] transition-colors cursor-pointer"
+                  >
+                    {isCustomMilestone ? 'Pick existing' : 'Custom'}
+                  </button>
+                )}
+              </div>
+              {availableMilestones.length > 0 && !isCustomMilestone ? (
+                <select
+                  value={milestone}
+                  onChange={(e) => {
+                    if (e.target.value === '__custom__') {
+                      setIsCustomMilestone(true);
+                      setMilestone('');
+                    } else {
+                      setMilestone(e.target.value);
+                    }
+                  }}
+                  className="w-full p-2 bg-[var(--bg-input)] border border-[var(--border-subtle)] focus:border-indigo-500/50 rounded-xl text-xs text-indigo-700 dark:text-indigo-300 focus:outline-none"
+                >
+                  <option value="" className="bg-[var(--bg-surface)] text-[var(--text-primary)]">None (Unassigned)</option>
+                  {availableMilestones.map((m) => (
+                    <option key={m.id} value={m.title} className="bg-[var(--bg-surface)] text-[var(--text-primary)]">
+                      {m.title} {m.featureFlag ? `[Flag: ${m.featureFlag}]` : ''}
+                    </option>
+                  ))}
+                  <option value="__custom__" className="bg-[var(--bg-surface)] text-indigo-600 dark:text-indigo-400 font-semibold">
+                    + Custom Milestone...
+                  </option>
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={milestone}
+                  onChange={(e) => setMilestone(e.target.value)}
+                  placeholder="e.g. v2.0 Release"
+                  className="w-full p-2 bg-[var(--bg-input)] border border-[var(--border-subtle)] focus:border-indigo-500/50 rounded-xl text-xs text-indigo-700 dark:text-indigo-300 placeholder-[var(--text-muted)] focus:outline-none"
+                />
+              )}
+              {(() => {
+                const selectedM = availableMilestones.find((m) => m.title === milestone);
+                if (selectedM?.featureFlag) {
+                  return (
+                    <span className="text-[10px] text-purple-600 dark:text-purple-400 font-mono block">
+                      Inherits umbrella flag: {selectedM.featureFlag}
+                    </span>
+                  );
+                }
+                return null;
+              })()}
             </div>
 
             <div className="space-y-1">

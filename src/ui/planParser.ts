@@ -235,6 +235,8 @@ export function parsePlannedWorkMarkdown(
       const effectiveEffort = meta.estimatedEffort || (detailEffortMatch ? detailEffortMatch[1].trim() : undefined) || existing?.estimatedEffort || 'N/A';
 
       const effectiveFeatureFlag = meta.featureFlag || existing?.featureFlag;
+      const effectiveMilestone = meta.milestone || existing?.milestone;
+      const effectiveInheritedFlag = meta.inheritedFeatureFlag || existing?.inheritedFeatureFlag;
       const isCompleted = meta.status === 'Completed' || (meta.status === undefined && existing?.isCompleted);
       const isRejected = meta.status === 'Rejected' || (meta.status === undefined && existing?.isRejected);
 
@@ -252,6 +254,8 @@ export function parsePlannedWorkMarkdown(
         technicalDetails: techDetails.length > 0 ? techDetails : existing?.technicalDetails,
         openQuestions: openQuestions.length > 0 ? openQuestions : existing?.openQuestions,
         featureFlag: effectiveFeatureFlag,
+        milestone: effectiveMilestone,
+        inheritedFeatureFlag: effectiveInheritedFlag,
         projectId: projDesc?.id,
         project: projDesc?.name,
         isCompleted,

@@ -15,8 +15,9 @@ function esedreApiPlugin(): Plugin {
     name: 'esedre-api-middleware',
     configureServer(server) {
       const workspaceRoot = path.resolve(__dirname);
-      const rawStorage = new FilesystemStorageAdapter(workspaceRoot);
-      const storage = new SecurityFilter(rawStorage);
+      const serverConfig = { allowedProjects: ['*'] };
+      const rawStorage = new FilesystemStorageAdapter(workspaceRoot, serverConfig);
+      const storage = new SecurityFilter(rawStorage, serverConfig);
       const apiHandler = createApiHandler(storage, workspaceRoot);
 
       server.middlewares.use(async (req, res, next) => {

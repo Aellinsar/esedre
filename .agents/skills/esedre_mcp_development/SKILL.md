@@ -20,29 +20,44 @@ This skill details how the Esedre Model Context Protocol (MCP) server is structu
 The server registers the following tools in `tools/list`:
 
 1. `esedre_list_tickets`:
-   - Parameters: `{ project?: string, status?: string, category?: string, search?: string }`
+   - Parameters: `{ project?: string, status?: string, type?: string, priority?: string, milestone?: string, isBlocked?: boolean, linkedTo?: string, search?: string }`
    - Returns a structured list of roadmap tickets matching filters.
 2. `esedre_get_ticket`:
-   - Parameters: `{ ticketId: number }`
-   - Returns full metadata, summary, feature breakdown, technical details, and comments.
+   - Parameters: `{ ticketId: number | string }`
+   - Returns full metadata, summary, feature breakdown, technical details, comments, links, blocker status, and SHA-1 hash.
 3. `esedre_get_plan`:
-   - Parameters: `{ ticketId: number }`
+   - Parameters: `{ ticketId: number | string }`
    - Returns implementation plan markdown.
 4. `esedre_save_plan`:
-   - Parameters: `{ ticketId: number, planMarkdown: string }`
-   - Persists updated plan markdown.
+   - Parameters: `{ ticketId: number | string, planMarkdown: string, lastHash?: string }`
+   - Persists updated plan markdown with optimistic concurrency control.
 5. `esedre_create_ticket`:
-   - Parameters: `{ title: string, type?: string, category?: string, project?: string, complexity?: string, effort?: string, summary?: string, detail?: string, author?: string }`
-   - Creates a new ticket with optional specification markdown.
+   - Parameters: `{ title: string, type?: string, priority?: string, milestone?: string, project?: string, complexity?: string, effort?: string, summary?: string, detail?: string, author?: string }`
+   - Creates a new ticket with optional priority, milestone, and specification markdown.
 6. `esedre_update_ticket`:
-   - Parameters: `{ ticketId: number, status?: string, title?: string, inDevelopment?: boolean, featureFlag?: string }`
-   - Modifies ticket attributes.
-7. `esedre_add_comment`:
-   - Parameters: `{ ticketId: number, text: string, author?: string }`
-   - Appends a comment to the ticket.
-8. `esedre_list_projects`:
-   - Parameters: `{}`
-   - Returns authorized project definitions.
+   - Parameters: `{ ticketId: number | string, status?: string, type?: string, priority?: string | null, milestone?: string, title?: string, complexity?: string, effort?: string, inDevelopment?: boolean, featureFlag?: string, lastHash?: string }`
+   - Modifies ticket attributes with optimistic concurrency control.
+7. `esedre_link_ticket`:
+   - Parameters: `{ sourceTicketId: number | string, relation: string, targetTicketId: number | string, author?: string }`
+   - Creates a bi-directional link between two tickets (`relates-to`, `blocks`, `parent-of`, `duplicates`).
+8. `esedre_unlink_ticket`:
+   - Parameters: `{ sourceTicketId: number | string, targetTicketId: number | string, relation?: string }`
+   - Removes a bi-directional link between two tickets.
+9. `esedre_add_comment`:
+   - Parameters: `{ ticketId: number | string, text: string, author?: string }`
+   - Appends a developer or LLM agent verification note to the ticket.
+10. `esedre_list_milestones`:
+   - Parameters: `{ project?: string }`
+   - Returns project milestones with status, umbrella feature flag, target date, and deliverables progress metrics.
+11. `esedre_get_milestone`:
+   - Parameters: `{ milestoneId: number | string, project?: string }`
+   - Returns milestone specifications, umbrella feature flag, and all member tickets.
+12. `esedre_create_milestone`:
+   - Parameters: `{ title: string, project?: string, featureFlag?: string, status?: string, targetDate?: string, description?: string }`
+   - Creates a new milestone with optional umbrella feature flag and target date.
+13. `esedre_update_milestone`:
+   - Parameters: `{ milestoneId: number | string, project?: string, title?: string, featureFlag?: string, status?: string, targetDate?: string, description?: string }`
+   - Updates milestone attributes or unlinks umbrella flag.
 
 ## 3. Resource Endpoints
 

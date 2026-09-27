@@ -384,6 +384,28 @@ export async function stopDaemon(options: StopDaemonOptions = {}): Promise<boole
       }
       return false;
     }
+
+    // Port is responding but PID is unrecorded; attempt to resolve PID via OS network tables
+    try {
+      if (process.platform === 'win32') {
+        const out = spawnSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).stdout || '';
+        const lines = out.split('\n');
+        for (const line of lines) {
+          if (line.includes(`:${port}`) && line.includes('LISTENING')) {
+            const parts = line.trim().split(/\s+/);
+            const foundPid = parseInt(parts[parts.length - 1], 10);
+            if (!isNaN(foundPid) && foundPid > 0) {
+              pid = foundPid;
+              break;
+            }
+          }
+        }
+      } else {
+        const out = spawnSync('lsof', ['-ti', `tcp:${port}`], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).stdout || '';
+        const foundPid = parseInt(out.trim().split('\n')[0], 10);
+        if (!isNaN(foundPid) && foundPid > 0) pid = foundPid;
+      }
+    } catch {}
   }
 
   if (pid && isProcessAlive(pid)) {
