@@ -5,7 +5,7 @@ description: Tooling and workflow reference for interacting with the Esedre deve
 
 # Esedre Planning & Roadmap Workflow
 
-Esedre is the developer ticketing and LLM coding partner coordination platform. The engine codebase resides in the standalone repository `aellinsar/esedre` (`../esedre`), and operates on decoupled ticket repositories (such as `aellinsar/esedre-data` configured in `.esedre/esedre.json`). Interact with tickets via in-repo shell wrappers in `.esedre/` (`.esedre/ese`), or the global `ese` CLI.
+Esedre is the developer ticketing and LLM coding partner coordination platform. The engine codebase resides in the standalone repository `aellinsar/esedre` (`../esedre`), and operates on decoupled ticket repositories (such as `aellinsar/esedre-data` configured in `~/.esedre/config.json` or `.esedre/esedre.json`). Interact with tickets via in-repo shell wrappers in `.esedre/` (`.esedre/ese`), or the global `ese` CLI.
 
 ## 0. Authoritative Ingress Hierarchy & Zero-Latency Context (`.esedre/snapshot.json`)
 

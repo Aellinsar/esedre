@@ -198,6 +198,39 @@ export type AddLocationResult =
   | { type: 'project'; code: string; name?: string; path: string }
   | { type: 'uninitialized'; path: string };
 
+export function hubContainsProject(hubPath: string, projectCodes: string[]): boolean {
+  if (!hubPath || !projectCodes || projectCodes.length === 0) return false;
+  const resolved = path.resolve(expandHome(hubPath));
+
+  // 1. Check projects/ directory entries
+  const projectsDir = path.join(resolved, 'projects');
+  if (fs.existsSync(projectsDir)) {
+    try {
+      const entries = fs.readdirSync(projectsDir, { withFileTypes: true });
+      const dirNames = entries.filter((e) => e.isDirectory()).map((e) => e.name.toLowerCase());
+      if (projectCodes.some((code) => dirNames.includes(code.trim().toLowerCase()))) {
+        return true;
+      }
+    } catch {}
+  }
+
+  // 2. Check projects.json manifest
+  const projectsJson = path.join(resolved, 'projects.json');
+  if (fs.existsSync(projectsJson)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(projectsJson, 'utf-8'));
+      if (Array.isArray(parsed)) {
+        const pCodes = parsed.map((p: any) => (p.code || '').trim().toLowerCase());
+        if (projectCodes.some((code) => pCodes.includes(code.trim().toLowerCase()))) {
+          return true;
+        }
+      }
+    } catch {}
+  }
+
+  return false;
+}
+
 export function addLocationToGlobalConfig(targetPath: string): AddLocationResult {
   const resolved = path.resolve(expandHome(targetPath));
   if (!fs.existsSync(resolved)) {
@@ -419,9 +452,28 @@ export function findEsedreConfig(startDir?: string, options?: FindConfigOptions)
   const globalConfig = readGlobalConfig();
 
   if (localConfig) {
-    // Local workspace configuration takes precedence; only inherit machine defaults (port/ports) if omitted
+    // If local config omitted dataDir, check if centrally registered dataDir hubs contain this project
+    let inheritedDataDir = localConfig.dataDir;
+    if (inheritedDataDir === undefined && globalConfig?.dataDir) {
+      const targetCodes = [
+        ...(localConfig.projectCode ? [localConfig.projectCode] : []),
+        ...(Array.isArray(localConfig.allowedProjects) ? localConfig.allowedProjects : []),
+      ].filter((c) => c && c !== '*');
+
+      const globalDirs = Array.isArray(globalConfig.dataDir)
+        ? globalConfig.dataDir
+        : [globalConfig.dataDir];
+
+      const matchesGlobalHub = globalDirs.some((d) => hubContainsProject(d, targetCodes));
+      if (matchesGlobalHub) {
+        inheritedDataDir = globalConfig.dataDir;
+      }
+    }
+
+    // Local workspace configuration takes precedence; only inherit machine defaults (port/ports) or matching central dataDir
     const merged: EsedreConfig = {
       ...localConfig,
+      dataDir: inheritedDataDir,
       port: localConfig.port !== undefined ? localConfig.port : (globalConfig?.port || DEFAULT_ESEDRE_PORT),
       ports: localConfig.ports || globalConfig?.ports,
     };

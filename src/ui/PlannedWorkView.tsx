@@ -659,9 +659,12 @@ export function PlannedWorkView({
           return `feature-${match[1]}`;
         }
       }
-      return sessionStorage.getItem('dev_plan_modal_expanded_feat') || 'feature-1';
+      if (isEmbedded) {
+        return sessionStorage.getItem('dev_plan_modal_expanded_feat');
+      }
+      return null;
     }
-    return 'feature-1';
+    return null;
   });
   const [showToc, setShowToc] = useState(true);
   const [tocWidth, setTocWidth] = useState<number>(() => {
@@ -797,6 +800,28 @@ export function PlannedWorkView({
     }
     return {};
   });
+  const [questionDrafts, setQuestionDrafts] = useState<Record<string, string>>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('dev_planner_question_drafts');
+        if (saved) return JSON.parse(saved);
+      } catch (e) {}
+    }
+    return {};
+  });
+
+  const handleUpdateQuestionDraft = (ticketId: string, questionIndex: number, text: string) => {
+    const key = `${ticketId}_${questionIndex}`;
+    setQuestionDrafts((prev) => {
+      const updated = { ...prev, [key]: text };
+      if (typeof localStorage !== 'undefined') {
+        try {
+          localStorage.setItem('dev_planner_question_drafts', JSON.stringify(updated));
+        } catch (e) {}
+      }
+      return updated;
+    });
+  };
   const [saveStatus, setSaveStatus] = useState<Record<string, 'saving' | 'saved' | 'error'>>({});
   const [editingPlanTicketId, setEditingPlanTicketId] = useState<string | null>(null);
   const [planDraftText, setPlanDraftText] = useState<string>('');
@@ -1300,10 +1325,27 @@ export function PlannedWorkView({
     setSaveStatus((prev) => ({ ...prev, [key]: 'saving' }));
     try {
       const updatedAnswers = await activePlanningProvider.saveAnswer(ticketId, questionIndex, answerText);
+      if ((updatedAnswers as any)?.error || (updatedAnswers as any)?.success === false) {
+        throw new Error((updatedAnswers as any)?.error || 'Save failed');
+      }
       setAnswersMap((prev) => ({
         ...prev,
         [ticketId]: updatedAnswers,
       }));
+      setQuestionDrafts((prev) => {
+        const updated = { ...prev };
+        delete updated[key];
+        if (typeof localStorage !== 'undefined') {
+          try {
+            if (Object.keys(updated).length === 0) {
+              localStorage.removeItem('dev_planner_question_drafts');
+            } else {
+              localStorage.setItem('dev_planner_question_drafts', JSON.stringify(updated));
+            }
+          } catch (e) {}
+        }
+        return updated;
+      });
       setSaveStatus((prev) => ({ ...prev, [key]: 'saved' }));
       setTimeout(() => {
         setSaveStatus((prev) => {
@@ -1492,8 +1534,12 @@ export function PlannedWorkView({
   }, [activeTab]);
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && expandedFeatureId) {
-      sessionStorage.setItem('dev_plan_modal_expanded_feat', expandedFeatureId);
+    if (typeof window !== 'undefined' && isEmbedded) {
+      if (expandedFeatureId) {
+        sessionStorage.setItem('dev_plan_modal_expanded_feat', expandedFeatureId);
+      } else {
+        sessionStorage.removeItem('dev_plan_modal_expanded_feat');
+      }
     }
     if (!isEmbedded && typeof window !== 'undefined') {
       if (expandedFeatureId) {
@@ -3283,7 +3329,7 @@ export function PlannedWorkView({
                                                   Open Questions ({feat.openQuestions.length})
                                                 </h4>
                                                 <span className="text-[10px] font-mono text-amber-800/80 dark:text-amber-400/80 hidden sm:inline">
-                                                  Saved to <code className="bg-[var(--bg-surface)] px-1 py-0.5 rounded text-amber-400 border border-amber-500/30">src/data/planning/tickets/{feat.ticketId}/answers.json</code>
+                                                  Saved to <code className="bg-[var(--bg-surface)] px-1 py-0.5 rounded text-amber-400 border border-amber-500/30">answers.json</code>
                                                 </span>
                                               </div>
 
@@ -3293,6 +3339,7 @@ export function PlannedWorkView({
                                                 const isInputExpanded = expandedQuestionKey === qKey;
                                                 const statusKey = `${feat.ticketId}_${qIdx}`;
                                                 const currentStatus = saveStatus[statusKey];
+                                                const currentDraftValue = questionDrafts[qKey] !== undefined ? questionDrafts[qKey] : savedAnswer;
 
                                                 return (
                                                   <div key={qIdx} className="p-3 bg-[var(--bg-surface)] border border-amber-500/30 rounded-xl space-y-2 shadow-2xs">
@@ -3330,7 +3377,8 @@ export function PlannedWorkView({
                                                     {isInputExpanded && (
                                                       <div className="ml-4 space-y-1.5 pt-1 animate-fade-in">
                                                         <textarea
-                                                          defaultValue={savedAnswer}
+                                                          value={currentDraftValue}
+                                                          onChange={(e) => handleUpdateQuestionDraft(feat.ticketId, qIdx, e.target.value)}
                                                           onBlur={(e) => {
                                                             const val = e.target.value;
                                                             if (val !== savedAnswer) {
@@ -3357,11 +3405,8 @@ export function PlannedWorkView({
                                                             </button>
                                                             <button
                                                               type="button"
-                                                              onClick={(e) => {
-                                                                const container = e.currentTarget.parentElement?.parentElement?.previousElementSibling as HTMLTextAreaElement;
-                                                                if (container) {
-                                                                  handleSaveAnswer(feat.ticketId, qIdx, container.value);
-                                                                }
+                                                              onClick={() => {
+                                                                handleSaveAnswer(feat.ticketId, qIdx, currentDraftValue);
                                                               }}
                                                               className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-900 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30 rounded-lg text-[10px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
                                                             >

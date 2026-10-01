@@ -29,6 +29,13 @@ All storage engines implement the `StorageAdapter` contract defined in `src/stor
 - `createMilestone(input: CreateMilestoneInput): Promise<Milestone>`
 - `updateMilestone(id: number | string, updates: UpdateMilestoneInput, project?: string): Promise<Milestone>`
 - `deleteMilestone(id: number | string, project?: string): Promise<boolean>`
+- `getAnswers(id: number | string): Promise<Record<string, string>>`
+- `saveAnswer(id: number | string, questionIndex: number, answer: string): Promise<Record<string, string>>`
+- `saveDetail(id: number | string, detailMarkdown: string, metaUpdates?: Partial<TicketMeta>): Promise<{ success: boolean; meta?: TicketMeta; detail?: string }>`
+- `getInlineComments(id: number | string): Promise<any[]>`
+- `saveInlineComment(id: number | string, selectedText: string, comment: string, author?: string): Promise<any[]>`
+- `saveAttachment(id: number | string, filename: string, buffer: Buffer): Promise<{ filename: string; relativePath: string }>`
+- `getAttachmentPath(id: number | string, filename: string): string | null`
 
 Methods accept both numeric IDs (`96`) and compound project keys (`Profe-96`, `Esedre-1`).
 
@@ -36,7 +43,7 @@ Methods accept both numeric IDs (`96`) and compound project keys (`Profe-96`, `E
 
 `FilesystemStorageAdapter` resolves tickets across 6 distinct storage topologies:
 
-1. **Single Hub Topology**: `dataDir: "../esedre-data"` targeting a dedicated ticket repo (`projects/<ProjectCode>/tickets/<id>/`).
+1. **Single Hub Topology**: `dataDir: "../esedre-data"` targeting a dedicated ticket repo (`projects/<ProjectCode>/tickets/<id>/`). Note: In project workspaces, `dataDir` is inherited from central user configuration (`~/.esedre/config.json`) when the hub contains the project, rather than hardcoded in `.esedre/esedre.json`, unless it is a local subdirectory of the repository.
 2. **In-Repo Standalone Topology**: Tickets stored in the workspace repo under `.esedre/tickets/<id>/`.
 3. **Multi-Hub Topology**: `dataDir: ["../hub1", "../hub2"]` aggregating multiple hubs.
 4. **Disparate Multi-Repo Federation**: `projects: { "Core": "../core-engine", "Web": "../frontend-app" }`.
@@ -59,7 +66,10 @@ Methods accept both numeric IDs (`96`) and compound project keys (`Profe-96`, `E
             │   ├── meta.json             # Core metadata (id, title, type, priority, milestone, sha1)
             │   ├── detail.md             # Markdown specification and breakdown
             │   ├── comments.json         # Historical developer and agent comments
-            │   └── implementation_plan.md# Active implementation plan
+            │   ├── implementation_plan.md# Active implementation plan
+            │   ├── answers.json          # Developer answers to Open Decisions & Questions
+            │   ├── inline-comments.json  # Highlighted text annotations & inline commentary
+            │   └── attachments/          # Discussion media attachments (images/video)
             ├── 2/
             └── ...
 ```

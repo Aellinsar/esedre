@@ -5,14 +5,30 @@ All notable changes to Esedre are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.2] - 2026-10-02
 
 ### Added
-- **Multi-Workspace Batch Upgrade Automation (`ese upgrade --all`)**: Extended `ese upgrade` with `--all` (`-a`) to automatically scan all registered workspace projects declared in `~/.esedre/config.json`, upgrade shell wrappers (`.esedre/esedre.cmd`, `.esedre/ese.cmd`, `.esedre/esedre.ps1`, `.esedre/ese.ps1`), synchronize agent skills, and regenerate `.esedre/snapshot.json` projections.
-- **Wrapper Health Diagnostics**: Added `isWrapperOutdated` and `findOutdatedWrappers` in `src/upgrade.ts` to detect legacy CMD wrappers containing parenthesized compound blocks or `goto :done`. Exposed non-blocking diagnostic notices in `ese status` and `ese status --json`.
+- **Completed Full Set of Edit Capabilities in the UI & Interactive Planning Engine**:
+  - **Open Decisions & Questions Answering**: Completed planned UI editing and persistence for developer answers to Open Decisions and Questions directly into ticket storage (`answers.json`), with real-time hydration across `/api/planning/answers` and `/api/planning/all`.
+  - **Live Specification Detail Editing**: Completed planned real-time editing of ticket Markdown specifications in the UI via `POST /api/planning/details`, with direct sync to `detail.md` on disk, automatic timestamp tracking, and revision bumping.
+  - **Interactive Inline Text Annotations**: Completed planned text selection commentary in the UI via `POST /api/planning/save-inline-comment` and `GET /api/planning/inline-comments`, persisting highlighted annotations to `inline-comments.json`.
+  - **Discussion Media Attachments Pipeline**: Completed planned drag-and-drop and clipboard paste media attachment uploading and streaming via `POST /api/planning/upload-attachment` and `GET /api/planning/attachment`, with path traversal protections, deduplication guards, and automatic MIME detection.
+  - **Local Draft Recovery**: Added automatic browser draft caching in `localStorage` (`dev_planner_question_drafts`) for developer question replies, ensuring in-progress answers are never lost during accidental reloads or tab navigation.
+  - **CLI Answer Visibility**: Enhanced `ese get` output to automatically display recorded answers beneath their corresponding Open Decisions & Questions.
+  - **Smart Data Hub Inheritance**: Enabled workspace configuration (`.esedre/esedre.json`) to omit `dataDir` and seamlessly inherit from user-level global configuration (`~/.esedre/config.json`) when the hub contains the project.
+  - **Multi-Workspace Batch Upgrade Automation (`ese upgrade --all`)**: Extended `ese upgrade` with `--all` (`-a`) to automatically scan all registered workspace projects declared in `~/.esedre/config.json`, upgrade shell wrappers (`.esedre/esedre.cmd`, `.esedre/ese.cmd`, `.esedre/esedre.ps1`, `.esedre/ese.ps1`), synchronize agent skills, and regenerate `.esedre/snapshot.json` projections.
+  - **Wrapper Health Diagnostics**: Added `isWrapperOutdated` and `findOutdatedWrappers` in `src/upgrade.ts` to detect legacy CMD wrappers containing parenthesized compound blocks or `goto :done`. Exposed non-blocking diagnostic notices in `ese status` and `ese status --json`.
 
 ### Fixed
 - **Windows CMD Batch Label Error in Consuming Workspaces**: Hardened `WRAPPER_CMD` subroutine dispatch and eliminated legacy parenthesized `goto :done` blocks in downstream consuming repositories that caused `cmd.exe` to fail with `'The system cannot find the batch label specified - done'` (Ticket #43).
+- **Root URL Hash Push Bug**: Fixed bug where navigating to the root standalone UI URL (`http://localhost:5674/`) automatically forced and pushed `#ticket-1` to the browser address bar. The UI now preserves clean root URLs without pushing ticket hashes unless a ticket is explicitly clicked or deep-linked.
+
+### Security & Hardening
+- **REST Endpoint Parameter Validation & Cache Invalidation**:
+  - Added strict parameter checks on mutating planning endpoints (`ticketId` required on plans, comments, details, meta updates, and flags).
+  - Wired real-time API cache invalidation across all mutating endpoints to ensure `/api/planning/all` never returns stale projections.
+  - Hardened attachment endpoints against path traversal attacks (`..`, `.`, subpaths) and directory reads, verifying regular file integrity.
+  - Enforced Agent Project Allow-List authorization across all attachment lookups and new storage endpoints.
 
 ## [1.0.1] - 2026-09-28
 

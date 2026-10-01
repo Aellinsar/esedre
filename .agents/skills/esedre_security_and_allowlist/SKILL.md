@@ -36,6 +36,7 @@ When Esedre runs (either via the CLI or MCP server), it does not assume a fixed 
   - If omitted or empty, all projects are permitted.
   - If contains `"*"` (wildcard), all projects are permitted.
   - Otherwise, strictly limits access to the listed project codes (case-insensitive).
+- `dataDir` *(string | string[], optional)*: Optional local override. Machine-level infrastructure settings reside centrally in `~/.esedre/config.json` and are inherited by workspaces whose projects exist in the configured hub; project repositories omit `dataDir` unless it is a subdirectory within the project repository or an intentional local override.
 
 ## 3. Agent Project Allow-List Enforcement
 

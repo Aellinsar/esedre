@@ -158,6 +158,15 @@ Esedre cleanly separates external repository linking from centralized data hub p
 * **Link Existing Repositories (`ese configure add <repoPath>`)**: Registers an external code repository in your central `projects` map (`~/.esedre/config.json`) for federated multi-repo workflows.
 * **Create Data Hub Projects (`ese init --project <code> [--name "<name>"] [--hub <hub>]`)**: Registers a non-development or standalone project directly inside your configured ticket data hub (`dataDir`). When multiple data hubs exist, pass `--hub <name|path>` to disambiguate.
 
+#### Central Configuration & Hoisted Data Directories
+
+Esedre employs a two-tier configuration model that cleanly isolates machine-specific paths from project repositories:
+* **Central Machine Configuration (`~/.esedre/config.json`)**: Configured via `ese configure`, this file holds user-level settings for your machine: registered ticket data hubs (`dataDir`, such as `../esedre-data`), linked external repository paths (`projects`), and the default server port.
+* **Workspace Repository Configuration (`.esedre/esedre.json`)**: Project code repositories only need a lightweight descriptor declaring their `projectCode` and authorized `allowedProjects` scope.
+* **Smart Data Hub Inheritance**: When `dataDir` is omitted from `.esedre/esedre.json`, Esedre automatically checks if your central data hub in `~/.esedre/config.json` contains the project. If found, it inherits the hub path seamlessly. Different developers collaborating on the same codebase can maintain their ticket hubs in different filesystem locations without committing machine-specific relative paths to version control.
+* **Subdirectory Guard in `ese init`**: Initializing a repository via `ese init` does not write `dataDir` to `.esedre/esedre.json` when the configured data hub is located outside the repository. A `dataDir` property is only written to `.esedre/esedre.json` if `dataDir` is a subdirectory within the project's repository (such as a monorepo subfolder or in-repo ticket directory), or if explicitly specified via `--data-dir`.
+* **Local In-Repo Overrides**: If a repository explicitly specifies `dataDir` in its `.esedre/esedre.json`, the local configuration takes full precedence, ensuring standalone in-repo ticket stores remain completely independent.
+
 #### Unique Project Codes Across Data Hubs
 
 Project codes must be unique across all configured data hubs. Esedre does not support duplicate project codes across data hubs. If duplicate project codes are detected across multiple hubs:

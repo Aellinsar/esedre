@@ -97,6 +97,26 @@ export interface StorageAdapter {
   createMilestone(input: CreateMilestoneInput): Promise<Milestone>;
   updateMilestone(id: number | string, input: UpdateMilestoneInput, projectCode?: string): Promise<Milestone>;
   deleteMilestone(id: number | string, projectCode?: string): Promise<boolean>;
+  getAnswers(id: number | string): Promise<Record<string, string>>;
+  saveAnswer(id: number | string, questionIndex: number, answer: string): Promise<Record<string, string>>;
+  saveDetail(
+    id: number | string,
+    detailMarkdown: string,
+    metaUpdates?: Partial<TicketMeta>
+  ): Promise<{ success: boolean; meta?: TicketMeta; detail?: string }>;
+  getInlineComments?(id: number | string): Promise<any[]>;
+  saveInlineComment?(
+    id: number | string,
+    selectedText: string,
+    comment: string,
+    author?: string
+  ): Promise<any[]>;
+  saveAttachment?(
+    id: number | string,
+    filename: string,
+    buffer: Buffer
+  ): Promise<{ filename: string; relativePath: string }>;
+  getAttachmentPath?(id: number | string, filename: string): string | null;
   getDuplicateProjectWarnings?(): DuplicateProjectWarning[];
 }
 

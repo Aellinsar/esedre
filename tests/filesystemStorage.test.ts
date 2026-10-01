@@ -177,4 +177,112 @@ describe('FilesystemStorageAdapter', () => {
       fs.rmSync(customDataDir, { recursive: true, force: true });
     }
   });
+
+  it('persists and retrieves open question answers via saveAnswer and getAnswers', async () => {
+    const ticket = await adapter.createTicket({
+      title: 'Ticket with Open Questions',
+      category: 'Feature',
+      projectCode: 'Core',
+    });
+
+    // Initially answers are empty
+    const initialAnswers = await adapter.getAnswers(ticket.meta.id);
+    expect(initialAnswers).toEqual({});
+
+    // Save answer to question 0
+    const updated0 = await adapter.saveAnswer(ticket.meta.id, 0, 'Use Redis for caching');
+    expect(updated0['0']).toBe('Use Redis for caching');
+
+    // Save answer to question 1
+    const updated1 = await adapter.saveAnswer(ticket.meta.id, 1, 'Deploy via Docker');
+    expect(updated1['0']).toBe('Use Redis for caching');
+    expect(updated1['1']).toBe('Deploy via Docker');
+
+    // Verify on disk in ticket dir
+    const diskAnswers = await adapter.getAnswers(ticket.meta.id);
+    expect(diskAnswers).toEqual({
+      '0': 'Use Redis for caching',
+      '1': 'Deploy via Docker',
+    });
+
+    // Verify ticket retrieval includes answers
+    const fetched = await adapter.getTicket(ticket.meta.id);
+    expect(fetched?.answers).toEqual({
+      '0': 'Use Redis for caching',
+      '1': 'Deploy via Docker',
+    });
+
+    // Verify listTickets includes answers
+    const list = await adapter.listTickets({ project: 'Core' });
+    const found = list.find((t) => t.meta.id === ticket.meta.id);
+    expect(found?.answers).toEqual({
+      '0': 'Use Redis for caching',
+      '1': 'Deploy via Docker',
+    });
+  });
+
+  it('saves and updates detail.md via saveDetail', async () => {
+    const ticket = await adapter.createTicket({
+      title: 'Original Ticket',
+      category: 'Feature',
+      projectCode: 'Core',
+    });
+
+    const newDetailMd = '# Ticket #1: Original Ticket\n\n### Summary\nCustom updated summary.\n\n### Rationale\nCustom rationale.';
+    const result = await adapter.saveDetail(ticket.meta.id, newDetailMd, {
+      title: 'Updated Ticket Title',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.detail).toBe(newDetailMd);
+    expect(result.meta?.title).toBe('Updated Ticket Title');
+
+    // Verify persisted on disk
+    const fetched = await adapter.getTicket(ticket.meta.id);
+    expect(fetched?.detail?.raw).toBe(newDetailMd);
+    expect(fetched?.meta.title).toBe('Updated Ticket Title');
+  });
+
+  it('persists and retrieves inline comments', async () => {
+    const ticket = await adapter.createTicket({
+      title: 'Ticket for Annotations',
+      category: 'Feature',
+      projectCode: 'Core',
+    });
+
+    const inlines = await adapter.saveInlineComment(
+      ticket.meta.id,
+      'selected code snippet',
+      'This needs refactoring',
+      'Architect'
+    );
+
+    expect(inlines).toHaveLength(1);
+    expect(inlines[0].selectedText).toBe('selected code snippet');
+    expect(inlines[0].comment).toBe('This needs refactoring');
+    expect(inlines[0].author).toBe('Architect');
+
+    const fetchedInlines = await adapter.getInlineComments(ticket.meta.id);
+    expect(fetchedInlines).toHaveLength(1);
+
+    const fetchedTicket = await adapter.getTicket(ticket.meta.id);
+    expect(fetchedTicket?.inlineComments).toHaveLength(1);
+  });
+
+  it('saves and retrieves attachments', async () => {
+    const ticket = await adapter.createTicket({
+      title: 'Ticket for Attachments',
+      category: 'Feature',
+      projectCode: 'Core',
+    });
+
+    const sampleBuffer = Buffer.from('fake image binary data', 'utf-8');
+    const saved = await adapter.saveAttachment(ticket.meta.id, 'screenshot.png', sampleBuffer);
+    expect(saved.filename).toBe('screenshot.png');
+
+    const filePath = adapter.getAttachmentPath(ticket.meta.id, 'screenshot.png');
+    expect(filePath).not.toBeNull();
+    expect(fs.readFileSync(filePath!)).toEqual(sampleBuffer);
+  });
 });
+

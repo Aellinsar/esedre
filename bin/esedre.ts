@@ -482,7 +482,11 @@ async function main(): Promise<void> {
           const resolvedHub = path.resolve(expandHome(singleHub));
           if (fs.existsSync(resolvedHub)) {
             const rel = path.relative(targetDir, resolvedHub).replace(/\\/g, '/');
-            hubRelPath = rel.startsWith('.') ? rel : './' + rel;
+            const isSubdir = !rel.startsWith('..') && !path.isAbsolute(rel);
+            // Normal use does not add dataDir to project's .esedre/esedre.json UNLESS dataDir is a subdir of project repo
+            if (isSubdir || Boolean(flags['data-dir'])) {
+              hubRelPath = rel.startsWith('.') ? rel : './' + rel;
+            }
           }
         }
 

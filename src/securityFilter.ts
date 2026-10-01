@@ -261,4 +261,99 @@ export class SecurityFilter implements StorageAdapter {
       target: result.target ? this.redactLinks(result.target) : undefined,
     };
   }
+
+  public async getAnswers(id: number | string): Promise<Record<string, string>> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    return this.target.getAnswers(id);
+  }
+
+  public async saveAnswer(id: number | string, questionIndex: number, answer: string): Promise<Record<string, string>> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    return this.target.saveAnswer(id, questionIndex, answer);
+  }
+
+  public async saveDetail(
+    id: number | string,
+    detailMarkdown: string,
+    metaUpdates?: Partial<TicketMeta>
+  ): Promise<{ success: boolean; meta?: TicketMeta; detail?: string }> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    return this.target.saveDetail(id, detailMarkdown, metaUpdates);
+  }
+
+  public async getInlineComments(id: number | string): Promise<any[]> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    return this.target.getInlineComments ? this.target.getInlineComments(id) : [];
+  }
+
+  public async saveInlineComment(
+    id: number | string,
+    selectedText: string,
+    comment: string,
+    author?: string
+  ): Promise<any[]> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    return this.target.saveInlineComment ? this.target.saveInlineComment(id, selectedText, comment, author) : [];
+  }
+
+  public async saveAttachment(
+    id: number | string,
+    filename: string,
+    buffer: Buffer
+  ): Promise<{ filename: string; relativePath: string }> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    if (!this.target.saveAttachment) {
+      throw new Error('Attachments are not supported by target storage adapter.');
+    }
+    return this.target.saveAttachment(id, filename, buffer);
+  }
+
+  public getAttachmentPath(id: number | string, filename: string): string | null {
+    if ((this.target as any).findTicketLocation) {
+      const locInfo = (this.target as any).findTicketLocation(id);
+      if (locInfo) {
+        const code = locInfo.loc?.project?.code;
+        if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+          throw new EsedreAuthorizationError(code);
+        }
+      }
+    }
+    return this.target.getAttachmentPath ? this.target.getAttachmentPath(id, filename) : null;
+  }
 }

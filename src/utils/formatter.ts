@@ -100,6 +100,18 @@ export function normalizeTicketFields(ticket: EsedreTicket): EsedreTicket {
       if (c.author) c.author = normalizeDashesAndMojibake(c.author);
     }
   }
+  if (ticket.answers) {
+    for (const key of Object.keys(ticket.answers)) {
+      ticket.answers[key] = normalizeDashesAndMojibake(ticket.answers[key]);
+    }
+  }
+  if (ticket.inlineComments) {
+    for (const ic of ticket.inlineComments) {
+      if (ic.selectedText) ic.selectedText = normalizeDashesAndMojibake(ic.selectedText);
+      if (ic.comment) ic.comment = normalizeDashesAndMojibake(ic.comment);
+      if (ic.author) ic.author = normalizeDashesAndMojibake(ic.author);
+    }
+  }
   return ticket;
 }
 
@@ -219,9 +231,12 @@ export function formatTicketDetail(ticket: EsedreTicket): string {
   if (detail?.openQuestions && detail.openQuestions.length > 0) {
     lines.push('');
     lines.push(`${colors.bold}Open Decisions & Questions:${colors.reset}`);
-    for (const q of detail.openQuestions) {
+    detail.openQuestions.forEach((q, idx) => {
       lines.push(`  • ${normalizeDashesAndMojibake(q)}`);
-    }
+      if (ticket.answers && ticket.answers[String(idx)]) {
+        lines.push(`    ${colors.green}> Answer:${colors.reset} ${normalizeDashesAndMojibake(ticket.answers[String(idx)])}`);
+      }
+    });
   }
 
   if (ticket.links && ticket.links.length > 0) {

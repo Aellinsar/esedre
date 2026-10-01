@@ -13,6 +13,8 @@ import {
   MAX_PROJECT_NAME_LENGTH,
   checkGitIgnore,
   appendSnapshotToGitIgnore,
+  writeGlobalConfig,
+  hubContainsProject,
 } from '../src/config.js';
 
 describe('Esedre Config Discovery & Hierarchy Crawl', () => {
@@ -199,3 +201,107 @@ describe('isProjectAuthorized Security Utility', () => {
     expect(isProjectAuthorized('Web', allowed)).toBe(false);
   });
 });
+
+describe('Global dataDir Inheritance & Hoisting (Esedre-45)', () => {
+  let tempSuiteDir: string;
+  let fakeGlobalDir: string;
+  let hubDir: string;
+  let originalEnv: string | undefined;
+
+  beforeEach(() => {
+    tempSuiteDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-datadir-test-'));
+    fakeGlobalDir = path.join(tempSuiteDir, 'global-config');
+    hubDir = path.join(tempSuiteDir, 'my-central-hub');
+    fs.mkdirSync(fakeGlobalDir, { recursive: true });
+    fs.mkdirSync(path.join(hubDir, 'projects', 'TCG'), { recursive: true });
+
+    originalEnv = process.env.ESEDRE_GLOBAL_DIR;
+    process.env.ESEDRE_GLOBAL_DIR = fakeGlobalDir;
+
+    writeGlobalConfig({
+      dataDir: hubDir.replace(/\\/g, '/'),
+      port: 5674,
+    });
+  });
+
+  afterEach(() => {
+    if (originalEnv !== undefined) {
+      process.env.ESEDRE_GLOBAL_DIR = originalEnv;
+    } else {
+      delete process.env.ESEDRE_GLOBAL_DIR;
+    }
+    if (fs.existsSync(tempSuiteDir)) {
+      try {
+        fs.rmSync(tempSuiteDir, { recursive: true, force: true });
+      } catch {}
+    }
+  });
+
+  it('inherits dataDir from globalConfig when workspace omits dataDir and project exists in hub', () => {
+    const workspaceDir = path.join(tempSuiteDir, 'tcg-workspace');
+    const esedreDir = path.join(workspaceDir, '.esedre');
+    fs.mkdirSync(esedreDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(esedreDir, 'esedre.json'),
+      JSON.stringify({
+        projectCode: 'TCG',
+        allowedProjects: ['TCG'],
+      })
+    );
+
+    const discovered = findEsedreConfig(workspaceDir);
+    expect(discovered.config.projectCode).toBe('TCG');
+    expect(discovered.config.dataDir).toBe(hubDir.replace(/\\/g, '/'));
+  });
+
+  it('preserves local dataDir override when workspace explicitly defines dataDir', () => {
+    const workspaceDir = path.join(tempSuiteDir, 'custom-workspace');
+    const esedreDir = path.join(workspaceDir, '.esedre');
+    fs.mkdirSync(esedreDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(esedreDir, 'esedre.json'),
+      JSON.stringify({
+        projectCode: 'TCG',
+        dataDir: './local-override',
+      })
+    );
+
+    const discovered = findEsedreConfig(workspaceDir);
+    expect(discovered.config.dataDir).toBe('./local-override');
+  });
+
+  it('leaves dataDir undefined when projectCode does not exist in central hub', () => {
+    const workspaceDir = path.join(tempSuiteDir, 'unmatched-workspace');
+    const esedreDir = path.join(workspaceDir, '.esedre');
+    fs.mkdirSync(esedreDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(esedreDir, 'esedre.json'),
+      JSON.stringify({
+        projectCode: 'UNKNOWN',
+        allowedProjects: ['UNKNOWN'],
+      })
+    );
+
+    const discovered = findEsedreConfig(workspaceDir);
+    expect(discovered.config.projectCode).toBe('UNKNOWN');
+    expect(discovered.config.dataDir).toBeUndefined();
+  });
+
+  it('detects projects in hub via hubContainsProject across directory and manifest structures', () => {
+    const manifestHubDir = path.join(tempSuiteDir, 'manifest-hub');
+    fs.mkdirSync(manifestHubDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(manifestHubDir, 'projects.json'),
+      JSON.stringify([{ code: 'Alpha' }, { code: 'Beta' }])
+    );
+
+    expect(hubContainsProject(hubDir, ['TCG'])).toBe(true);
+    expect(hubContainsProject(hubDir, ['tcg'])).toBe(true);
+    expect(hubContainsProject(hubDir, ['OTHER'])).toBe(false);
+
+    expect(hubContainsProject(manifestHubDir, ['Alpha'])).toBe(true);
+    expect(hubContainsProject(manifestHubDir, ['beta'])).toBe(true);
+    expect(hubContainsProject(manifestHubDir, ['Gamma'])).toBe(false);
+  });
+});
+

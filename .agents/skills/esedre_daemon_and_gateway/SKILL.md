@@ -40,7 +40,7 @@ The unified gateway at port `5674` coordinates two internal sub-services:
 |---|---|---|---|
 | **Gateway Proxy** | `5674` | `/` $\rightarrow$ `/app/` | Single public entry point for web browsers, reverse proxies, and tunnels |
 | **Web UI Server** | `5675` | `/app` | Serves compiled React 19 UI bundle from `dist/web/` |
-| **REST API Server** | `5676` | `/api` | JSON endpoints for ticket inspection, bulk hydration (`/api/planning/all`), and health pings |
+| **REST API Server** | `5676` | `/api` | JSON endpoints for ticket inspection, bulk hydration (`/api/planning/all`), persistence (`/api/planning/answers`, `/api/planning/details`, `/api/planning/inline-comments`, `/api/planning/upload-attachment`, `/api/planning/attachment`), and health pings |
 
 ### Routing Logic
 - `GET /` $\rightarrow$ Redirects/rewrites to `/app/`.

@@ -37,18 +37,28 @@ import { EsedreConfig, findEsedreConfig, expandHome, validateProjectCode, valida
 import { computeTicketHash, verifyTicketHash } from '../snapshot.js';
 import { normalizeDashesAndMojibake, normalizeTicketFields, normalizePriority } from '../utils/formatter.js';
 
-function writeSafeFile(filePath: string, content: string): void {
+function writeSafeFile(filePath: string, content: string | Buffer): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const normalized = content.replace(/\n/g, '\n');
   const tempPath = `${filePath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
   try {
-    fs.writeFileSync(tempPath, normalized, 'utf-8');
-    fs.renameSync(tempPath, filePath);
+    if (Buffer.isBuffer(content)) {
+      fs.writeFileSync(tempPath, content);
+      fs.renameSync(tempPath, filePath);
+    } else {
+      const normalized = content.replace(/\r\n/g, '\n');
+      fs.writeFileSync(tempPath, normalized, 'utf-8');
+      fs.renameSync(tempPath, filePath);
+    }
   } catch {
-    fs.writeFileSync(filePath, normalized, 'utf-8');
+    if (Buffer.isBuffer(content)) {
+      fs.writeFileSync(filePath, content);
+    } else {
+      const normalized = content.replace(/\r\n/g, '\n');
+      fs.writeFileSync(filePath, normalized, 'utf-8');
+    }
     if (fs.existsSync(tempPath)) {
       try { fs.unlinkSync(tempPath); } catch {}
     }
@@ -1531,11 +1541,29 @@ export class FilesystemStorageAdapter implements StorageAdapter {
             } catch {}
           }
 
+          let answers: Record<string, string> | undefined;
+          const answersPath = path.join(ticketDir, 'answers.json');
+          if (fs.existsSync(answersPath)) {
+            try {
+              answers = JSON.parse(fs.readFileSync(answersPath, 'utf-8'));
+            } catch {}
+          }
+
+          let inlineComments: any[] | undefined;
+          const inlinesPath = path.join(ticketDir, 'inline-comments.json');
+          if (fs.existsSync(inlinesPath)) {
+            try {
+              inlineComments = JSON.parse(fs.readFileSync(inlinesPath, 'utf-8'));
+            } catch {}
+          }
+
           const ticketObj: EsedreTicket = {
             meta,
             detail,
             planMarkdown,
             comments,
+            answers,
+            inlineComments,
             projectDescriptor: effectiveLoc.project,
           };
           normalizeTicketFields(ticketObj);
@@ -1620,11 +1648,29 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         } catch {}
       }
 
+      let answers: Record<string, string> | undefined;
+      const answersPath = path.join(locInfo.ticketDir, 'answers.json');
+      if (fs.existsSync(answersPath)) {
+        try {
+          answers = JSON.parse(fs.readFileSync(answersPath, 'utf-8'));
+        } catch {}
+      }
+
+      let inlineComments: any[] | undefined;
+      const inlinesPath = path.join(locInfo.ticketDir, 'inline-comments.json');
+      if (fs.existsSync(inlinesPath)) {
+        try {
+          inlineComments = JSON.parse(fs.readFileSync(inlinesPath, 'utf-8'));
+        } catch {}
+      }
+
       const ticket: EsedreTicket = {
         meta,
         detail,
         planMarkdown,
         comments,
+        answers,
+        inlineComments,
         projectDescriptor: locInfo.loc.project,
       };
       normalizeTicketFields(ticket);
@@ -2061,6 +2107,162 @@ ${input.summary || 'Summary to be defined.'}
     comments.push(newComment);
     writeSafeFile(commentsPath, JSON.stringify(comments, null, 2) + '\n');
     return newComment;
+  }
+
+  public async getAnswers(id: number | string): Promise<Record<string, string>> {
+    const locInfo = this.findTicketLocation(id);
+    if (!locInfo) return {};
+
+    const answersPath = path.join(locInfo.ticketDir, 'answers.json');
+    if (!fs.existsSync(answersPath)) return {};
+    try {
+      return JSON.parse(fs.readFileSync(answersPath, 'utf-8'));
+    } catch {
+      return {};
+    }
+  }
+
+  public async saveAnswer(id: number | string, questionIndex: number, answer: string): Promise<Record<string, string>> {
+    const locInfo = this.findTicketLocation(id);
+    if (!locInfo) {
+      throw new Error(`Ticket #${id} could not be located on disk`);
+    }
+
+    const answersPath = path.join(locInfo.ticketDir, 'answers.json');
+    let currentAnswers: Record<string, string> = {};
+    if (fs.existsSync(answersPath)) {
+      try {
+        currentAnswers = JSON.parse(fs.readFileSync(answersPath, 'utf-8'));
+      } catch {}
+    }
+
+    currentAnswers[String(questionIndex)] = normalizeDashesAndMojibake(answer);
+    writeSafeFile(answersPath, JSON.stringify(currentAnswers, null, 2) + '\n');
+    return currentAnswers;
+  }
+
+  public async saveDetail(
+    id: number | string,
+    detailMarkdown: string,
+    metaUpdates?: Partial<TicketMeta>
+  ): Promise<{ success: boolean; meta?: TicketMeta; detail?: string }> {
+    const locInfo = this.findTicketLocation(id);
+    if (!locInfo) {
+      throw new Error(`Ticket #${id} could not be located on disk`);
+    }
+
+    let updatedMeta: TicketMeta | undefined;
+    if (metaUpdates && Object.keys(metaUpdates).length > 0) {
+      const updatedTicket = await this.updateTicket(id, metaUpdates);
+      updatedMeta = updatedTicket.meta;
+    } else {
+      const metaPath = path.join(locInfo.ticketDir, 'meta.json');
+      if (fs.existsSync(metaPath)) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+          meta.updatedAt = new Date().toISOString();
+          meta.revision = (meta.revision || 1) + 1;
+          writeSafeFile(metaPath, JSON.stringify(meta, null, 2) + '\n');
+        } catch {}
+      }
+    }
+
+    const detailPath = path.join(locInfo.ticketDir, 'detail.md');
+    writeSafeFile(detailPath, normalizeDashesAndMojibake(detailMarkdown));
+
+    const finalTicket = await this.getTicket(`${locInfo.loc.project.code}-${locInfo.id}`);
+    return {
+      success: true,
+      meta: finalTicket?.meta || updatedMeta,
+      detail: detailMarkdown,
+    };
+  }
+
+  public async getInlineComments(id: number | string): Promise<any[]> {
+    const locInfo = this.findTicketLocation(id);
+    if (!locInfo) return [];
+
+    const inlinesPath = path.join(locInfo.ticketDir, 'inline-comments.json');
+    if (!fs.existsSync(inlinesPath)) return [];
+    try {
+      return JSON.parse(fs.readFileSync(inlinesPath, 'utf-8'));
+    } catch {
+      return [];
+    }
+  }
+
+  public async saveInlineComment(
+    id: number | string,
+    selectedText: string,
+    comment: string,
+    author?: string
+  ): Promise<any[]> {
+    const locInfo = this.findTicketLocation(id);
+    if (!locInfo) {
+      throw new Error(`Ticket #${id} could not be located on disk`);
+    }
+
+    const inlinesPath = path.join(locInfo.ticketDir, 'inline-comments.json');
+    let currentInlines: any[] = [];
+    if (fs.existsSync(inlinesPath)) {
+      try {
+        currentInlines = JSON.parse(fs.readFileSync(inlinesPath, 'utf-8'));
+      } catch {}
+    }
+
+    const newEntry = {
+      id: `${locInfo.id}-ic-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      selectedText: normalizeDashesAndMojibake(selectedText),
+      comment: normalizeDashesAndMojibake(comment.trim()),
+      author: normalizeDashesAndMojibake(author || 'Developer'),
+      timestamp: new Date().toISOString(),
+    };
+    currentInlines.push(newEntry);
+    writeSafeFile(inlinesPath, JSON.stringify(currentInlines, null, 2) + '\n');
+    return currentInlines;
+  }
+
+  public async saveAttachment(
+    id: number | string,
+    filename: string,
+    buffer: Buffer
+  ): Promise<{ filename: string; relativePath: string }> {
+    const locInfo = this.findTicketLocation(id);
+    if (!locInfo) {
+      throw new Error(`Ticket #${id} could not be located on disk`);
+    }
+
+    const attachmentsDir = path.join(locInfo.ticketDir, 'attachments');
+    if (!fs.existsSync(attachmentsDir)) {
+      fs.mkdirSync(attachmentsDir, { recursive: true });
+    }
+    let safeName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+    if (!safeName || safeName === '.' || safeName === '..' || safeName.replace(/_/g, '') === '') {
+      safeName = `attachment_${Date.now()}`;
+    }
+    let targetFile = path.join(attachmentsDir, safeName);
+    if (fs.existsSync(targetFile)) {
+      const ext = path.extname(safeName);
+      const nameWithoutExt = path.basename(safeName, ext);
+      safeName = `${nameWithoutExt}_${Date.now()}${ext}`;
+      targetFile = path.join(attachmentsDir, safeName);
+    }
+    writeSafeFile(targetFile, buffer);
+    return { filename: safeName, relativePath: `attachments/${safeName}` };
+  }
+
+  public getAttachmentPath(id: number | string, filename: string): string | null {
+    const locInfo = this.findTicketLocation(id);
+    if (!locInfo) return null;
+    const safeName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+    if (!safeName || safeName === '.' || safeName === '..') return null;
+    const attachmentsDir = path.resolve(locInfo.ticketDir, 'attachments');
+    const target = path.resolve(attachmentsDir, safeName);
+    if (!target.startsWith(attachmentsDir)) return null;
+    if (fs.existsSync(target) && fs.statSync(target).isFile()) {
+      return target;
+    }
+    return null;
   }
 
   public resolveTicketIdentifier(

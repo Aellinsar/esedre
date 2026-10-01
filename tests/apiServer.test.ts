@@ -317,4 +317,127 @@ describe('Esedre REST API Server', () => {
     expect(res.status).toBe(400);
     expect(res.json().error).toContain('1 to 8 alphanumeric characters');
   });
+
+  it('POST /api/planning/answers persists question answers and GET /api/planning/all returns them', async () => {
+    // Save answer 0
+    const saveRes1 = await request(`${baseUrl}/api/planning/answers`, 'POST', {
+      ticketId: 1,
+      questionIndex: 0,
+      answer: 'Use PostgreSQL for persistent storage',
+    });
+    expect(saveRes1.status).toBe(200);
+    expect(saveRes1.json()['0']).toBe('Use PostgreSQL for persistent storage');
+
+    // Save answer 1
+    const saveRes2 = await request(`${baseUrl}/api/planning/answers`, 'POST', {
+      ticketId: 1,
+      questionIndex: 1,
+      answer: 'Deploy on Cloudflare Pages',
+    });
+    expect(saveRes2.status).toBe(200);
+    expect(saveRes2.json()['1']).toBe('Deploy on Cloudflare Pages');
+
+    // GET /api/planning/answers for specific ticket
+    const getRes = await request(`${baseUrl}/api/planning/answers?ticketId=1`, 'GET');
+    expect(getRes.status).toBe(200);
+    expect(getRes.json()).toEqual({
+      '0': 'Use PostgreSQL for persistent storage',
+      '1': 'Deploy on Cloudflare Pages',
+    });
+
+    // GET /api/planning/all includes answers map
+    const allRes = await request(`${baseUrl}/api/planning/all`, 'GET');
+    expect(allRes.status).toBe(200);
+    const allData = allRes.json();
+    expect(allData.answers['1']).toEqual({
+      '0': 'Use PostgreSQL for persistent storage',
+      '1': 'Deploy on Cloudflare Pages',
+    });
+    expect(allData.answers['Core-1']).toEqual({
+      '0': 'Use PostgreSQL for persistent storage',
+      '1': 'Deploy on Cloudflare Pages',
+    });
+  });
+
+  it('POST /api/planning/details writes markdown to detail.md on disk', async () => {
+    const customMarkdown = '# Ticket #1: Core-1 Title\n\n### Summary\nBrand new detail spec written via API.\n\n### Open Questions\n- Question 1?';
+    const res = await request(`${baseUrl}/api/planning/details`, 'POST', {
+      ticketId: 1,
+      detailMarkdown: customMarkdown,
+    });
+    expect(res.status).toBe(200);
+    expect(res.json().success).toBe(true);
+    expect(res.json().detail).toBe(customMarkdown);
+
+    // Verify through GET /api/planning/details
+    const detailsRes = await request(`${baseUrl}/api/planning/details`, 'GET');
+    expect(detailsRes.status).toBe(200);
+    expect(detailsRes.json()['1']).toBe(customMarkdown);
+  });
+
+  it('POST /api/planning/save-inline-comment and GET /api/planning/inline-comments work end-to-end', async () => {
+    const postRes = await request(`${baseUrl}/api/planning/save-inline-comment`, 'POST', {
+      ticketId: 1,
+      selectedText: 'selected code',
+      comment: 'Review this block carefully',
+      author: 'Reviewer',
+    });
+    expect(postRes.status).toBe(200);
+    expect(postRes.json().inlineComments).toHaveLength(1);
+    expect(postRes.json().inlineComments[0].selectedText).toBe('selected code');
+
+    const getRes = await request(`${baseUrl}/api/planning/inline-comments?ticketId=1`, 'GET');
+    expect(getRes.status).toBe(200);
+    expect(getRes.json()).toHaveLength(1);
+  });
+
+  it('POST /api/planning/upload-attachment and GET /api/planning/attachment serve media files', async () => {
+    const base64Data = Buffer.from('hello world image data').toString('base64');
+    const uploadRes = await request(`${baseUrl}/api/planning/upload-attachment`, 'POST', {
+      ticketId: 1,
+      filename: 'diagram.png',
+      base64Data: `data:image/png;base64,${base64Data}`,
+    });
+    expect(uploadRes.status).toBe(200);
+    expect(uploadRes.json().success).toBe(true);
+    expect(uploadRes.json().filename).toBe('diagram.png');
+    expect(uploadRes.json().url).toContain('ticketId=1');
+
+    // Fetch the uploaded attachment
+    const getAttachment = await request(`${baseUrl}${uploadRes.json().url}`, 'GET');
+    expect(getAttachment.status).toBe(200);
+    expect(getAttachment.headers['content-type']).toBe('image/png');
+    expect(getAttachment.body).toBe('hello world image data');
+
+    // Prevent path traversal on attachments
+    const traversalRes = await request(`${baseUrl}/api/planning/attachment?ticketId=1&file=..`, 'GET');
+    expect(traversalRes.status).toBe(404);
+
+    const traversalRes2 = await request(`${baseUrl}/api/planning/attachment?ticketId=1&file=../meta.json`, 'GET');
+    expect(traversalRes2.status).toBe(404);
+  });
+
+  it('validates ticketId parameter on mutating POST endpoints', async () => {
+    const resPlans = await request(`${baseUrl}/api/planning/plans`, 'POST', { planMarkdown: 'abc' });
+    expect(resPlans.status).toBe(400);
+    expect(resPlans.json().error).toContain('ticketId is required');
+
+    const resComments = await request(`${baseUrl}/api/planning/comments`, 'POST', { text: 'abc' });
+    expect(resComments.status).toBe(400);
+    expect(resComments.json().error).toContain('ticketId is required');
+
+    const resDetails = await request(`${baseUrl}/api/planning/details`, 'POST', { detailMarkdown: 'abc' });
+    expect(resDetails.status).toBe(400);
+    expect(resDetails.json().error).toContain('ticketId is required');
+
+    const resMeta = await request(`${baseUrl}/api/planning/update-meta`, 'POST', { updates: {} });
+    expect(resMeta.status).toBe(400);
+    expect(resMeta.json().error).toContain('ticketId is required');
+
+    const resFlag = await request(`${baseUrl}/api/planning/toggle-flag`, 'POST', { flagged: true });
+    expect(resFlag.status).toBe(400);
+    expect(resFlag.json().error).toContain('ticketId is required');
+  });
 });
+
+

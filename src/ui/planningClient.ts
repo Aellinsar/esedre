@@ -76,66 +76,101 @@ export class EsedreHttpPlanningProvider implements PlanningServiceProvider {
   }
 
   async getAll(): Promise<any> {
-    return (await this.request('/planning/all')) || {};
-  }
-
-  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     try {
-      const res = await fetch(`${this.baseUrl}${endpoint}`, {
-        headers: {
-          'Content-Type': 'application/json',
-          ...(options.headers || {}),
-        },
-        ...options,
-      });
-      if (!res.ok) {
-        let errBody: any = null;
-        try { errBody = await res.json(); } catch {}
-        const msg = errBody?.error || `HTTP ${res.status}: ${res.statusText}`;
-        console.warn(`[Esedre API] Request failed for ${endpoint}:`, msg);
-        return { error: msg, success: false } as any;
-      }
-      return await res.json();
-    } catch (err: any) {
-      console.warn(`[Esedre API] Request failed for ${endpoint}:`, err);
-      return { error: err.message, success: false } as any;
+      return (await this.request('/planning/all')) || {};
+    } catch {
+      return {};
     }
   }
 
+  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+    const res = await fetch(`${this.baseUrl}${endpoint}`, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options.headers || {}),
+      },
+      ...options,
+    });
+    if (!res.ok) {
+      let errBody: any = null;
+      try { errBody = await res.json(); } catch {}
+      const msg = errBody?.error || `HTTP ${res.status}: ${res.statusText}`;
+      console.warn(`[Esedre API] Request failed for ${endpoint}:`, msg);
+      throw new Error(msg);
+    }
+    return await res.json();
+  }
+
   async getAnswers(): Promise<Record<string, Record<string, string>>> {
-    return (await this.request('/planning/answers')) || {};
+    try {
+      return (await this.request('/planning/answers')) || {};
+    } catch {
+      return {};
+    }
   }
 
   async getPlans(): Promise<Record<string, string>> {
-    return (await this.request('/planning/plans')) || {};
+    try {
+      return (await this.request('/planning/plans')) || {};
+    } catch {
+      return {};
+    }
   }
 
   async getPlanHistory(): Promise<Record<string, { filename: string; content: string }[]>> {
-    return (await this.request('/planning/plan-history')) || {};
+    try {
+      return (await this.request('/planning/plan-history')) || {};
+    } catch {
+      return {};
+    }
   }
 
   async getHistory(): Promise<Record<string, TicketHistorySnapshot[]>> {
-    return (await this.request('/planning/history')) || {};
+    try {
+      return (await this.request('/planning/history')) || {};
+    } catch {
+      return {};
+    }
   }
 
   async getComments(): Promise<Record<string, TicketComment[]>> {
-    return (await this.request('/planning/comments')) || {};
+    try {
+      return (await this.request('/planning/comments')) || {};
+    } catch {
+      return {};
+    }
   }
 
   async getMetas(): Promise<Record<string, TicketMeta>> {
-    return (await this.request('/planning/metas')) || {};
+    try {
+      return (await this.request('/planning/metas')) || {};
+    } catch {
+      return {};
+    }
   }
 
   async getInlineComments(): Promise<Record<string, InlineComment[]>> {
-    return (await this.request('/planning/inline-comments')) || {};
+    try {
+      return (await this.request('/planning/inline-comments')) || {};
+    } catch {
+      return {};
+    }
   }
 
   async getTicketDetails(): Promise<Record<string, string>> {
-    return (await this.request('/planning/details')) || {};
+    try {
+      return (await this.request('/planning/details')) || {};
+    } catch {
+      return {};
+    }
   }
 
   async getProjects(): Promise<ProjectDescriptor[]> {
-    return (await this.request('/planning/projects')) || [];
+    try {
+      return (await this.request('/planning/projects')) || [];
+    } catch {
+      return [];
+    }
   }
 
   async saveAnswer(ticketId: string | number, questionIndex: number, answer: string): Promise<Record<string, string>> {

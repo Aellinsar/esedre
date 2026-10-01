@@ -1,4 +1,6 @@
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
 import { StorageAdapter } from '../storage/adapter.js';
 import { SecurityFilter } from '../securityFilter.js';
 import { generateProjectSnapshot } from '../snapshot.js';
@@ -161,6 +163,8 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
           const detailsMap: Record<string, string> = {};
           const plansMap: Record<string, string> = {};
           const commentsMap: Record<string, any[]> = {};
+          const answersMap: Record<string, Record<string, string>> = {};
+          const inlineCommentsMap: Record<string, any[]> = {};
 
           for (const t of tickets) {
             const numKey = String(t.meta.id);
@@ -189,6 +193,18 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
                 plansMap[numKey] = t.planMarkdown;
               }
             }
+            if (t.answers && Object.keys(t.answers).length > 0) {
+              answersMap[prefixedKey] = t.answers;
+              if (!answersMap[numKey] || code.toUpperCase() === 'PROF') {
+                answersMap[numKey] = t.answers;
+              }
+            }
+            if (t.inlineComments && t.inlineComments.length > 0) {
+              inlineCommentsMap[prefixedKey] = t.inlineComments;
+              if (!inlineCommentsMap[numKey] || code.toUpperCase() === 'PROF') {
+                inlineCommentsMap[numKey] = t.inlineComments;
+              }
+            }
           }
 
           const projects = await reqStorage.getProjects();
@@ -199,8 +215,8 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
             details: detailsMap,
             plans: plansMap,
             comments: commentsMap,
-            answers: {},
-            inlineComments: {},
+            answers: answersMap,
+            inlineComments: inlineCommentsMap,
             planHistory: {},
             ticketHistory: {},
           };
@@ -260,12 +276,90 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
         }
 
         if (pathname === '/api/planning/inline-comments') {
-          sendJson(res, 200, {});
+          const ticketParam = url.searchParams.get('ticketId') || url.searchParams.get('id');
+          if (ticketParam) {
+            const inlines = reqStorage.getInlineComments ? await reqStorage.getInlineComments(ticketParam) : [];
+            sendJson(res, 200, inlines);
+            return true;
+          }
+          const tickets = await reqStorage.listTickets({});
+          const inlinesMap: Record<string, any[]> = {};
+          for (const t of tickets) {
+            if (t.inlineComments && t.inlineComments.length > 0) {
+              inlinesMap[String(t.meta.id)] = t.inlineComments;
+              const code = t.projectDescriptor?.code || t.meta.project;
+              if (code) {
+                inlinesMap[`${code}-${t.meta.id}`] = t.inlineComments;
+              }
+            }
+          }
+          sendJson(res, 200, inlinesMap);
           return true;
         }
 
         if (pathname === '/api/planning/answers') {
-          sendJson(res, 200, {});
+          const ticketParam = url.searchParams.get('ticketId') || url.searchParams.get('id');
+          if (ticketParam) {
+            const answers = await reqStorage.getAnswers(ticketParam);
+            sendJson(res, 200, answers);
+            return true;
+          }
+          const tickets = await reqStorage.listTickets({});
+          const answersMap: Record<string, Record<string, string>> = {};
+          for (const t of tickets) {
+            if (t.answers && Object.keys(t.answers).length > 0) {
+              answersMap[String(t.meta.id)] = t.answers;
+              const code = t.projectDescriptor?.code || t.meta.project;
+              if (code) {
+                answersMap[`${code}-${t.meta.id}`] = t.answers;
+              }
+            }
+          }
+          sendJson(res, 200, answersMap);
+          return true;
+        }
+
+        if (pathname === '/api/planning/attachment') {
+          const ticketId = url.searchParams.get('ticketId') || url.searchParams.get('id');
+          const file = url.searchParams.get('file');
+          if (!ticketId || !file) {
+            sendJson(res, 400, { error: 'ticketId and file parameters are required.' });
+            return true;
+          }
+          const ticket = await reqStorage.getTicket(ticketId);
+          if (!ticket) {
+            sendJson(res, 404, { error: 'Ticket not found.' });
+            return true;
+          }
+          const filePath = reqStorage.getAttachmentPath ? reqStorage.getAttachmentPath(ticketId, file) : null;
+          if (!filePath || !fs.existsSync(filePath)) {
+            sendJson(res, 404, { error: 'Attachment not found.' });
+            return true;
+          }
+          const stat = fs.statSync(filePath);
+          if (!stat.isFile()) {
+            sendJson(res, 404, { error: 'Attachment not found.' });
+            return true;
+          }
+          const ext = path.extname(filePath).toLowerCase();
+          const mimeTypes: Record<string, string> = {
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+            '.svg': 'image/svg+xml',
+            '.mp4': 'video/mp4',
+            '.webm': 'video/webm',
+            '.mov': 'video/quicktime',
+          };
+          const contentType = mimeTypes[ext] || 'application/octet-stream';
+          res.writeHead(200, {
+            'Content-Type': contentType,
+            'Content-Length': stat.size,
+            'Cache-Control': 'public, max-age=86400',
+          });
+          fs.createReadStream(filePath).pipe(res);
           return true;
         }
 
@@ -388,6 +482,10 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
 
         if (pathname === '/api/planning/plans') {
           const { ticketId, planMarkdown, lastHash } = body;
+          if (!ticketId) {
+            sendJson(res, 400, { error: 'ticketId is required.' });
+            return true;
+          }
           invalidateApiCache();
           await reqStorage.savePlan(ticketId, planMarkdown, lastHash);
           sendJson(res, 200, { success: true });
@@ -396,6 +494,10 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
 
         if (pathname === '/api/planning/comments') {
           const { ticketId, text, author } = body;
+          if (!ticketId) {
+            sendJson(res, 400, { error: 'ticketId is required.' });
+            return true;
+          }
           invalidateApiCache();
           await reqStorage.addComment(ticketId, { author: author || 'Developer', text });
           const ticket = await reqStorage.getTicket(ticketId);
@@ -405,6 +507,11 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
 
         if (pathname === '/api/planning/update-meta') {
           const { ticketId, updates, lastHash } = body;
+          if (!ticketId) {
+            sendJson(res, 400, { error: 'ticketId is required.' });
+            return true;
+          }
+          invalidateApiCache();
           const updated = await reqStorage.updateTicket(ticketId, updates, lastHash);
           sendJson(res, 200, { meta: updated.meta });
           return true;
@@ -412,6 +519,11 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
 
         if (pathname === '/api/planning/toggle-flag') {
           const { ticketId, flagged } = body;
+          if (!ticketId) {
+            sendJson(res, 400, { error: 'ticketId is required.' });
+            return true;
+          }
+          invalidateApiCache();
           const updated = await reqStorage.updateTicket(ticketId, {
             featureFlag: flagged ? 'chat_enhanced' : '',
           });
@@ -421,10 +533,61 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
 
         if (pathname === '/api/planning/details') {
           const { ticketId, detailMarkdown, metaUpdates } = body;
-          if (metaUpdates) {
-            await reqStorage.updateTicket(ticketId, metaUpdates);
+          if (!ticketId) {
+            sendJson(res, 400, { error: 'ticketId is required.' });
+            return true;
           }
-          sendJson(res, 200, { success: true, detail: detailMarkdown });
+          invalidateApiCache();
+          const result = await reqStorage.saveDetail(ticketId, detailMarkdown || '', metaUpdates);
+          sendJson(res, 200, result);
+          return true;
+        }
+
+        if (pathname === '/api/planning/answers') {
+          const { ticketId, questionIndex, answer } = body;
+          if (ticketId === undefined || questionIndex === undefined || answer === undefined) {
+            sendJson(res, 400, { error: 'ticketId, questionIndex, and answer are required.' });
+            return true;
+          }
+          invalidateApiCache();
+          const updated = await reqStorage.saveAnswer(ticketId, Number(questionIndex), String(answer));
+          sendJson(res, 200, updated);
+          return true;
+        }
+
+        if (pathname === '/api/planning/save-inline-comment' || pathname === '/api/planning/inline-comments') {
+          const { ticketId, selectedText, comment, author } = body;
+          if (!ticketId || !selectedText || !comment) {
+            sendJson(res, 400, { error: 'ticketId, selectedText, and comment are required.' });
+            return true;
+          }
+          invalidateApiCache();
+          const inlineComments = reqStorage.saveInlineComment
+            ? await reqStorage.saveInlineComment(ticketId, selectedText, comment, author)
+            : [];
+          sendJson(res, 200, { inlineComments });
+          return true;
+        }
+
+        if (pathname === '/api/planning/upload-attachment') {
+          const { ticketId, filename, base64Data } = body;
+          if (!ticketId || !filename || !base64Data) {
+            sendJson(res, 400, { error: 'ticketId, filename, and base64Data are required.' });
+            return true;
+          }
+          const base64Content = base64Data.replace(/^data:[^;]+;base64,/, '');
+          const buffer = Buffer.from(base64Content, 'base64');
+          if (!reqStorage.saveAttachment) {
+            sendJson(res, 500, { error: 'Attachments are not supported by the storage engine.' });
+            return true;
+          }
+          invalidateApiCache();
+          const saved = await reqStorage.saveAttachment(ticketId, filename, buffer);
+          sendJson(res, 200, {
+            success: true,
+            filename: saved.filename,
+            url: `/api/planning/attachment?ticketId=${encodeURIComponent(ticketId)}&file=${encodeURIComponent(saved.filename)}`,
+          });
           return true;
         }
 

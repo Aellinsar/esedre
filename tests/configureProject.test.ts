@@ -714,6 +714,50 @@ describe('Project Registration & Configure Onboarding', () => {
 
       expect(output).toContain('CLIDUP');
     });
+
+    it('does not add dataDir to project esedre.json during ese init when hub is external', () => {
+      const extHub = path.join(tempDir, 'external-hub');
+      fs.mkdirSync(path.join(extHub, 'projects', 'EXTPROJ'), { recursive: true });
+      fs.writeFileSync(
+        path.join(extHub, 'projects.json'),
+        JSON.stringify([{ code: 'EXTPROJ', name: 'External Project' }])
+      );
+
+      const fakeGlobal = path.join(tempDir, 'global-ext-hub');
+      fs.mkdirSync(fakeGlobal, { recursive: true });
+      fs.writeFileSync(
+        path.join(fakeGlobal, 'config.json'),
+        JSON.stringify({
+          version: '1.0.1',
+          dataDir: extHub.replace(/\\/g, '/'),
+          port: 5674,
+        })
+      );
+
+      const newWorkspace = path.join(tempDir, 'new-ext-workspace');
+      fs.mkdirSync(newWorkspace, { recursive: true });
+
+      const cliPath = path.resolve(__dirname, '..', 'dist', 'esedre.mjs');
+      execFileSync(
+        process.execPath,
+        [cliPath, 'init', '--project', 'EXTPROJ', '--yes'],
+        {
+          cwd: newWorkspace,
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: {
+            ...process.env,
+            ESEDRE_GLOBAL_DIR: fakeGlobal,
+          },
+        }
+      );
+
+      const cfgRaw = JSON.parse(
+        fs.readFileSync(path.join(newWorkspace, '.esedre', 'esedre.json'), 'utf-8')
+      );
+      expect(cfgRaw.projectCode).toBe('EXTPROJ');
+      expect(cfgRaw.dataDir).toBeUndefined();
+    });
   });
 });
 
