@@ -101,9 +101,10 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
    - **Workspace Local Config (`.esedre/esedre.json`)**: Declares the active repository's local identity (`projectCode`) and authorized access scope (`allowedProjects`). Initialized via `ese init`.
    - **Upward Resolution & Merging**: The CLI and MCP server crawl upward from `cwd` for `.esedre/esedre.json`. Local workspace settings take precedence, while infrastructure defaults (`dataDir`, `projects`, `port`) automatically inherit from `~/.esedre/config.json` when omitted locally. Outside any workspace, the central global configuration is used directly.
 
-2. **Command Inventory: `ese init`, `ese configure`, `ese rename-project`, and `ese project set`**:
+2. **Command Inventory: `ese init`, `ese configure`, `ese upgrade`, `ese rename-project`, and `ese project set`**:
    - `ese init [path]`: Brings a project repository online (creates `.esedre/esedre.json`, wrappers, initial snapshot) or bootstraps a data hub repository (`ese init --hub`). Also supports workspaceless or data hub-targeted project creation via `ese init --project <Code> [--name <Name>] [--hub <hub>]`. When a single `dataDir` is configured, `--hub` is automatically resolved; when multiple hubs are configured, `--hub` disambiguates the target hub by directory basename or path without overwriting existing workspace configurations.
    - `ese configure`: Inspects and mutates the central configuration in `~/.esedre/config.json` (`ese configure add <path>`, `ese configure remove <target>`, `ese configure set <k> <v>`).
+   - `ese upgrade [<path>] [--all|-a] [--force|-f]`: Upgrades workspace configuration schema, in-repo wrappers, and agent skills. Pass `--all` (`-a`) to automatically discover, upgrade wrappers, and refresh snapshots across all registered projects in `~/.esedre/config.json`.
    - `ese rename-project <oldCode> <newCode> [--name "<name>"]`: Renames a project code across directory storage paths, manifests, and tickets, with validation against registered codes.
    - `ese project set <code> [--name "<name>"]`: Updates project metadata such as display name.
 

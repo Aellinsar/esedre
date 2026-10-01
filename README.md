@@ -148,7 +148,7 @@ Commands for repository onboarding, central machine linking, and maintenance:
 | `configure` | `ese configure [add <path> \| remove <code\|path> \| set <k> <v>]` | Inspect or mutate central configuration (`~/.esedre/config.json`). Link external project repositories or data hubs. |
 | `rename-project` | `ese rename-project <oldCode> <newCode> [--name "<name>"]` | Rename a project code across directory storage paths, manifests, and tickets. |
 | `project set` | `ese project set <code> [--name "<name>"]` | Update metadata for an existing project (e.g. display name). |
-| `upgrade` | `ese upgrade [<path>] [--force \| -f]` | Upgrade workspace configuration schema, in-repo wrappers, and agent skills. |
+| `upgrade` | `ese upgrade [<path>] [--all \| -a] [--force \| -f]` | Upgrade workspace configuration schema, in-repo wrappers, and agent skills across current or all registered workspaces. |
 
 > **Human vs LLM Agent Workflows**: Developer Administration commands (`init`, `configure`, `upgrade`) manage system-level repository linking and central machine configuration. They are intended for human developers during initial setup. Autonomous LLM coding partners operate within the authorized workspace scope using Roadmap and Service Daemon commands (`list`, `get`, `plan`, `create`, `update`, `comment`, `snapshot`, `start`, `status`).
 

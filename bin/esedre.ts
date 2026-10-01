@@ -35,6 +35,8 @@ import {
   initHub,
   CURRENT_ESEDRE_VERSION,
   findViteConfig,
+  findOutdatedWrappers,
+  upgradeAllWorkspaces,
 } from '../src/upgrade.js';
 import { startGatewayCluster } from '../src/server/gateway.js';
 import { startDaemon, stopDaemon, getDaemonStatus, printDaemonLogs } from '../src/server/daemon.js';
@@ -123,8 +125,9 @@ ${colors.bold}DEVELOPER ADMINISTRATION (Human Setup & Configuration):${colors.re
                • remove <target>  Unlink a project or data hub
                • set <key> <val>  Update a central configuration setting
 
-  ${colors.bold}upgrade${colors.reset}     [<path>] [--force|-f] [--json]
+  ${colors.bold}upgrade${colors.reset}     [<path>] [--all|-a] [--force|-f] [--json]
                Upgrade workspace configuration schema, wrappers, and agent skills. Refreshes snapshot.
+               Pass --all (-a) to upgrade all registered projects in central ~/.esedre/config.json.
                Pass --force to overwrite customized skills with the latest official template.
 
   ${colors.bold}projects${colors.reset}    [--json]
@@ -137,6 +140,7 @@ ${colors.bold}DEVELOPER ADMINISTRATION (Human Setup & Configuration):${colors.re
                Safely rename a project code on disk, updating hub folders, manifests, ticket references, and workspace configs.
 
 ${colors.bold}OPTIONS:${colors.reset}
+  -a, --all            Apply operation across all registered projects in central configuration.
   -p, --project <code> Project code (e.g. CORE, ALCE, DOCS).
   -n, --name <name>    Project display name (e.g. "Alce Web Reader").
   -t, --type <type>    Ticket type ('Feature', 'Platform', 'Tools', 'Idea', 'Bug').
@@ -219,6 +223,7 @@ function parseArgs(rawArgs: string[]): { command: string; positionals: string[];
   if (flags['q'] && !flags['search']) flags['search'] = flags['q'];
   if (flags['r'] && !flags['relation']) flags['relation'] = flags['r'];
   if (flags['f'] && !flags['foreground']) flags['foreground'] = flags['f'];
+  if (flags['a'] && !flags['all']) flags['all'] = flags['a'];
 
   return { command, positionals, flags };
 }
@@ -691,11 +696,52 @@ async function main(): Promise<void> {
       }
 
       case 'upgrade': {
+        const isAll = Boolean(flags['all'] || flags['a']);
+        const isForce = Boolean(flags['force'] || flags['f']);
+
+        if (isAll) {
+          const globalCfg = readGlobalConfig();
+          const allRes = await upgradeAllWorkspaces({
+            currentWorkspaceRoot: discovered.workspaceRoot,
+            globalConfig: globalCfg,
+            force: isForce,
+          });
+
+          if (isJson) {
+            console.log(JSON.stringify(allRes, null, 2));
+            return;
+          }
+
+          if (allRes.workspaces.length === 0) {
+            console.log(`${colors.yellow}No registered workspaces found to upgrade.${colors.reset}`);
+            return;
+          }
+
+          console.log(`\n${colors.bold}${colors.green}✔ Esedre multi-workspace upgrade completed across ${allRes.workspaces.length} workspace(s):${colors.reset}`);
+          for (const w of allRes.workspaces) {
+            if (w.error) {
+              console.log(`  • ${colors.red}✗ ${w.name} (${w.dir}): ${w.error}${colors.reset}`);
+            } else {
+              const snapStr = w.totalTickets !== undefined ? ` (${w.totalTickets} tickets projected)` : '';
+              console.log(`  • ${colors.bold}${w.name}${colors.reset} (${w.dir}):`);
+              console.log(`    - Wrappers updated in .esedre/`);
+              if (w.totalTickets !== undefined) {
+                console.log(`    - Refreshed .esedre/snapshot.json${snapStr}`);
+              }
+              if (w.upgrade.skillConfigured) {
+                console.log(`    - Updated .agents/skills/esedre/SKILL.md`);
+              } else if (w.upgrade.skillStatus === 'CUSTOMIZED') {
+                console.log(`    - Preserved customized .agents/skills/esedre/SKILL.md`);
+              }
+            }
+          }
+          return;
+        }
+
         const targetDir = positionals[0] ? path.resolve(positionals[0]) : discovered.workspaceRoot;
         const targetDiscovered = targetDir === discovered.workspaceRoot
           ? discovered
           : findEsedreConfig(targetDir, { fallbackToGlobal: true });
-        const isForce = Boolean(flags['force'] || flags['f']);
         const res = configureWorkspace(targetDir, {
           projectCode: targetDiscovered.config?.projectCode,
           allowedProjects: targetDiscovered.config?.allowedProjects,
@@ -818,8 +864,11 @@ async function main(): Promise<void> {
         const flagPort = flags['port'] ? parseInt(String(flags['port']), 10) : undefined;
         const port = resolvePorts(discovered.config, { port: flagPort }).gateway;
         const status = await getDaemonStatus({ port, workspaceRoot: discovered.workspaceRoot });
+        const globalCfg = readGlobalConfig() || discovered.config;
+        const outdatedWrappers = findOutdatedWrappers(discovered.workspaceRoot, globalCfg);
+
         if (isJson) {
-          console.log(JSON.stringify(status, null, 2));
+          console.log(JSON.stringify({ ...status, outdatedWrappers }, null, 2));
         } else {
           if (status.running) {
             console.log(`${colors.bold}${colors.green}● Esedre daemon is RUNNING${colors.reset}`);
@@ -840,6 +889,10 @@ async function main(): Promise<void> {
             if (status.logFile && fs.existsSync(status.logFile)) {
               console.log(`  • Recent Logs: ${status.logFile}`);
             }
+          }
+
+          if (outdatedWrappers.length > 0) {
+            console.log(`\n${colors.yellow}Notice: ${outdatedWrappers.length} workspace(s) have legacy CMD wrappers (${outdatedWrappers.map((o) => o.name).join(', ')}). Run 'ese upgrade --all' to update.${colors.reset}`);
           }
         }
         return;

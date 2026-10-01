@@ -5,6 +5,15 @@ All notable changes to Esedre are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Multi-Workspace Batch Upgrade Automation (`ese upgrade --all`)**: Extended `ese upgrade` with `--all` (`-a`) to automatically scan all registered workspace projects declared in `~/.esedre/config.json`, upgrade shell wrappers (`.esedre/esedre.cmd`, `.esedre/ese.cmd`, `.esedre/esedre.ps1`, `.esedre/ese.ps1`), synchronize agent skills, and regenerate `.esedre/snapshot.json` projections.
+- **Wrapper Health Diagnostics**: Added `isWrapperOutdated` and `findOutdatedWrappers` in `src/upgrade.ts` to detect legacy CMD wrappers containing parenthesized compound blocks or `goto :done`. Exposed non-blocking diagnostic notices in `ese status` and `ese status --json`.
+
+### Fixed
+- **Windows CMD Batch Label Error in Consuming Workspaces**: Hardened `WRAPPER_CMD` subroutine dispatch and eliminated legacy parenthesized `goto :done` blocks in downstream consuming repositories that caused `cmd.exe` to fail with `'The system cannot find the batch label specified - done'` (Ticket #43).
+
 ## [1.0.1] - 2026-09-28
 
 ### Added

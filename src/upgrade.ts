@@ -8,7 +8,13 @@ import {
   appendSnapshotToGitIgnore,
   DEFAULT_ESEDRE_PORT,
   resolvePorts,
+  readGlobalConfig,
+  findEsedreConfig,
+  expandHome,
 } from './config.js';
+import { generateProjectSnapshot } from './snapshot.js';
+import { FilesystemStorageAdapter } from './storage/filesystem.js';
+import { SecurityFilter } from './securityFilter.js';
 
 import { CURRENT_ESEDRE_VERSION } from './types.js';
 export { CURRENT_ESEDRE_VERSION };
@@ -788,5 +794,178 @@ export function initHub(targetDir: string): InitHubResult {
     agentsMdCreated,
     hubDir: resolved.replace(/\\/g, '/'),
   };
+}
+
+/**
+ * Detect whether a Windows CMD wrapper (esedre.cmd) is legacy or outdated.
+ * Legacy wrappers lack subroutine dispatch (call :run %*), use goto :done or goto done,
+ * declare a :done label, or contain parenthesized blocks that invalidate cmd.exe token state.
+ */
+export function isWrapperOutdated(esedreCmdContent: string | null | undefined): boolean {
+  if (!esedreCmdContent || typeof esedreCmdContent !== 'string') {
+    return true;
+  }
+  // 1. Legacy wrappers use goto :done or goto done
+  if (/goto\s+:?done\b/i.test(esedreCmdContent)) {
+    return true;
+  }
+  // 2. Legacy wrappers declare a :done label
+  if (/^:done\b/im.test(esedreCmdContent)) {
+    return true;
+  }
+  // 3. Modern wrapper uses subroutine dispatch call :run %* and :run label
+  if (!esedreCmdContent.includes('call :run %*') || !/^:run\b/im.test(esedreCmdContent)) {
+    return true;
+  }
+  return false;
+}
+
+export interface OutdatedWrapperInfo {
+  name: string;
+  dir: string;
+  wrapperPath: string;
+}
+
+/**
+ * Scan the current workspace and registered projects from global config
+ * to identify any workspaces retaining legacy CMD wrappers.
+ */
+export function findOutdatedWrappers(
+  currentWorkspaceRoot?: string,
+  globalConfig?: EsedreConfig | null
+): OutdatedWrapperInfo[] {
+  const outdated: OutdatedWrapperInfo[] = [];
+  const checkedDirs = new Set<string>();
+
+  const checkDir = (dir: string, name: string) => {
+    const resolved = path.resolve(expandHome(dir));
+    if (checkedDirs.has(resolved.toLowerCase())) return;
+    checkedDirs.add(resolved.toLowerCase());
+    if (!fs.existsSync(resolved)) return;
+
+    const cmdPath = path.join(resolved, '.esedre', 'esedre.cmd');
+    if (fs.existsSync(cmdPath)) {
+      try {
+        const content = fs.readFileSync(cmdPath, 'utf-8');
+        if (isWrapperOutdated(content)) {
+          outdated.push({ name, dir: resolved, wrapperPath: cmdPath });
+        }
+      } catch {}
+    }
+  };
+
+  if (currentWorkspaceRoot) {
+    checkDir(currentWorkspaceRoot, path.basename(currentWorkspaceRoot));
+  }
+
+  if (globalConfig?.projects) {
+    for (const [code, p] of Object.entries(globalConfig.projects)) {
+      checkDir(p, code);
+    }
+  }
+
+  return outdated;
+}
+
+export interface UpgradeAllOptions {
+  currentWorkspaceRoot?: string;
+  globalConfig?: EsedreConfig | null;
+  force?: boolean;
+}
+
+export interface WorkspaceUpgradeResult {
+  dir: string;
+  name: string;
+  projectCode?: string;
+  upgrade: ConfigureResult;
+  totalTickets?: number;
+  error?: string;
+}
+
+export interface UpgradeAllResult {
+  workspaces: WorkspaceUpgradeResult[];
+  totalUpgraded: number;
+}
+
+/**
+ * Upgrade wrappers, configs, and snapshot projections across all registered workspaces
+ * declared in central ~/.esedre/config.json and the active workspace.
+ */
+export async function upgradeAllWorkspaces(options: UpgradeAllOptions = {}): Promise<UpgradeAllResult> {
+  const globalCfg = options.globalConfig !== undefined ? options.globalConfig : readGlobalConfig();
+  const workspaceMap = new Map<string, string>();
+
+  // 1. Current workspace root if present and initialized
+  if (options.currentWorkspaceRoot && fs.existsSync(options.currentWorkspaceRoot)) {
+    const hasEsedre =
+      fs.existsSync(path.join(options.currentWorkspaceRoot, '.esedre')) ||
+      fs.existsSync(path.join(options.currentWorkspaceRoot, 'esedre.json'));
+    if (hasEsedre) {
+      const disc = findEsedreConfig(options.currentWorkspaceRoot, { fallbackToGlobal: true });
+      workspaceMap.set(
+        path.resolve(options.currentWorkspaceRoot),
+        disc.config?.projectCode || path.basename(options.currentWorkspaceRoot)
+      );
+    }
+  }
+
+  // 2. Registered projects in global config
+  if (globalCfg?.projects) {
+    for (const [code, p] of Object.entries(globalCfg.projects)) {
+      const resolved = path.resolve(expandHome(p));
+      if (fs.existsSync(resolved)) {
+        if (!workspaceMap.has(resolved)) {
+          workspaceMap.set(resolved, code);
+        }
+      }
+    }
+  }
+
+  const results: WorkspaceUpgradeResult[] = [];
+
+  for (const [targetDir, name] of workspaceMap.entries()) {
+    try {
+      const targetDiscovered = findEsedreConfig(targetDir, { fallbackToGlobal: true });
+      const projectCode = targetDiscovered.config?.projectCode;
+      const res = configureWorkspace(targetDir, {
+        projectCode,
+        allowedProjects: targetDiscovered.config?.allowedProjects,
+        port: targetDiscovered.config?.port,
+        force: options.force,
+      });
+
+      let totalTickets: number | undefined;
+      if (projectCode) {
+        try {
+          const targetStorage = new SecurityFilter(
+            new FilesystemStorageAdapter(targetDir, targetDiscovered.config),
+            targetDiscovered.config
+          );
+          const snapshot = await generateProjectSnapshot(targetStorage, projectCode, targetDir);
+          totalTickets = snapshot.totalTickets;
+        } catch {
+          // If storage cannot be instantiated or snapshot fails, preserve wrapper upgrade
+        }
+      }
+
+      results.push({
+        dir: targetDir,
+        name,
+        projectCode,
+        upgrade: res,
+        totalTickets,
+      });
+    } catch (err: any) {
+      results.push({
+        dir: targetDir,
+        name,
+        upgrade: {} as any,
+        error: err.message || String(err),
+      });
+    }
+  }
+
+  const totalUpgraded = results.filter((r) => !r.error && r.upgrade.wrappersPlanted).length;
+  return { workspaces: results, totalUpgraded };
 }
 

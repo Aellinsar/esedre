@@ -47,7 +47,7 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 | `rename-project` | `esedre rename-project <oldCode> <newCode> [--name "<name>"]` | Renames a project code across directory storage paths, manifests, and tickets. |
 | `project` | `esedre project set <code> [--name "<name>"]` | Updates project metadata (such as display name). |
 | `snapshot`, `refresh` | `esedre snapshot [--project <code>]` | Re-generates or refreshes `.esedre/snapshot.json` projection for zero-latency agent context. |
-| `upgrade` | `esedre upgrade [--json]` | Upgrades workspace configuration, scripts, wrappers, and agent skills. |
+| `upgrade` | `esedre upgrade [--all \| -a] [--force \| -f] [--json]` | Upgrades workspace configuration, scripts, wrappers, and agent skills across current or all registered workspaces. |
 | `mcp` | `esedre mcp` | Starts the Model Context Protocol stdio server. |
 
 ## 3. Machine-Readable `--json` Mode
@@ -69,9 +69,10 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 ## 6. Windows Shell & Batch Wrapper Invariants
 
 1. **Windows CMD Wrapper (`ese.cmd` / `esedre.cmd`)**:
-   - Jump labels MUST reside strictly at the top level (never `goto` within parenthesized `if (...)` blocks).
+   - Subroutine dispatch: `call :run %*` with `goto :eof` and `exit /b %ERRORLEVEL%`. Eliminates legacy parenthesized blocks around `goto :done` that invalidate `cmd.exe` token stream memory in consuming repositories.
    - All internal batch invocations (`ese`, `esedre`, `npx`, and local `.bin\ese.cmd`) MUST use `call` (`call ese %*`).
    - Terminate with `exit /b %ERRORLEVEL%` to preserve and propagate return codes.
+   - Diagnostic detection: `isWrapperOutdated()` identifies legacy wrappers and `ese status` prompts running `ese upgrade --all`.
 2. **PowerShell Wrapper (`ese.ps1` / `esedre.ps1`)**:
    - Set console and output encoding to UTF-8 at startup (`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8`, `$OutputEncoding = [System.Text.Encoding]::UTF8`).
    - Ensures non-ASCII Unicode characters render cleanly across Windows hosts.
