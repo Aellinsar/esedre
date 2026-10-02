@@ -243,10 +243,54 @@ describe('Embedded Mode Detection & URL Query Protection', () => {
 
       const alceFeat = sampleFeatures[3]; // alce-web #1
       expect(getFeatureHash(alceFeat, 'all')).toBe('#ticket-alce-web-1');
-      expect(getFeatureHash(alceFeat, 'alce-web')).toBe('#ticket-alce-web-1');
-
       const standaloneFeat = sampleFeatures[4]; // Standalone #10
       expect(getFeatureHash(standaloneFeat, 'all')).toBe('#ticket-10');
+    });
+
+    it('generates unambiguous self-describing project hashes even if feature has display name or legacy project', () => {
+      const featWithName: any = {
+        id: 'feature-Profe-139',
+        number: 139,
+        ticketId: '139',
+        title: 'MobX Store Migration',
+        project: 'Professor Arwam',
+        projectId: 1,
+      };
+      expect(getFeatureHash(featWithName)).toBe('#ticket-Profe-139');
+    });
+  });
+
+  describe('updateProjectUrlSearchParam normalization', () => {
+    const originalWindow = globalThis.window;
+
+    afterEach(() => {
+      if (originalWindow) {
+        globalThis.window = originalWindow;
+      } else {
+        delete (globalThis as any).window;
+      }
+      vi.restoreAllMocks();
+    });
+
+    it('normalizes project display names to canonical project codes in URL params', () => {
+      const replaceStateMock = vi.fn();
+      (globalThis as any).window = {
+        location: {
+          href: 'http://localhost:5674/app',
+        },
+        history: {
+          replaceState: replaceStateMock,
+        },
+      };
+
+      updateProjectUrlSearchParam('Professor Arwam', false);
+      expect(replaceStateMock).toHaveBeenCalledWith({}, '', 'http://localhost:5674/app?project=Profe');
+
+      updateProjectUrlSearchParam('Esedre', false);
+      expect(replaceStateMock).toHaveBeenCalledWith({}, '', 'http://localhost:5674/app?project=Esedre');
+
+      updateProjectUrlSearchParam('all', false);
+      expect(replaceStateMock).toHaveBeenCalledWith({}, '', 'http://localhost:5674/app');
     });
   });
 });

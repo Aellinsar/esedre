@@ -464,8 +464,11 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
                   <ul className="text-[11px] list-disc list-inside space-y-0.5 font-mono">
                     <li>Renames data hub storage directory from <code>projects/{project.code}/</code> to <code>projects/{code.trim()}/</code></li>
                     <li>Updates ticket metadata so ticket IDs become <code>{code.trim()}-#</code></li>
-                    <li>Synchronizes local <code>.esedre/esedre.json</code> and central allow-lists</li>
+                    <li>Updates central projects map (~/.esedre/config.json) and cross-project links</li>
                   </ul>
+                  <p className="text-[10px] text-amber-600 dark:text-amber-400">
+                    Note: Remember to update the <code>projectCode</code> in any consuming project repositories' <code>.esedre/esedre.json</code>.
+                  </p>
                 </div>
               ) : (
                 <div className="p-3.5 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded-xl text-[var(--text-secondary)] text-xs space-y-1">

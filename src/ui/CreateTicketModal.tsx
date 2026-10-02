@@ -145,7 +145,7 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
       const result = await activePlanningProvider.createTicket({
         title: title.trim(),
         projectId: targetProject.id,
-        project: targetProject.name,
+        project: targetProject.code,
         type,
         category: type,
         priority: priority || undefined,

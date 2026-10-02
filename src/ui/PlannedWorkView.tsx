@@ -439,7 +439,9 @@ export function updateProjectUrlSearchParam(val: string, isEmbedded: boolean): v
     if (val === 'all') {
       url.searchParams.delete('project');
     } else {
-      url.searchParams.set('project', val);
+      const desc = getProjectDescriptor(val);
+      const code = desc?.code || val;
+      url.searchParams.set('project', code);
     }
     window.history.replaceState({}, '', url.toString());
   } catch (err) {}
@@ -537,7 +539,8 @@ export function resolveFeatureFromHash(
 }
 
 export function getFeatureHash(f: PlannedFeature, _projectFilter?: string): string {
-  const pCode = f.project || getProjectDescriptor(f.projectId)?.code;
+  const desc = getProjectDescriptor(f.projectId) || (f.project ? getProjectDescriptor(f.project) : undefined);
+  const pCode = desc?.code || f.project;
   if (pCode) {
     return `#ticket-${pCode}-${f.number}`;
   }
@@ -644,13 +647,16 @@ export function PlannedWorkView({
     return 'all';
   });
   const [projectFilter, setProjectFilter] = useState<string>(() => {
-    if (initialProject) return initialProject;
-    if (typeof window !== 'undefined') {
-      const saved = sessionStorage.getItem('dev_plan_project_filter');
-      if (saved) {
-        if (!allowedProjects || allowedProjects.length === 0 || allowedProjects.map((p) => p.toUpperCase()).includes(saved.toUpperCase()) || saved === 'all') {
-          return saved;
-        }
+    let candidate = initialProject;
+    if (!candidate && typeof window !== 'undefined') {
+      candidate = sessionStorage.getItem('dev_plan_project_filter') || undefined;
+    }
+    if (candidate) {
+      if (candidate === 'all') return 'all';
+      const desc = getProjectDescriptor(candidate);
+      const code = desc?.code || candidate;
+      if (!allowedProjects || allowedProjects.length === 0 || allowedProjects.map((p) => p.toUpperCase()).includes(code.toUpperCase())) {
+        return code;
       }
     }
     return (allowedProjects && allowedProjects.length > 0) ? allowedProjects[0] : 'all';
@@ -1855,6 +1861,10 @@ export function PlannedWorkView({
   };
 
   // Standalone UI URL Hash Navigation (ticket deep-linking & history traversal)
+  const projectFilterRef = useRef(projectFilter);
+  projectFilterRef.current = projectFilter;
+  const hasHandledInitialHashRef = useRef(false);
+
   useEffect(() => {
     if (isEmbedded || typeof window === 'undefined') return;
 
@@ -1866,14 +1876,16 @@ export function PlannedWorkView({
         }
         return;
       }
-      const matchedFeat = resolveFeatureFromHash(hash, parsedData.plannedFeatures, projectFilter);
+      const currentFilter = projectFilterRef.current;
+      const matchedFeat = resolveFeatureFromHash(hash, parsedData.plannedFeatures, currentFilter);
       if (matchedFeat) {
         setExpandedFeatureId(matchedFeat.id);
         previousExpandedIdRef.current = matchedFeat.id;
 
         // Auto-switch project filter if deep-linking into another project
-        const featProj = matchedFeat.project || getProjectDescriptor(matchedFeat.projectId)?.code;
-        if (featProj && projectFilter !== 'all' && projectFilter.toLowerCase() !== featProj.toLowerCase()) {
+        const desc = getProjectDescriptor(matchedFeat.projectId) || (matchedFeat.project ? getProjectDescriptor(matchedFeat.project) : undefined);
+        const featProj = desc?.code || matchedFeat.project;
+        if (featProj && currentFilter !== 'all' && currentFilter.toLowerCase() !== featProj.toLowerCase()) {
           setProjectFilter(featProj);
           try {
             sessionStorage.setItem('dev_plan_project_filter', featProj);
@@ -1901,7 +1913,8 @@ export function PlannedWorkView({
     window.addEventListener('hashchange', handleHashOrPopState);
     window.addEventListener('popstate', handleHashOrPopState);
 
-    if (window.location.hash && parsedData.plannedFeatures.length > 0) {
+    if (!hasHandledInitialHashRef.current && window.location.hash && parsedData.plannedFeatures.length > 0) {
+      hasHandledInitialHashRef.current = true;
       handleHashOrPopState();
     }
 
@@ -1912,7 +1925,6 @@ export function PlannedWorkView({
   }, [
     isEmbedded,
     parsedData.plannedFeatures,
-    projectFilter,
     inDevOnly,
     isFeatureCompleted,
     isFeatureRejected,
@@ -2281,19 +2293,34 @@ export function PlannedWorkView({
                 <FolderKanban size={13} className="text-[var(--accent-primary)] shrink-0" />
                 <span className="text-[10px] font-mono text-[var(--text-muted)] hidden sm:inline">Project:</span>
                 <select
-                  value={projectFilter}
+                  value={(() => {
+                    if (projectFilter === 'all') return 'all';
+                    const desc = getProjectDescriptor(projectFilter);
+                    return desc?.code || projectFilter;
+                  })()}
                   onChange={(e) => {
                     const val = e.target.value;
                     if (val === '__new__') {
                       setIsCreateProjectOpen(true);
                       return;
                     }
-                    setProjectFilter(val);
+                    const desc = val !== 'all' ? getProjectDescriptor(val) : undefined;
+                    const code = desc?.code || val;
+                    setProjectFilter(code);
                     try {
-                      sessionStorage.setItem('dev_plan_project_filter', val);
-                      localStorage.setItem('dev_plan_project_filter', val);
-                      updateProjectUrlSearchParam(val, isEmbedded);
+                      sessionStorage.setItem('dev_plan_project_filter', code);
+                      localStorage.setItem('dev_plan_project_filter', code);
+                      updateProjectUrlSearchParam(code, isEmbedded);
                     } catch (err) {}
+
+                    if (code !== 'all' && expandedFeatureId) {
+                      const curFeat = parsedData.plannedFeatures.find((f) => f.id === expandedFeatureId);
+                      const curProj = getProjectDescriptor(curFeat?.projectId)?.code || curFeat?.project;
+                      if (curProj && curProj.toLowerCase() !== code.toLowerCase()) {
+                        setExpandedFeatureId(null);
+                        window.history.replaceState({}, '', window.location.pathname + `?project=${encodeURIComponent(code)}`);
+                      }
+                    }
                   }}
                   className="bg-transparent text-[var(--text-primary)] text-xs font-semibold focus:outline-none cursor-pointer pr-1 border-0"
                   aria-label="Filter tickets by project"
