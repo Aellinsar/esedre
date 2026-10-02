@@ -40,6 +40,13 @@ export function startUiServer(port: number, webDir: string): http.Server {
 
     const safePath = path.normalize(reqPath).replace(/^(\.\.[/\\])+/, '');
     let filePath = path.join(webDir, safePath);
+    const resolvedFilePath = path.resolve(filePath);
+    const resolvedWebDir = path.resolve(webDir);
+    if (!resolvedFilePath.startsWith(resolvedWebDir)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Access Denied: Path escapes web root.');
+      return;
+    }
 
     if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
       // SPA Fallback: serve index.html for client-side routing

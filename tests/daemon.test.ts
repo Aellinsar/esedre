@@ -11,6 +11,8 @@ import {
   startDaemon,
   stopDaemon,
   getDaemonStatus,
+  printDaemonLogs,
+  getDaemonLogFile,
 } from '../src/server/daemon.js';
 import { CURRENT_ESEDRE_VERSION } from '../src/types.js';
 
@@ -121,4 +123,45 @@ describe('Esedre Daemon & Global Runtime Store', () => {
       fs.unlinkSync(stateFile);
     }
   });
+
+  it('printDaemonLogs sanitizes ANSI escape sequences and carriage returns to prevent terminal escape injection', () => {
+    const logFile = getDaemonLogFile(TEST_PORT, workspaceRoot);
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    // Write log lines with dangerous ANSI sequences, window title change, and carriage return overwrite
+    const rawMaliciousLog = [
+      'Normal log line 1',
+      '\x1b[2J\x1b[HAdmin logged in successfully',
+      'Normal log line 2\rFake prefix',
+      '\x1b]0;Evil Title\x07Malicious window title injection',
+      'Final clean line',
+    ].join('\n');
+    fs.writeFileSync(logFile, rawMaliciousLog, 'utf-8');
+
+    const logsCaptured: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: any[]) => {
+      logsCaptured.push(args.join(' '));
+    };
+
+    try {
+      printDaemonLogs({ port: TEST_PORT, lines: 10, workspaceRoot });
+    } finally {
+      console.log = origLog;
+      if (fs.existsSync(logFile)) {
+        fs.unlinkSync(logFile);
+      }
+    }
+
+    const printed = logsCaptured.join('\n');
+    // Ensure ANSI escape sequences are stripped
+    expect(printed).not.toContain('\x1b[2J');
+    expect(printed).not.toContain('\x1b[H');
+    expect(printed).not.toContain('\x1b]0;');
+    expect(printed).not.toContain('\x07');
+    // Ensure raw carriage returns are stripped
+    expect(printed).not.toContain('\rFake');
+    expect(printed).toContain('Admin logged in successfully');
+    expect(printed).toContain('Final clean line');
+  });
 });
+

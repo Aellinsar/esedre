@@ -280,3 +280,70 @@ export class EsedreHttpPlanningProvider implements PlanningServiceProvider {
 }
 
 export const activePlanningProvider: PlanningServiceProvider = new EsedreHttpPlanningProvider();
+
+export const CLIENT_PLANNING_CACHE_KEY = 'esedre_planning_client_cache_v1';
+
+export interface PlanningClientCache {
+  metas: Record<string, TicketMeta>;
+  details: Record<string, string>;
+  plans: Record<string, string>;
+  comments: Record<string, TicketComment[]>;
+  answers: Record<string, Record<string, string>>;
+  inlineComments: Record<string, InlineComment[]>;
+  projects: ProjectDescriptor[];
+  cachedAt: number;
+}
+
+export function loadPlanningClientCache(): PlanningClientCache | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(CLIENT_PLANNING_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.metas === 'object' && parsed.metas !== null) {
+      return parsed as PlanningClientCache;
+    }
+  } catch {
+    // Corrupted JSON or storage failure
+  }
+  return null;
+}
+
+export function savePlanningClientCache(data: {
+  metas?: Record<string, TicketMeta>;
+  details?: Record<string, string>;
+  plans?: Record<string, string>;
+  comments?: Record<string, TicketComment[]>;
+  answers?: Record<string, Record<string, string>>;
+  inlineComments?: Record<string, InlineComment[]>;
+  projects?: ProjectDescriptor[];
+}): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  const payload: PlanningClientCache = {
+    metas: data.metas || {},
+    details: data.details || {},
+    plans: data.plans || {},
+    comments: data.comments || {},
+    answers: data.answers || {},
+    inlineComments: data.inlineComments || {},
+    projects: data.projects || [],
+    cachedAt: Date.now(),
+  };
+
+  try {
+    window.localStorage.setItem(CLIENT_PLANNING_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // QuotaExceededError safeguard: strip large markdown details/plans and retain compact ticket metadata
+    try {
+      const slimPayload: PlanningClientCache = {
+        ...payload,
+        details: {},
+        plans: {},
+      };
+      window.localStorage.setItem(CLIENT_PLANNING_CACHE_KEY, JSON.stringify(slimPayload));
+    } catch {
+      // If even slim metadata fails, ignore silently
+    }
+  }
+}
+

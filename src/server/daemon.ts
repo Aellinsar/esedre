@@ -260,6 +260,22 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   resolveStoreDir(workspaceRoot);
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+  // Rotate log if it exceeds 10MB to prevent log bloat
+  const MAX_LOG_SIZE_BYTES = 10 * 1024 * 1024;
+  try {
+    if (fs.existsSync(logFile)) {
+      const stats = fs.statSync(logFile);
+      if (stats.size > MAX_LOG_SIZE_BYTES) {
+        const oldLogFile = `${logFile}.old`;
+        try {
+          if (fs.existsSync(oldLogFile)) fs.unlinkSync(oldLogFile);
+          fs.renameSync(logFile, oldLogFile);
+        } catch {
+          fs.truncateSync(logFile, 0);
+        }
+      }
+    }
+  } catch {}
 
   const logFd = fs.openSync(logFile, 'a');
 
@@ -492,7 +508,7 @@ export async function getDaemonStatus(options: { port?: number; json?: boolean; 
 }
 
 /**
- * Reads and prints recent daemon log lines.
+ * Reads and prints recent daemon log lines with log bloat protection and terminal escape sanitization.
  */
 export function printDaemonLogs(options: { port?: number; lines?: number; workspaceRoot?: string } = {}): void {
   const port = resolvePorts(undefined, { port: options.port }).gateway;
@@ -504,11 +520,37 @@ export function printDaemonLogs(options: { port?: number; lines?: number; worksp
     return;
   }
 
-  const content = fs.readFileSync(logFile, 'utf-8');
   const count = options.lines || 40;
+  let content = '';
+
+  try {
+    const stats = fs.statSync(logFile);
+    // Read only the last chunk of the file (max 256KB or estimated bytes based on line count)
+    const maxReadBytes = Math.min(stats.size, Math.max(256 * 1024, count * 2048));
+    if (stats.size <= maxReadBytes) {
+      content = fs.readFileSync(logFile, 'utf-8');
+    } else {
+      const fd = fs.openSync(logFile, 'r');
+      const buffer = Buffer.alloc(maxReadBytes);
+      fs.readSync(fd, buffer, 0, maxReadBytes, stats.size - maxReadBytes);
+      fs.closeSync(fd);
+      content = buffer.toString('utf-8');
+    }
+  } catch {
+    content = fs.readFileSync(logFile, 'utf-8');
+  }
+
   const allLines = content.split(/\r?\n/);
-  const tail = allLines.slice(-count).join('\n');
+  // Sanitize lines against terminal log escape injection
+  // Strip ANSI CSI escape sequences, OSC sequences, and standalone CRs that attempt to overwrite terminal lines
+  const sanitizedLines = allLines.slice(-count).map((line) => {
+    return line
+      .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '') // Strip CSI sequences
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // Strip OSC sequences
+      .replace(/\r(?!\n)/g, '') // Strip naked carriage returns that overwrite line starts
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ''); // Strip control characters except tab and newline
+  });
 
   console.log(`\x1b[36m--- Esedre Daemon Logs (${logFile}) ---\x1b[0m\n`);
-  console.log(tail);
+  console.log(sanitizedLines.join('\n'));
 }
