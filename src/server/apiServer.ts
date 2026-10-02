@@ -48,6 +48,7 @@ interface CacheEntry {
 }
 const cachedAllData = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 5000;
+const MAX_CACHE_ENTRIES = 30;
 
 export function invalidateApiCache(): void {
   cachedAllData.clear();
@@ -221,6 +222,10 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
             ticketHistory: {},
           };
 
+          if (cachedAllData.size >= MAX_CACHE_ENTRIES) {
+            const oldestKey = cachedAllData.keys().next().value;
+            if (oldestKey) cachedAllData.delete(oldestKey);
+          }
           cachedAllData.set(cacheKey, { data: responsePayload, timestamp: now });
           sendJson(res, 200, responsePayload);
           return true;

@@ -284,5 +284,153 @@ describe('FilesystemStorageAdapter', () => {
     expect(filePath).not.toBeNull();
     expect(fs.readFileSync(filePath!)).toEqual(sampleBuffer);
   });
+
+  it('uses in-memory cache for repeated listTickets and getTicket calls when stats are unchanged', async () => {
+    const ticket = await adapter.createTicket({
+      title: 'Cache Validation Ticket',
+      category: 'Feature',
+      projectCode: 'Core',
+    });
+
+    // First retrieval populates the in-memory cache
+    const firstList = await adapter.listTickets({ project: 'Core' });
+    const firstTicket = firstList.find((t) => t.meta.id === ticket.meta.id);
+    expect(firstTicket).toBeDefined();
+
+    // Second retrieval should return cached ticket
+    const secondList = await adapter.listTickets({ project: 'Core' });
+    const secondTicket = secondList.find((t) => t.meta.id === ticket.meta.id);
+    expect(secondTicket).toBeDefined();
+    expect(secondTicket?.meta.title).toBe('Cache Validation Ticket');
+
+    // getTicket should also read from cache
+    const fetched = await adapter.getTicket(ticket.meta.id);
+    expect(fetched?.meta.title).toBe('Cache Validation Ticket');
+  });
+
+  it('invalidates and reloads ticket when underlying files change on disk', async () => {
+    const ticket = await adapter.createTicket({
+      title: 'Original Title Before Disk Change',
+      category: 'Feature',
+      projectCode: 'Core',
+    });
+
+    // Populate cache
+    await adapter.listTickets({ project: 'Core' });
+
+    // Modify meta.json on disk directly
+    const ticketDir = path.join(tempDir, 'src', 'data', 'planning', 'tickets', String(ticket.meta.id));
+    const metaPath = path.join(ticketDir, 'meta.json');
+    const metaContent = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+    metaContent.title = 'Externally Modified Title On Disk';
+    fs.writeFileSync(metaPath, JSON.stringify(metaContent, null, 2) + '\n');
+    // Ensure mtime or size changed
+    const futureTime = new Date(Date.now() + 5000);
+    fs.utimesSync(metaPath, futureTime, futureTime);
+
+    // listTickets should detect mtime/size change and return updated data
+    const updatedList = await adapter.listTickets({ project: 'Core' });
+    const updatedTicket = updatedList.find((t) => t.meta.id === ticket.meta.id);
+    expect(updatedTicket?.meta.title).toBe('Externally Modified Title On Disk');
+
+    // Modify detail.md on disk directly
+    const detailPath = path.join(ticketDir, 'detail.md');
+    fs.writeFileSync(detailPath, '# Ticket #1: External Detail Modification\n\n### Summary\nBrand new summary from external git sync.\n');
+    fs.utimesSync(detailPath, futureTime, futureTime);
+
+    const reloaded = await adapter.getTicket(ticket.meta.id);
+    expect(reloaded?.detail?.summary).toBe('Brand new summary from external git sync.');
+  });
+
+  it('prunes deleted ticket directories from in-memory cache without affecting other projects', async () => {
+    const coreTicket = await adapter.createTicket({ title: 'Core Item', category: 'Feature', projectCode: 'Core' });
+    const webTicket = await adapter.createTicket({ title: 'Web Item', category: 'Feature', projectCode: 'Web' });
+
+    // Warm cache
+    const initialList = await adapter.listTickets();
+    expect(initialList.length).toBe(2);
+
+    // Delete core ticket from disk directly
+    const coreDir = path.join(tempDir, 'src', 'data', 'planning', 'tickets', String(coreTicket.meta.id));
+    fs.rmSync(coreDir, { recursive: true, force: true });
+
+    // listTickets should prune the tombstone
+    const afterDeleteList = await adapter.listTickets();
+    expect(afterDeleteList.some((t) => t.meta.id === coreTicket.meta.id && t.meta.project === 'Core')).toBe(false);
+    expect(afterDeleteList.some((t) => t.meta.id === webTicket.meta.id && t.meta.project === 'Web')).toBe(true);
+  });
+
+  it('rejects oversized attachments exceeding the 10MB file limit', async () => {
+    const ticket = await adapter.createTicket({ title: 'Upload Item', category: 'Feature', projectCode: 'Core' });
+    const hugeBuffer = Buffer.alloc(11 * 1024 * 1024); // 11MB
+    await expect(
+      adapter.saveAttachment(ticket.meta.id, 'large-dump.bin', hugeBuffer)
+    ).rejects.toThrow(/Attachment exceeds maximum allowable size of 10MB/);
+  });
+
+  it('updateTicket updates detail.md with detailMarkdown and reconciles metadata headers (Ticket #49)', async () => {
+    const ticket = await adapter.createTicket({
+      title: 'Original Title',
+      category: 'Feature',
+      projectCode: 'Core',
+    });
+
+    const updated = await adapter.updateTicket(ticket.meta.id, {
+      title: 'Updated Title',
+      priority: 'High',
+      complexity: 'Low',
+      detailMarkdown: '### Summary\nRefined ticket specification.\n\n### Feature Breakdown\n1. First detail requirement\n2. Second detail requirement',
+    });
+
+    expect(updated.meta.title).toBe('Updated Title');
+    expect(updated.meta.priority).toBe('High');
+    expect(updated.meta.complexity).toBe('Low');
+    expect(updated.detail?.summary).toBe('Refined ticket specification.');
+    expect(updated.detail?.breakdown).toContain('First detail requirement');
+    expect(updated.detail?.breakdown).toContain('Second detail requirement');
+
+    // Read detail.md directly from disk to ensure metadata headers are reconciled
+    const ticketDir = path.join(tempDir, 'src', 'data', 'planning', 'tickets', String(ticket.meta.id));
+    const detailContent = fs.readFileSync(path.join(ticketDir, 'detail.md'), 'utf-8');
+    expect(detailContent).toContain(`# Ticket #${ticket.meta.id}: Updated Title`);
+    expect(detailContent).toContain('**Priority**: High');
+    expect(detailContent).toContain('**Complexity**: Low');
+  });
+
+  it('updateTicket normalizes top-level markdown heading to canonical ticket header (Ticket #49)', async () => {
+    const ticket = await adapter.createTicket({
+      title: 'Header Test Item',
+      category: 'Tools',
+      projectCode: 'Core',
+    });
+
+    const updated = await adapter.updateTicket(ticket.meta.id, {
+      detailMarkdown: '# Arbitrary Header from External Source\n### Summary\nOverridden specification summary.\n',
+    });
+
+    expect(updated.detail?.summary).toBe('Overridden specification summary.');
+    const ticketDir = path.join(tempDir, 'src', 'data', 'planning', 'tickets', String(ticket.meta.id));
+    const detailContent = fs.readFileSync(path.join(ticketDir, 'detail.md'), 'utf-8');
+    expect(detailContent).toContain(`# Ticket #${ticket.meta.id}: Header Test Item`);
+    expect(detailContent).not.toContain('Arbitrary Header');
+  });
+
+  it('updateTicket rejects update when lastHash conflicts with optimistic concurrency control', async () => {
+    const ticket = await adapter.createTicket({
+      title: 'OCC Ticket',
+      category: 'Feature',
+      projectCode: 'Core',
+    });
+
+    await expect(
+      adapter.updateTicket(
+        ticket.meta.id,
+        { title: 'Conflict Update', detailMarkdown: 'New details' },
+        'invalid-stale-hash-12345678'
+      )
+    ).rejects.toThrow();
+  });
 });
+
+
 

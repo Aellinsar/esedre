@@ -77,15 +77,40 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 3. **Zero Turn-to-Turn Carryover for Commit/Push**
    - An explicit instruction to commit or push in one turn **DOES NOT CARRY OVER** to subsequent turns or tasks. Each commit/push action requires a separate, explicit command.
 
-4. **Main Branch Lockdown, Dedicated Child Branches & PR Requirement**
-   - **Dedicated Ticket Child Branch**: Whenever starting work on or tackling a ticket, agents and developers MUST move to a dedicated child branch (e.g. `ticket/<ProjectCode>-<id>-<slug>`, `fix/<ticketId>`, or `feat/<ticketId>`) before making code modifications or commits. Never commit or work directly on `main`.
-   - **Lockdown & PR Invariant**: Direct merges into `main` or direct pushes to `origin/main` are strictly forbidden; production deploys and releases occur exclusively via pull requests from dedicated child branches.
+4. **Git Branching Strategy (`release/upcoming`), Child Branches & PR Standards**
+   - **Central Integration Trunk (`release/upcoming`)**:
+     - `release/upcoming` is the primary active integration and staging branch across development cycles.
+     - All new ticket, feature, and fix branches MUST branch directly off `release/upcoming` (never directly off `main`).
+   - **Dedicated Ticket Child Branches**:
+     - Whenever starting work on or tackling a ticket, agents and developers MUST create and switch to a dedicated child branch off `release/upcoming` (e.g. `ticket/<ProjectCode>-<id>-<slug>`, `feature/<ticketId>-<slug>`, or `fix/<ticketId>-<slug>`) before making code modifications or commits. Never commit or work directly on `main` or directly on `release/upcoming`.
+   - **Ticket Completion & Merge into `release/upcoming`**:
+     - Once a ticket's implementation is verified (`npm test`, `npm run build`, `npm run lint`) and explicitly approved by the user, the child branch merges cleanly back into `release/upcoming`.
+     - Multiple completed tickets and features accumulate on `release/upcoming` throughout the development milestone.
+   - **Main Branch Lockdown & Release PR Requirement (`release/upcoming` -> `main`)**:
+     - Production releases are promoted from `release/upcoming` into `main` exclusively via pull requests. Direct merges into `main` or direct pushes to `origin/main` are strictly forbidden.
+   - **Pull Request Titles & Formatting (Clean High-Level Human Descriptions)**:
+     - Always write clean, high-level, human-readable PR titles summarizing the release version, primary features, and referenced ticket numbers (e.g. `v0.4.0: Support File and Detail in Ticket Updates (#49)`).
+     - Conventional commit prefixes (such as `feat(...)`, `fix(...)`, `chore(...)`) are strictly prohibited in PR titles. Keep PR titles descriptive and professional for easy review.
+   - **Post-Release Alignment (`main` -> `release/upcoming`)**:
+     - Immediately following the merge of a release PR into `main`, merge `main` back into `release/upcoming` (or pull/rebase) so that active development stays cleanly aligned with the latest production baseline. Consult [.agents/skills/git_branching_and_release_workflow/SKILL.md](.agents/skills/git_branching_and_release_workflow/SKILL.md).
 
-5. **Mandatory Scope Clarification in Multi-Project Workspaces**
+5. **Clean Human Commit Message Standards (`[#<ticket>] <Action Summary>`)**
+   - **Strict Ban on Conventional Commit Prefixes**: Conventional commit prefixes (such as `feat:`, `feat(...)`, `fix:`, `fix(...)`, `chore:`, `chore(...)`, `style:`, `refactor:`, etc.) are STRICTLY PROHIBITED in commit messages.
+   - **Ticket Anchor Format**: All commits associated with a ticket or issue MUST anchor with the ticket ID in square brackets, followed by a concise, imperative action summary starting with a capitalized verb:
+     - `[#<id>] <Imperative Action Summary>` (e.g. `[#49] Support file and detail specification updates in CLI and MCP`)
+     - For cross-project commits: `[#<ProjectCode>-<id>] <Imperative Action Summary>` (e.g. `[#Esedre-49] Support file and detail specification updates in CLI and MCP`)
+   - **Non-Ticket Commits**: For general maintenance, documentation, or infrastructure not tied to an active ticket, use a clean domain anchor in square brackets:
+     - `[Docs] <Imperative Summary>` (e.g. `[Docs] Codify release/upcoming branching and commit naming standards`)
+     - `[Infra] <Imperative Summary>` (e.g. `[Infra] Configure dev tunnel hosts and allowed hosts`)
+     - `[Release] <Imperative Summary>` (e.g. `[Release] Bump version to v1.2.0 and update changelog`)
+   - **Imperative Voice & Capitalization**: Always use the imperative present tense (`Support`, `Add`, `Fix`, `Refactor`, `Update`, `Optimize`), never past tense (`Supported`, `Added`, `Fixed`).
+   - **Zero Em Dashes**: Never use em dashes anywhere in commit titles or descriptions.
+
+6. **Mandatory Scope Clarification in Multi-Project Workspaces**
    - In a multi-project workspace, if there is ANY ambiguity regarding which repositories, projects, or modified files are intended to be committed or pushed, you MUST ask the user for explicit clarification before staging, committing, or pushing.
    - Never assume all modified repositories or workspaces should be committed or pushed together. Erroneous commits or pushes across projects are strictly prohibited.
 
-6. **Mandatory Documentation Currency Pre-Flight Check (Zero Stale Docs)**
+7. **Mandatory Documentation Currency Pre-Flight Check (Zero Stale Docs)**
    - Whenever the user mentions commit, push, or package publishing, you are STRICTLY REQUIRED to halt and double-check all Esedre documentation: `README.md`, `AGENTS.md`, and the agent skills in `.agents/skills/`.
    - **Expected Behavior (Halt & Warn, Never Silent Auto-Changes)**:
      - If ANY documentation is stale, out-of-date, or missing newly added commands, flags, schema fields, or architectural invariants, you MUST **HALT** and **WARN** the user of the stale documentation, explicitly presenting the suggested fixes.

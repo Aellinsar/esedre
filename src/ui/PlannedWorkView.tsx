@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { X, Lightbulb, ShieldAlert, FileText, Search, ChevronRight, ChevronLeft, CheckCircle2, HelpCircle, Clock, Zap, List, Save, Edit3, Check, MessageSquare, Flag, Tag, User, Plus, Quote, Highlighter, Paperclip, GripHorizontal, ArrowRight, ArrowUp, ArrowDown, Trash2, Image as ImageIcon, RotateCcw, Columns, FileCode, Sliders, Split, History, Eye, XCircle, FolderKanban, Settings, Sun, Moon, ExternalLink, Milestone as MilestoneIcon, Link2 } from 'lucide-react';
+import { X, Lightbulb, ShieldAlert, FileText, Search, ChevronRight, ChevronLeft, CheckCircle2, HelpCircle, Clock, Zap, List, Save, Edit3, Check, MessageSquare, Flag, Tag, User, Plus, Quote, Highlighter, Paperclip, GripHorizontal, ArrowRight, ArrowUp, ArrowDown, Trash2, Image as ImageIcon, RotateCcw, Columns, FileCode, Sliders, Split, History, Eye, XCircle, FolderKanban, Settings, Sun, Moon, ExternalLink, Milestone as MilestoneIcon, Link2, Loader2 } from 'lucide-react';
 import { TicketComment, TicketMeta, InlineComment, PlannedFeature, TicketHistorySnapshot, KNOWN_FEATURE_FLAGS, ProjectName, ALL_PROJECTS, ALL_PROJECT_NAMES, UNASSIGNED_PROJECT_COLORS, getProjectDescriptor, getProjectById, ProjectDescriptor, setRuntimeProjects, getRuntimeProjects, DEFAULT_ESEDRE_PORT, TicketPriority, PRIORITIES, PRIORITY_CONFIG, Milestone, LINK_RELATION_LABELS } from './types';
-import { activePlanningProvider } from './planningClient';
+import { activePlanningProvider, loadPlanningClientCache, savePlanningClientCache, PlanningClientCache } from './planningClient';
 import { parsePlannedWorkMarkdown } from './planParser';
 import { CreateTicketModal } from './CreateTicketModal';
 import { CreateProjectModal } from './CreateProjectModal';
@@ -661,7 +661,22 @@ export function PlannedWorkView({
     }
     return (allowedProjects && allowedProjects.length > 0) ? allowedProjects[0] : 'all';
   });
+  const clientCacheRef = useRef<PlanningClientCache | null | undefined>(undefined);
+  if (clientCacheRef.current === undefined) {
+    clientCacheRef.current = typeof window !== 'undefined' ? loadPlanningClientCache() : null;
+  }
+  const cachedClientData = clientCacheRef.current;
+  const hasCachedTickets = Boolean(cachedClientData && Object.keys(cachedClientData.metas || {}).length > 0);
+  const [isInitialLoading, setIsInitialLoading] = useState(!hasCachedTickets);
+
   const [availableProjects, setAvailableProjects] = useState<ProjectDescriptor[]>(() => {
+    if (cachedClientData?.projects && cachedClientData.projects.length > 0) {
+      if (allowedProjects && allowedProjects.length > 0) {
+        const normalized = allowedProjects.map((p) => p.trim().toUpperCase());
+        return cachedClientData.projects.filter((p) => normalized.includes(p.code.toUpperCase()));
+      }
+      return cachedClientData.projects;
+    }
     if (allowedProjects && allowedProjects.length > 0) {
       const normalized = allowedProjects.map((p) => p.trim().toUpperCase());
       return ALL_PROJECTS.filter((p) => normalized.includes(p.code.toUpperCase()));
@@ -795,22 +810,37 @@ export function PlannedWorkView({
 
   // Ticket answers, plans & comments states
   const [answersMap, setAnswersMap] = useState<Record<string, Record<string, string>>>(() => {
+    if (cachedClientData?.answers && Object.keys(cachedClientData.answers).length > 0) {
+      return cachedClientData.answers;
+    }
     const res = activePlanningProvider.getAnswers();
     return res instanceof Promise ? {} : res;
   });
   const [plansMap, setPlansMap] = useState<Record<string, string>>(() => {
+    if (cachedClientData?.plans && Object.keys(cachedClientData.plans).length > 0) {
+      return cachedClientData.plans;
+    }
     const res = activePlanningProvider.getPlans();
     return res instanceof Promise ? {} : res;
   });
   const [commentsMap, setCommentsMap] = useState<Record<string, TicketComment[]>>(() => {
+    if (cachedClientData?.comments && Object.keys(cachedClientData.comments).length > 0) {
+      return cachedClientData.comments;
+    }
     const res = activePlanningProvider.getComments();
     return res instanceof Promise ? {} : res;
   });
   const [metasMap, setMetasMap] = useState<Record<string, TicketMeta>>(() => {
+    if (cachedClientData?.metas && Object.keys(cachedClientData.metas).length > 0) {
+      return cachedClientData.metas;
+    }
     const res = activePlanningProvider.getMetas();
     return res instanceof Promise ? {} : res;
   });
   const [inlineCommentsMap, setInlineCommentsMap] = useState<Record<string, InlineComment[]>>(() => {
+    if (cachedClientData?.inlineComments && Object.keys(cachedClientData.inlineComments).length > 0) {
+      return cachedClientData.inlineComments;
+    }
     const res = activePlanningProvider.getInlineComments();
     return res instanceof Promise ? {} : res;
   });
@@ -823,6 +853,9 @@ export function PlannedWorkView({
     return res instanceof Promise ? {} : res;
   });
   const [detailsMap, setDetailsMap] = useState<Record<string, string>>(() => {
+    if (cachedClientData?.details && Object.keys(cachedClientData.details).length > 0) {
+      return cachedClientData.details;
+    }
     const res = activePlanningProvider.getTicketDetails();
     return res instanceof Promise ? {} : res;
   });
@@ -998,12 +1031,16 @@ export function PlannedWorkView({
 
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const handleRefresh = useCallback(() => setRefreshTrigger((v) => v + 1), []);
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
+    let isMounted = true;
     const loadAsyncData = async () => {
+      const currentRequestId = ++requestIdRef.current;
       try {
         if (activePlanningProvider.getAll) {
           const allData = await activePlanningProvider.getAll();
+          if (!isMounted || currentRequestId !== requestIdRef.current) return;
           if (allData && allData.success) {
             if (allData.answers) setAnswersMap(allData.answers);
             if (allData.plans) setPlansMap(allData.plans);
@@ -1013,6 +1050,16 @@ export function PlannedWorkView({
             if (allData.planHistory) setPlanHistoryMap(allData.planHistory);
             if (allData.details) setDetailsMap(allData.details);
             if (allData.ticketHistory) setTicketHistoryMap(allData.ticketHistory);
+            savePlanningClientCache({
+              metas: allData.metas,
+              details: allData.details,
+              plans: allData.plans,
+              comments: allData.comments,
+              answers: allData.answers,
+              inlineComments: allData.inlineComments,
+              projects: allData.projects,
+            });
+            setIsInitialLoading(false);
             const areProjectsEqual = (a: ProjectDescriptor[], b: ProjectDescriptor[]) =>
               a.length === b.length &&
               a.every((p, i) =>
@@ -1034,6 +1081,7 @@ export function PlannedWorkView({
               setAvailableProjects((prev) => areProjectsEqual(prev, filtered) ? prev : filtered);
             } else if (activePlanningProvider.getProjects) {
               const projs = await activePlanningProvider.getProjects();
+              if (!isMounted || currentRequestId !== requestIdRef.current) return;
               if (Array.isArray(projs) && projs.length > 0) {
                 setRuntimeProjects(projs);
                 const filtered = (allowedProjects && allowedProjects.length > 0)
@@ -1055,6 +1103,7 @@ export function PlannedWorkView({
           activePlanningProvider.getTicketDetails(),
           activePlanningProvider.getHistory(),
         ]);
+        if (!isMounted || currentRequestId !== requestIdRef.current) return;
         setAnswersMap(answers || {});
         setPlansMap(plans || {});
         setCommentsMap(comments || {});
@@ -1063,8 +1112,18 @@ export function PlannedWorkView({
         setPlanHistoryMap(history || {});
         setDetailsMap(details || {});
         setTicketHistoryMap(ticketHistory || {});
+        savePlanningClientCache({
+          metas: metas || {},
+          details: details || {},
+          plans: plans || {},
+          comments: comments || {},
+          answers: answers || {},
+          inlineComments: inlines || {},
+        });
+        setIsInitialLoading(false);
         if (activePlanningProvider.getProjects) {
           const projs = await activePlanningProvider.getProjects();
+          if (!isMounted || currentRequestId !== requestIdRef.current) return;
           if (Array.isArray(projs) && projs.length > 0) {
             setRuntimeProjects(projs);
             const filtered = (allowedProjects && allowedProjects.length > 0)
@@ -1087,6 +1146,10 @@ export function PlannedWorkView({
         }
       } catch (err) {
         console.error('Failed to load async planning data:', err);
+      } finally {
+        if (isMounted && currentRequestId === requestIdRef.current) {
+          setIsInitialLoading(false);
+        }
       }
     };
 
@@ -1095,10 +1158,11 @@ export function PlannedWorkView({
     window.addEventListener('focus', loadAsyncData);
 
     return () => {
+      isMounted = false;
       clearInterval(interval);
       window.removeEventListener('focus', loadAsyncData);
     };
-  }, [refreshTrigger]);
+  }, [refreshTrigger, allowedProjects]);
 
   const [flagDescriptionsMap, setFlagDescriptionsMap] = useState<Record<string, string>>(() => {
     if (typeof window !== 'undefined') {
@@ -2413,7 +2477,12 @@ export function PlannedWorkView({
                 <div className="flex items-center justify-between shrink-0 pb-1.5 border-b border-[var(--border-subtle)]">
                   <span className="text-[11px] font-mono font-bold text-[var(--accent-primary)] uppercase tracking-wider flex items-center gap-1.5 truncate">
                     <List size={14} className="text-[var(--accent-primary)] shrink-0" />
-                    TOC ({sortedFeatures.length})
+                    TOC ({isInitialLoading && sortedFeatures.length === 0 ? (
+                      <span className="inline-flex items-center gap-1 text-[var(--accent-primary)] font-sans">
+                        <Loader2 size={11} className="animate-spin inline" />
+                        <span>...</span>
+                      </span>
+                    ) : sortedFeatures.length})
                   </span>
                   <button
                     type="button"
@@ -2426,7 +2495,35 @@ export function PlannedWorkView({
                 </div>
 
                 <div className="flex-1 overflow-y-auto space-y-1 pr-1 text-xs font-mono scrollbar-thin">
-                  {sortedFeatures.map((feat) => {
+                  {isInitialLoading && sortedFeatures.length === 0 ? (
+                    <div className="space-y-2 p-0.5">
+                      <div className="flex items-center justify-center gap-2 py-2 px-2 bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-xl text-[var(--text-muted)] text-xs shadow-xs">
+                        <Loader2 size={13} className="animate-spin text-[var(--accent-primary)] shrink-0" />
+                        <span className="font-sans font-medium text-[11px]">Loading tickets...</span>
+                      </div>
+                      <div className="space-y-1.5 animate-pulse">
+                        {[1, 2, 3, 4, 5, 6].map((i) => (
+                          <div
+                            key={i}
+                            className="w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)]"
+                          >
+                            <div className="flex items-center gap-2 flex-1 min-w-0">
+                              <div className="w-8 h-3.5 rounded bg-slate-200 dark:bg-slate-700/60 shrink-0" />
+                              <div
+                                className="h-3 rounded bg-slate-200 dark:bg-slate-700/60"
+                                style={{ width: `${40 + (i * 11) % 45}%` }}
+                              />
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <div className="w-12 h-4 rounded-md bg-slate-200 dark:bg-slate-700/60" />
+                              <div className="w-4 h-4 rounded-md bg-slate-200 dark:bg-slate-700/60" />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    sortedFeatures.map((feat) => {
                     const isSelected = expandedFeatureId === feat.id;
                     const isSingleProject = projectFilter !== 'all';
                     const projDesc =
@@ -2535,7 +2632,7 @@ export function PlannedWorkView({
                         </div>
                       </button>
                     );
-                  })}
+                  }))}
                 </div>
               </div>
 
@@ -2714,7 +2811,81 @@ export function PlannedWorkView({
                 {/* Feature Cards List Container */}
                 <div className="flex-1 min-h-0 h-full overflow-hidden rounded-2xl">
                   <div id="planned-work-cards-scroll-container" className="h-full overflow-y-auto space-y-3 p-1 pr-1.5 scrollbar-thin">
-                  {sortedFeatures.map((feat) => {
+                  {isInitialLoading && sortedFeatures.length === 0 ? (
+                    <div className="space-y-4 p-1">
+                      <div className="flex flex-col items-center justify-center p-8 bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-2xl text-center shadow-xs">
+                        <div className="w-12 h-12 rounded-2xl bg-[var(--accent-bg-subtle)] flex items-center justify-center text-[var(--accent-primary)] mb-3 shadow-xs">
+                          <Loader2 size={24} className="animate-spin text-[var(--accent-primary)]" />
+                        </div>
+                        <h3 className="text-sm font-bold text-[var(--text-primary)] mb-1">
+                          Loading Roadmap Tickets...
+                        </h3>
+                        <p className="text-xs text-[var(--text-muted)] max-w-sm">
+                          Retrieving ticket data from storage. This may take a moment while the server indexes tickets into memory.
+                        </p>
+                      </div>
+                      <div className="space-y-3 p-1 animate-pulse">
+                        {[1, 2, 3].map((i) => (
+                          <div
+                            key={i}
+                            className="border border-[var(--border-subtle)] rounded-2xl bg-[var(--bg-surface)] p-4 shadow-xs"
+                          >
+                            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                              <div className="flex items-center gap-3 flex-1 min-w-0">
+                                <div className="w-16 h-7 rounded-lg bg-slate-200 dark:bg-slate-700/60 shrink-0" />
+                                <div className="space-y-1.5 flex-1 min-w-0">
+                                  <div
+                                    className="h-4 rounded bg-slate-200 dark:bg-slate-700/60"
+                                    style={{ width: `${50 + (i * 15) % 35}%` }}
+                                  />
+                                  <div className="w-24 h-2.5 rounded bg-slate-200 dark:bg-slate-700/50" />
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <div className="w-14 h-5 rounded-full bg-slate-200 dark:bg-slate-700/60" />
+                                <div className="w-16 h-5 rounded-full bg-slate-200 dark:bg-slate-700/60" />
+                                <div className="w-14 h-5 rounded-full bg-slate-200 dark:bg-slate-700/60" />
+                                <div className="w-20 h-5 rounded-full bg-slate-200 dark:bg-slate-700/60" />
+                              </div>
+                            </div>
+                            <div className="mt-3.5 pt-3 border-t border-[var(--border-subtle)] space-y-2">
+                              <div className="w-full h-3 rounded bg-slate-200/80 dark:bg-slate-800" />
+                              <div className="w-4/5 h-3 rounded bg-slate-200/80 dark:bg-slate-800" />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : sortedFeatures.length === 0 ? (
+                    <div className="p-8 my-4 bg-[var(--bg-surface-elevated)] rounded-2xl border border-dashed border-[var(--border-subtle)] flex flex-col items-center justify-center gap-3 text-center">
+                      <div className="w-10 h-10 rounded-xl bg-[var(--accent-bg-subtle)] flex items-center justify-center text-[var(--accent-primary)]">
+                        <Search size={20} />
+                      </div>
+                      <div className="space-y-1">
+                        <h4 className="text-sm font-bold text-[var(--text-primary)]">No tickets match the current filters</h4>
+                        <p className="text-xs text-[var(--text-muted)] max-w-sm">
+                          Try clearing your search query or adjusting type, priority, complexity, or milestone filters.
+                        </p>
+                      </div>
+                      {(searchQuery || complexityFilter !== 'all' || priorityFilter !== 'all' || typeFilter !== 'all' || milestoneFilter !== 'all' || inDevOnly) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSearchQuery('');
+                            setComplexityFilter('all');
+                            setPriorityFilter('all');
+                            setTypeFilter('all');
+                            setMilestoneFilter('all');
+                            setInDevOnly(false);
+                          }}
+                          className="mt-1 px-3 py-1.5 bg-[var(--bg-surface)] hover:bg-[var(--accent-bg-subtle)] text-[var(--accent-primary)] border border-[var(--border-subtle)] hover:border-[var(--accent-border-subtle)] rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+                        >
+                          Reset Filters
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    sortedFeatures.map((feat) => {
                     const isExpanded = expandedFeatureId === feat.id;
                     return (
                       <div
@@ -4194,7 +4365,8 @@ export function PlannedWorkView({
                         )}
                       </div>
                     );
-                  })}
+                  })
+                )}
                 </div>
               </div>
             </div>

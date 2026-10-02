@@ -177,6 +177,33 @@ describe('Project Binding & End-to-End Workflow', () => {
     ).json();
     expect(update2.meta.status).toBe('Completed');
 
+    // 4b. Update ticket specification detail using inline --detail (Ticket #49)
+    const updateDetailRes = runCli(
+      ['update', '1', '--detail', '### Summary\nRefactored server health spec.\n\n### Feature Breakdown\n1. Add ping latency\n2. Add memory check', '--json'],
+      sampleDir
+    ).json();
+    expect(updateDetailRes.detail.summary).toBe('Refactored server health spec.');
+    expect(updateDetailRes.detail.breakdown).toContain('Add ping latency');
+    expect(updateDetailRes.detail.breakdown).toContain('Add memory check');
+
+    // 4c. Update ticket specification detail using external --file (Ticket #49)
+    const updatedSpecFile = path.join(sampleDir, 'updated-spec.md');
+    fs.writeFileSync(updatedSpecFile, '### Summary\nExternal updated spec.\n\n### Feature Breakdown\n1. External detail step\n', 'utf-8');
+    const updateFileRes = runCli(
+      ['update', '1', '--file', updatedSpecFile, '--json'],
+      sampleDir
+    ).json();
+    expect(updateFileRes.detail.summary).toBe('External updated spec.');
+    expect(updateFileRes.detail.breakdown).toContain('External detail step');
+
+    // Verify nonexistent --file throws error on update
+    expect(() => {
+      runCli(
+        ['update', '1', '--file', 'nonexistent-update-spec.md', '--json'],
+        sampleDir
+      );
+    }).toThrow();
+
     // 5. Update and inspect implementation plan
     const planSaveRes = runCli(
       ['plan', 'SERV-1', '--set', '## Technical Approach\n1. Add Express router\n2. Add test suite', '--json'],
