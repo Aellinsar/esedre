@@ -118,7 +118,7 @@ Core day-to-day workflow commands for scoping, viewing, planning, and verifying 
 | `get` | `ese get <id> [--json]` | View ticket specifications, feature breakdown, comments, links, and SHA-1 hash. |
 | `plan` | `ese plan <id> [--set "<markdown>"] [--file <path>] [--last-hash <h>]` | Read or update the active implementation plan markdown. |
 | `create` | `ese create --title "..." [-p\|--project <code>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name>] [--detail "<md>"] [--file <path>]` | Create a new ticket with auto-sequential ID, optional priority, optional milestone, and specification markdown. Title strictly capped at 48 chars. |
-| `update` | `ese update <id> [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority\|none>] [-m\|--milestone <name\|none>] [--title "..."] [--last-hash <h>]` | Update ticket status, type, priority, milestone, or title with optimistic concurrency protection. |
+| `update` | `ese update <id> [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority\|none>] [-m\|--milestone <name\|none>] [--title "..."] [--detail "<md>"] [--file <path>] [--last-hash <h>]` | Update ticket status, type, priority, milestone, title, or specification markdown with optimistic concurrency protection. |
 | `link` | `ese link <sourceId> <relation> <targetId> [--author "..."]` | Establish a bi-directional link between two tickets. Relations: `relates-to`, `blocks`, `parent-of`, `duplicates`. |
 | `unlink` | `ese unlink <sourceId> <targetId> [--relation <relation>]` | Remove a bi-directional link between two tickets. |
 | `milestone` | `ese milestone [list\|get\|create\|update\|delete] [args...]` | Manage project milestones and umbrella feature flags with deliverables tracking. |

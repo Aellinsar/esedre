@@ -336,6 +336,8 @@ export class EsedreMcpServer {
             inDevelopment: { type: 'boolean', description: 'Active development toggle' },
             featureFlag: { type: 'string', description: 'Feature flag name' },
             milestone: { type: 'string', description: 'Update ticket milestone ("none" to clear)' },
+            detail: { type: 'string', description: 'Updated specification markdown for ticket detail' },
+            detailMarkdown: { type: 'string', description: 'Updated specification markdown for ticket detail' },
             lastHash: { type: 'string', description: 'Optimistic concurrency control: last known sha1 hash of the ticket' },
           },
           required: ['ticketId'],
@@ -533,6 +535,8 @@ export class EsedreMcpServer {
         if (args.inDevelopment !== undefined) updates.isActivePlanning = Boolean(args.inDevelopment);
         if (args.featureFlag) updates.featureFlag = args.featureFlag;
         if (args.milestone !== undefined) updates.milestone = args.milestone;
+        if (args.detail !== undefined) updates.detail = args.detail;
+        if (args.detailMarkdown !== undefined) updates.detailMarkdown = args.detailMarkdown;
 
         const updated = await this.storage.updateTicket(id, updates, args.lastHash);
         return updated;

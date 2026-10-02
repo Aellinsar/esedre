@@ -11,7 +11,7 @@ import {
   UpdateMilestoneInput,
   TicketLinkRelation,
 } from './types.js';
-import { StorageAdapter, CreateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './storage/adapter.js';
+import { StorageAdapter, CreateTicketInput, UpdateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './storage/adapter.js';
 import { EsedreConfig, isProjectAuthorized, EsedreAuthorizationError } from './config.js';
 
 export class SecurityFilter implements StorageAdapter {
@@ -118,7 +118,7 @@ export class SecurityFilter implements StorageAdapter {
     return this.target.createTicket(input);
   }
 
-  public async updateTicket(id: number | string, updates: Partial<TicketMeta>, lastHash?: string): Promise<EsedreTicket> {
+  public async updateTicket(id: number | string, updates: UpdateTicketInput, lastHash?: string): Promise<EsedreTicket> {
     const existing = await this.target.getTicket(id);
     if (existing) {
       const code = existing.projectDescriptor?.code || existing.meta.project;

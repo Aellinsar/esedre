@@ -367,6 +367,70 @@ describe('FilesystemStorageAdapter', () => {
       adapter.saveAttachment(ticket.meta.id, 'large-dump.bin', hugeBuffer)
     ).rejects.toThrow(/Attachment exceeds maximum allowable size of 10MB/);
   });
+
+  it('updateTicket updates detail.md with detailMarkdown and reconciles metadata headers (Ticket #49)', async () => {
+    const ticket = await adapter.createTicket({
+      title: 'Original Title',
+      category: 'Feature',
+      projectCode: 'Core',
+    });
+
+    const updated = await adapter.updateTicket(ticket.meta.id, {
+      title: 'Updated Title',
+      priority: 'High',
+      complexity: 'Low',
+      detailMarkdown: '### Summary\nRefined ticket specification.\n\n### Feature Breakdown\n1. First detail requirement\n2. Second detail requirement',
+    });
+
+    expect(updated.meta.title).toBe('Updated Title');
+    expect(updated.meta.priority).toBe('High');
+    expect(updated.meta.complexity).toBe('Low');
+    expect(updated.detail?.summary).toBe('Refined ticket specification.');
+    expect(updated.detail?.breakdown).toContain('First detail requirement');
+    expect(updated.detail?.breakdown).toContain('Second detail requirement');
+
+    // Read detail.md directly from disk to ensure metadata headers are reconciled
+    const ticketDir = path.join(tempDir, 'src', 'data', 'planning', 'tickets', String(ticket.meta.id));
+    const detailContent = fs.readFileSync(path.join(ticketDir, 'detail.md'), 'utf-8');
+    expect(detailContent).toContain(`# Ticket #${ticket.meta.id}: Updated Title`);
+    expect(detailContent).toContain('**Priority**: High');
+    expect(detailContent).toContain('**Complexity**: Low');
+  });
+
+  it('updateTicket normalizes top-level markdown heading to canonical ticket header (Ticket #49)', async () => {
+    const ticket = await adapter.createTicket({
+      title: 'Header Test Item',
+      category: 'Tools',
+      projectCode: 'Core',
+    });
+
+    const updated = await adapter.updateTicket(ticket.meta.id, {
+      detailMarkdown: '# Arbitrary Header from External Source\n### Summary\nOverridden specification summary.\n',
+    });
+
+    expect(updated.detail?.summary).toBe('Overridden specification summary.');
+    const ticketDir = path.join(tempDir, 'src', 'data', 'planning', 'tickets', String(ticket.meta.id));
+    const detailContent = fs.readFileSync(path.join(ticketDir, 'detail.md'), 'utf-8');
+    expect(detailContent).toContain(`# Ticket #${ticket.meta.id}: Header Test Item`);
+    expect(detailContent).not.toContain('Arbitrary Header');
+  });
+
+  it('updateTicket rejects update when lastHash conflicts with optimistic concurrency control', async () => {
+    const ticket = await adapter.createTicket({
+      title: 'OCC Ticket',
+      category: 'Feature',
+      projectCode: 'Core',
+    });
+
+    await expect(
+      adapter.updateTicket(
+        ticket.meta.id,
+        { title: 'Conflict Update', detailMarkdown: 'New details' },
+        'invalid-stale-hash-12345678'
+      )
+    ).rejects.toThrow();
+  });
 });
+
 
 

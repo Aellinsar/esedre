@@ -77,9 +77,22 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 3. **Zero Turn-to-Turn Carryover for Commit/Push**
    - An explicit instruction to commit or push in one turn **DOES NOT CARRY OVER** to subsequent turns or tasks. Each commit/push action requires a separate, explicit command.
 
-4. **Main Branch Lockdown, Dedicated Child Branches & PR Requirement**
-   - **Dedicated Ticket Child Branch**: Whenever starting work on or tackling a ticket, agents and developers MUST move to a dedicated child branch (e.g. `ticket/<ProjectCode>-<id>-<slug>`, `fix/<ticketId>`, or `feat/<ticketId>`) before making code modifications or commits. Never commit or work directly on `main`.
-   - **Lockdown & PR Invariant**: Direct merges into `main` or direct pushes to `origin/main` are strictly forbidden; production deploys and releases occur exclusively via pull requests from dedicated child branches.
+4. **Git Branching Strategy (`release/upcoming`), Child Branches & PR Standards**
+   - **Central Integration Trunk (`release/upcoming`)**:
+     - `release/upcoming` is the primary active integration and staging branch across development cycles.
+     - All new ticket, feature, and fix branches MUST branch directly off `release/upcoming` (never directly off `main`).
+   - **Dedicated Ticket Child Branches**:
+     - Whenever starting work on or tackling a ticket, agents and developers MUST create and switch to a dedicated child branch off `release/upcoming` (e.g. `ticket/<ProjectCode>-<id>-<slug>`, `feature/<ticketId>-<slug>`, or `fix/<ticketId>-<slug>`) before making code modifications or commits. Never commit or work directly on `main` or directly on `release/upcoming`.
+   - **Ticket Completion & Merge into `release/upcoming`**:
+     - Once a ticket's implementation is verified (`npm test`, `npm run build`, `npm run lint`) and explicitly approved by the user, the child branch merges cleanly back into `release/upcoming`.
+     - Multiple completed tickets and features accumulate on `release/upcoming` throughout the development milestone.
+   - **Main Branch Lockdown & Release PR Requirement (`release/upcoming` -> `main`)**:
+     - Production releases are promoted from `release/upcoming` into `main` exclusively via pull requests. Direct merges into `main` or direct pushes to `origin/main` are strictly forbidden.
+   - **Pull Request Titles & Formatting (Clean High-Level Human Descriptions)**:
+     - Always write clean, high-level, human-readable PR titles summarizing the release version, primary features, and referenced ticket numbers (e.g. `v0.4.0: Support File and Detail in Ticket Updates (#49)`).
+     - Conventional commit prefixes (such as `feat(...)`, `fix(...)`, `chore(...)`) are strictly prohibited in PR titles. Keep PR titles descriptive and professional for easy review.
+   - **Post-Release Alignment (`main` -> `release/upcoming`)**:
+     - Immediately following the merge of a release PR into `main`, merge `main` back into `release/upcoming` (or pull/rebase) so that active development stays cleanly aligned with the latest production baseline. Consult [.agents/skills/git_branching_and_release_workflow/SKILL.md](.agents/skills/git_branching_and_release_workflow/SKILL.md).
 
 5. **Mandatory Scope Clarification in Multi-Project Workspaces**
    - In a multi-project workspace, if there is ANY ambiguity regarding which repositories, projects, or modified files are intended to be committed or pushed, you MUST ask the user for explicit clarification before staging, committing, or pushing.

@@ -148,6 +148,12 @@ export interface TicketMeta {
   sha1?: string;
 }
 
+export interface TicketUpdatePayload extends Omit<Partial<TicketMeta>, 'priority'> {
+  priority?: TicketPriority | 'none' | null | string;
+  detail?: string;
+  detailMarkdown?: string;
+}
+
 export interface TicketComment {
   id: string;
   timestamp: string;
