@@ -32,7 +32,7 @@ import {
   EnrichedTicketLink,
   INVERSE_RELATIONS,
 } from '../types.js';
-import { StorageAdapter, CreateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './adapter.js';
+import { StorageAdapter, CreateTicketInput, UpdateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './adapter.js';
 import { EsedreConfig, findEsedreConfig, expandHome, validateProjectCode, validateProjectName } from '../config.js';
 import { computeTicketHash, verifyTicketHash } from '../snapshot.js';
 import { normalizeDashesAndMojibake, normalizeTicketFields, normalizePriority } from '../utils/formatter.js';
@@ -1833,6 +1833,49 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     };
   }
 
+  private formatTicketDetailMarkdown(
+    rawDetail: string,
+    meta: TicketMeta,
+    fallbackSummary?: string
+  ): string {
+  const trimmed = rawDetail.trim();
+  const priorityLine = meta.priority ? `**Priority**: ${meta.priority}  \n` : '';
+  const milestoneLine = meta.milestone ? `**Milestone**: ${meta.milestone}  \n` : '';
+
+  if (/^#\s+[^\n]+/m.test(trimmed)) {
+    let processed = trimmed.replace(/^#\s+[^\n]+/m, `# Ticket #${meta.id}: ${meta.title}`);
+    if (!/\*\*(?:Type|Category)\*\*:/i.test(processed)) {
+      const metaBlock = `\n**Category**: ${meta.category}  \n${priorityLine}${milestoneLine}**Complexity**: ${meta.complexity}  \n**Estimated Effort**: ${meta.estimatedEffort}  \n`;
+      processed = processed.replace(/^(# Ticket[^\n]+\n)/m, `$1${metaBlock}`);
+    }
+    if (!/(?:##|###)\s*(?:Summary|Rationale)/i.test(processed)) {
+      const summaryBlock = `\n### Summary\n${fallbackSummary || 'Summary to be defined.'}\n`;
+      processed = processed.replace(/^((?:# Ticket[^\n]+\n)(?:\*\*[^\n]+\n)*)/m, `$1${summaryBlock}`);
+    }
+    return processed.endsWith('\n') ? processed : `${processed}\n`;
+  }
+
+  const hasSummary = /(?:##|###)\s*(?:Summary|Rationale)/i.test(trimmed);
+  const hasBreakdown = /(?:##|###)\s*Feature Breakdown/i.test(trimmed);
+
+  let body = '';
+  if (!hasSummary) {
+    body += `### Summary\n${fallbackSummary || 'Summary to be defined.'}\n\n`;
+  }
+  if (!hasBreakdown && !trimmed.startsWith('#')) {
+    body += `### Feature Breakdown\n${trimmed}\n\n### Technical Details & Architecture\n- Architecture specifications to be documented.\n\n### Open Questions & Decisions\n- None recorded at initialization.\n`;
+  } else {
+    body += `${trimmed}\n`;
+  }
+
+  return `# Ticket #${meta.id}: ${meta.title}
+**Category**: ${meta.category}  
+${priorityLine}${milestoneLine}**Complexity**: ${meta.complexity}  
+**Estimated Effort**: ${meta.estimatedEffort}  
+
+${body.trim()}\n`;
+}
+
   public async createTicket(input: CreateTicketInput): Promise<EsedreTicket> {
     const locations = this.resolveProjectLocations();
     if (locations.length === 0) {
@@ -1926,46 +1969,13 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     };
 
     const rawDetail = cleanDetailRaw?.trim();
-    const priorityLine = meta.priority ? `**Priority**: ${meta.priority}  \n` : '';
-    const milestoneLine = meta.milestone ? `**Milestone**: ${meta.milestone}  \n` : '';
     let detailMd: string;
 
     if (rawDetail) {
-      if (/^#\s+[^\n]+/m.test(rawDetail)) {
-        // Starts with or contains a top-level single-hash heading (# Title)
-        let processed = rawDetail.replace(/^#\s+[^\n]+/m, `# Ticket #${nextId}: ${meta.title}`);
-        if (!/\*\*(?:Type|Category)\*\*:/i.test(processed)) {
-          const metaBlock = `\n**Category**: ${meta.category}  \n${priorityLine}${milestoneLine}**Complexity**: ${meta.complexity}  \n**Estimated Effort**: ${meta.estimatedEffort}  \n`;
-          processed = processed.replace(/^(# Ticket[^\n]+\n)/m, `$1${metaBlock}`);
-        }
-        if (!/(?:##|###)\s*(?:Summary|Rationale)/i.test(processed)) {
-          const summaryBlock = `\n### Summary\n${input.summary || 'Summary to be defined.'}\n`;
-          processed = processed.replace(/^((?:# Ticket[^\n]+\n)(?:\*\*[^\n]+\n)*)/m, `$1${summaryBlock}`);
-        }
-        detailMd = processed.endsWith('\n') ? processed : `${processed}\n`;
-      } else {
-        // Sub-headings (##, ###) or plain body text
-        const hasSummary = /(?:##|###)\s*(?:Summary|Rationale)/i.test(rawDetail);
-        const hasBreakdown = /(?:##|###)\s*Feature Breakdown/i.test(rawDetail);
-
-        let body = '';
-        if (!hasSummary) {
-          body += `### Summary\n${input.summary || 'Summary to be defined.'}\n\n`;
-        }
-        if (!hasBreakdown && !rawDetail.startsWith('#')) {
-          body += `### Feature Breakdown\n${rawDetail}\n\n### Technical Details & Architecture\n- Architecture specifications to be documented.\n\n### Open Questions & Decisions\n- None recorded at initialization.\n`;
-        } else {
-          body += `${rawDetail}\n`;
-        }
-
-        detailMd = `# Ticket #${nextId}: ${meta.title}
-**Category**: ${meta.category}  
-${priorityLine}${milestoneLine}**Complexity**: ${meta.complexity}  
-**Estimated Effort**: ${meta.estimatedEffort}  
-
-${body.trim()}\n`;
-      }
+      detailMd = this.formatTicketDetailMarkdown(rawDetail, meta, input.summary);
     } else {
+      const priorityLine = meta.priority ? `**Priority**: ${meta.priority}  \n` : '';
+      const milestoneLine = meta.milestone ? `**Milestone**: ${meta.milestone}  \n` : '';
       detailMd = `# Ticket #${nextId}: ${meta.title}
 **Category**: ${meta.category}  
 ${priorityLine}${milestoneLine}**Complexity**: ${meta.complexity}  
@@ -1994,7 +2004,7 @@ ${input.summary || 'Summary to be defined.'}
     return created!;
   }
 
-  public async updateTicket(id: number | string, updates: Partial<TicketMeta> & { priority?: any }, lastHash?: string): Promise<EsedreTicket> {
+  public async updateTicket(id: number | string, updates: UpdateTicketInput, lastHash?: string): Promise<EsedreTicket> {
     const existing = await this.getTicket(id);
     if (!existing) {
       throw new Error(`Ticket #${id} does not exist`);
@@ -2020,7 +2030,8 @@ ${input.summary || 'Summary to be defined.'}
       : (updates.status && updates.status !== 'Completed' ? undefined : existing.meta.completedAt);
     const revision = (existing.meta.revision || 1) + 1;
 
-    const sanitizedUpdates: Partial<TicketMeta> = { ...updates };
+    const { priority: _p, detail: _d, detailMarkdown: _dm, ...metaFields } = updates;
+    const sanitizedUpdates: Partial<TicketMeta> = { ...metaFields };
     if (sanitizedUpdates.title) sanitizedUpdates.title = normalizeDashesAndMojibake(sanitizedUpdates.title);
     if (sanitizedUpdates.estimatedEffort) sanitizedUpdates.estimatedEffort = normalizeDashesAndMojibake(sanitizedUpdates.estimatedEffort);
     if (sanitizedUpdates.complexity) sanitizedUpdates.complexity = normalizeDashesAndMojibake(sanitizedUpdates.complexity);
@@ -2078,7 +2089,40 @@ ${input.summary || 'Summary to be defined.'}
 
     const newType = updates.type || updates.category;
     if (newType) { updatedMeta.type = newType; updatedMeta.category = newType; }
-    if (existing.detail && ('priority' in updates || 'milestone' in updates || updates.title || updates.type || updates.category || updates.complexity || updates.estimatedEffort)) {
+
+    const rawDetailArg = updates.detailMarkdown !== undefined ? updates.detailMarkdown : updates.detail;
+    if (rawDetailArg !== undefined) {
+      const cleanDetail = normalizeDashesAndMojibake(rawDetailArg);
+      let content = this.formatTicketDetailMarkdown(cleanDetail, updatedMeta, existing.detail?.summary);
+      if (updates.type || updates.category) {
+        content = content.replace(/\*\*(?:Type|Category)\*\*:\s*[^\n]+/i, `**Type**: ${updatedMeta.type}`);
+      }
+      if (updatedMeta.priority) {
+        if (/\*\*Priority\*\*:\s*[^\n]+/i.test(content)) {
+          content = content.replace(/\*\*Priority\*\*:\s*[^\n]+/i, `**Priority**: ${updatedMeta.priority}`);
+        } else if (/\*\*(?:Type|Category)\*\*:\s*[^\n]+/i.test(content)) {
+          content = content.replace(/(\*\*(?:Type|Category)\*\*:\s*[^\n]+)/i, `$1  \n**Priority**: ${updatedMeta.priority}`);
+        }
+      } else if ('priority' in updates) {
+        content = content.replace(/\*\*Priority\*\*:\s*[^\n]+\n?/i, '');
+      }
+      if (updatedMeta.milestone) {
+        if (/\*\*Milestone\*\*:\s*[^\n]+/i.test(content)) {
+          content = content.replace(/\*\*Milestone\*\*:\s*[^\n]+/i, `**Milestone**: ${updatedMeta.milestone}`);
+        } else if (/\*\*(?:Priority|Type|Category)\*\*:\s*[^\n]+/i.test(content)) {
+          content = content.replace(/(\*\*(?:Priority|Type|Category)\*\*:\s*[^\n]+)/i, `$1  \n**Milestone**: ${updatedMeta.milestone}`);
+        }
+      } else if ('milestone' in updates) {
+        content = content.replace(/\*\*Milestone\*\*:\s*[^\n]+\n?/i, '');
+      }
+      if (updates.complexity) {
+        content = content.replace(/\*\*Complexity\*\*:\s*[^\n]+/i, `**Complexity**: ${updatedMeta.complexity}`);
+      }
+      if (updates.estimatedEffort) {
+        content = content.replace(/\*\*Estimated Effort\*\*:\s*[^\n]+/i, `**Estimated Effort**: ${updatedMeta.estimatedEffort}`);
+      }
+      writeSafeFile(path.join(locInfo.ticketDir, 'detail.md'), content);
+    } else if (existing.detail && ('priority' in updates || 'milestone' in updates || updates.title || updates.type || updates.category || updates.complexity || updates.estimatedEffort)) {
       let content = existing.detail.raw;
       if (updates.title) {
         content = content.replace(/^#\s*(?:Ticket\s*#?\d+\s*:\s*|\d+\s*:\s*)?[^\n]+/im, `# Ticket #${locInfo.id}: ${updatedMeta.title}`);

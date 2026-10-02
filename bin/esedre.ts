@@ -73,7 +73,7 @@ ${colors.bold}ROADMAP COMMANDS (Pair Programming & LLM Agents):${colors.reset}
   ${colors.bold}create${colors.reset}      --title "..." [-p|--project <code>] [-t|--type <type>] [-P|--priority <prio>] [--complexity <c>] [--effort "<e>"] [--summary "<s>"] [--detail "<md>"] [--file <path>] [--json]
                Mint a new roadmap ticket with sequential numeric ID.
 
-  ${colors.bold}update${colors.reset}      <id> [-s|--status <status>] [-t|--type <type>] [-P|--priority <prio>] [--title "..."] [--complexity <c>] [--effort "<e>"] [--in-dev] [--flag <name>] [--last-hash <sha1>] [--force] [--json]
+  ${colors.bold}update${colors.reset}      <id> [-s|--status <status>] [-t|--type <type>] [-P|--priority <prio>] [--title "..."] [--complexity <c>] [--effort "<e>"] [--detail "<md>"] [--file <path>] [--in-dev] [--flag <name>] [--last-hash <sha1>] [--force] [--json]
                Mutate ticket status, type, priority, title, complexity, effort, active state, or feature flag with OCC protection.
 
   ${colors.bold}comment${colors.reset}     <id> ["<text>"] [--text "..."] [--author "..."] [--json]
@@ -152,8 +152,8 @@ ${colors.bold}OPTIONS:${colors.reset}
   --to <targetId>      Target ticket ID for link/unlink commands.
   --blocked            Filter tickets that are blocked by uncompleted tickets.
   --linked-to <key>    Filter tickets that are linked to a specific ticket.
-  --detail "<md>"      Specification markdown for ticket detail during create.
-  --file <path>        Path to markdown file for detail (create) or implementation plan (plan).
+  --detail "<md>"      Specification markdown for ticket detail during create or update.
+  --file <path>        Path to markdown file for detail (create, update) or implementation plan (plan).
   --json              Output raw machine-readable JSON (strongly recommended for autonomous LLM coding agents).
   --last-hash <hash>  Optimistic concurrency control: last known sha1 hash of the ticket from 'get'.
   --force             Bypass optimistic concurrency last-hash conflict checks on writes.
@@ -1267,6 +1267,23 @@ async function main(): Promise<void> {
         if (inDev !== undefined) updates.isActivePlanning = inDev;
         if (flag) updates.featureFlag = flag;
         if (rawMilestone !== undefined) updates.milestone = rawMilestone as string;
+
+        const detailArg = flags['detail'] as string;
+        const fileArg = flags['file'] as string;
+        let detailMarkdown: string | undefined = detailArg ? normalizeDashesAndMojibake(detailArg) : undefined;
+        if (fileArg) {
+          const filePath = path.resolve(fileArg);
+          if (!fs.existsSync(filePath)) {
+            if (isJson) {
+              console.error(JSON.stringify({ error: `Detail file "${fileArg}" not found` }));
+            } else {
+              console.error(`${colors.red}Error: Detail file "${fileArg}" not found.${colors.reset}`);
+            }
+            process.exit(1);
+          }
+          detailMarkdown = normalizeDashesAndMojibake(fs.readFileSync(filePath, 'utf-8'));
+        }
+        if (detailMarkdown !== undefined) updates.detailMarkdown = detailMarkdown;
 
         const updated = await storage.updateTicket(lookupKey, updates, lastHash);
         if (isJson) {

@@ -196,4 +196,28 @@ describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
     expect(legacyReadRes.result.contents[0].uri).toBe('esedre://tickets/1');
     expect(legacyReadRes.result.contents[0].text).toContain('# Ticket #1: Resource Target');
   });
+
+  it('updates ticket specification detail via esedre_update_ticket (Ticket #49)', async () => {
+    await adapter.createTicket({ title: 'MCP Update Target', category: 'Feature', projectCode: 'Core' });
+
+    const updateRes = await callRpc(server, {
+      jsonrpc: '2.0',
+      id: 11,
+      method: 'tools/call',
+      params: {
+        name: 'esedre_update_ticket',
+        arguments: {
+          ticketId: 1,
+          detailMarkdown: '### Summary\nMCP updated ticket detail summary.\n\n### Feature Breakdown\n1. Detail from MCP',
+        },
+      },
+    });
+
+    expect(updateRes.result).toBeDefined();
+    const updatedTicket = JSON.parse(updateRes.result.content[0].text);
+    expect(updatedTicket.meta.id).toBe(1);
+    expect(updatedTicket.detail?.summary).toBe('MCP updated ticket detail summary.');
+    expect(updatedTicket.detail?.breakdown).toContain('Detail from MCP');
+  });
 });
+

@@ -65,13 +65,19 @@ export interface DuplicateProjectWarning {
   duplicateHub: string;
 }
 
+export interface UpdateTicketInput extends Omit<Partial<TicketMeta>, 'priority'> {
+  priority?: TicketPriority | 'none' | null | string;
+  detail?: string;
+  detailMarkdown?: string;
+}
+
 export interface StorageAdapter {
   listTickets(filter?: ListTicketsFilter): Promise<EsedreTicket[]>;
   getTicket(id: number | string): Promise<EsedreTicket | null>;
   createTicket(input: CreateTicketInput): Promise<EsedreTicket>;
   updateTicket(
     id: number | string,
-    updates: Partial<TicketMeta> & { priority?: TicketPriority | 'none' | null | string },
+    updates: UpdateTicketInput,
     lastHash?: string
   ): Promise<EsedreTicket>;
   getPlan(id: number | string): Promise<string | null>;

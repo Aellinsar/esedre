@@ -31,7 +31,7 @@ When Esedre MCP is active in your agent session (`.agents/mcp_config.json`), use
 | `esedre_get_plan` | Active implementation plan markdown | `ticketId` (numeric or compound) |
 | `esedre_save_plan` | Save implementation plan markdown with OCC | `ticketId`, `planMarkdown`, `lastHash` |
 | `esedre_create_ticket` | Mint a new ticket with auto sequential ID | `title` (max 48 chars), `type`, `project`, `priority`, `milestone`, `effort`, `summary`, `detail` |
-| `esedre_update_ticket` | Update ticket attributes with OCC | `ticketId`, `status`, `type`, `priority`, `milestone`, `title`, `complexity`, `effort`, `inDevelopment`, `featureFlag`, `lastHash` |
+| `esedre_update_ticket` | Update ticket attributes with OCC | `ticketId`, `status`, `type`, `priority`, `milestone`, `title`, `detail`, `detailMarkdown`, `complexity`, `effort`, `inDevelopment`, `featureFlag`, `lastHash` |
 | `esedre_link_ticket` | Establish bi-directional ticket relationship | `sourceTicketId`, `relation` (`relates-to` \| `blocks` \| `parent-of` \| `duplicates`), `targetTicketId`, `author` |
 | `esedre_unlink_ticket` | Remove bi-directional ticket relationship | `sourceTicketId`, `targetTicketId`, `relation` |
 | `esedre_list_milestones` | List project milestones and deliverables progress | `project` |
@@ -74,6 +74,8 @@ Both `esedre` and `ese` work interchangeably:
 .esedre/ese update <ticketId> -P none           # Clears priority
 .esedre/ese update <ticketId> -m "Release 1.0"  # Links ticket to milestone (inherits umbrella feature flag)
 .esedre/ese update <ticketId> -m none           # Unlinks ticket from milestone
+.esedre/ese update <ticketId> --detail "<markdownContent>"  # Updates specification markdown
+.esedre/ese update <ticketId> --file <detailFilePath>       # Overwrites specification from file
 ```
 
 ### Link or Unlink Tickets
