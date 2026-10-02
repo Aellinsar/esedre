@@ -94,11 +94,23 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
    - **Post-Release Alignment (`main` -> `release/upcoming`)**:
      - Immediately following the merge of a release PR into `main`, merge `main` back into `release/upcoming` (or pull/rebase) so that active development stays cleanly aligned with the latest production baseline. Consult [.agents/skills/git_branching_and_release_workflow/SKILL.md](.agents/skills/git_branching_and_release_workflow/SKILL.md).
 
-5. **Mandatory Scope Clarification in Multi-Project Workspaces**
+5. **Clean Human Commit Message Standards (`[#<ticket>] <Action Summary>`)**
+   - **Strict Ban on Conventional Commit Prefixes**: Conventional commit prefixes (such as `feat:`, `feat(...)`, `fix:`, `fix(...)`, `chore:`, `chore(...)`, `style:`, `refactor:`, etc.) are STRICTLY PROHIBITED in commit messages.
+   - **Ticket Anchor Format**: All commits associated with a ticket or issue MUST anchor with the ticket ID in square brackets, followed by a concise, imperative action summary starting with a capitalized verb:
+     - `[#<id>] <Imperative Action Summary>` (e.g. `[#49] Support file and detail specification updates in CLI and MCP`)
+     - For cross-project commits: `[#<ProjectCode>-<id>] <Imperative Action Summary>` (e.g. `[#Esedre-49] Support file and detail specification updates in CLI and MCP`)
+   - **Non-Ticket Commits**: For general maintenance, documentation, or infrastructure not tied to an active ticket, use a clean domain anchor in square brackets:
+     - `[Docs] <Imperative Summary>` (e.g. `[Docs] Codify release/upcoming branching and commit naming standards`)
+     - `[Infra] <Imperative Summary>` (e.g. `[Infra] Configure dev tunnel hosts and allowed hosts`)
+     - `[Release] <Imperative Summary>` (e.g. `[Release] Bump version to v1.2.0 and update changelog`)
+   - **Imperative Voice & Capitalization**: Always use the imperative present tense (`Support`, `Add`, `Fix`, `Refactor`, `Update`, `Optimize`), never past tense (`Supported`, `Added`, `Fixed`).
+   - **Zero Em Dashes**: Never use em dashes anywhere in commit titles or descriptions.
+
+6. **Mandatory Scope Clarification in Multi-Project Workspaces**
    - In a multi-project workspace, if there is ANY ambiguity regarding which repositories, projects, or modified files are intended to be committed or pushed, you MUST ask the user for explicit clarification before staging, committing, or pushing.
    - Never assume all modified repositories or workspaces should be committed or pushed together. Erroneous commits or pushes across projects are strictly prohibited.
 
-6. **Mandatory Documentation Currency Pre-Flight Check (Zero Stale Docs)**
+7. **Mandatory Documentation Currency Pre-Flight Check (Zero Stale Docs)**
    - Whenever the user mentions commit, push, or package publishing, you are STRICTLY REQUIRED to halt and double-check all Esedre documentation: `README.md`, `AGENTS.md`, and the agent skills in `.agents/skills/`.
    - **Expected Behavior (Halt & Warn, Never Silent Auto-Changes)**:
      - If ANY documentation is stale, out-of-date, or missing newly added commands, flags, schema fields, or architectural invariants, you MUST **HALT** and **WARN** the user of the stale documentation, explicitly presenting the suggested fixes.

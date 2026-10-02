@@ -56,10 +56,22 @@ Implement the requested changes, strictly observing all codebase invariants:
 - Run full builds and linters: `npm run build` and `npm run lint`.
 - Verify all tests pass with zero regressions.
 
-### Step 3: Explicit Commit Authorization
+### Step 3: Explicit Commit Authorization & Message Standards
 - **NEVER** run `git add`, `git commit`, or `git push` without explicit, unambiguous permission from the user in that **specific turn** (must contain the word "commit" or "push").
 - Zero turn-to-turn carryover for commit permissions.
 - Pre-flight check: Verify that `README.md`, `AGENTS.md`, and relevant agent skills are completely up-to-date before committing.
+- 🚨 **Commit Naming Standards**:
+  1. **Strict Ban on Conventional Prefixes**: Conventional commit prefixes and scopes (such as `feat:`, `feat(...)`, `fix:`, `fix(...)`, `chore:`, `chore(...)`, `style:`, `refactor:`, etc.) are STRICTLY PROHIBITED in commit messages.
+  2. **Ticket Anchor Format**: All commits associated with a ticket or issue MUST anchor with the ticket ID in square brackets, followed by a concise, imperative action summary starting with a capitalized verb:
+     - `[#<id>] <Imperative Action Summary>` (e.g. `git commit -m "[#49] Support file and detail specification updates in CLI and MCP"`)
+     - For cross-project commits: `[#<ProjectCode>-<id>] <Imperative Action Summary>` (e.g. `git commit -m "[#Esedre-49] Support file and detail specification updates in CLI and MCP"`)
+  3. **Non-Ticket Maintenance Commits**: For general maintenance, documentation, or infrastructure not tied to an active ticket, use a clean domain anchor in square brackets:
+     - `[Docs] <Imperative Summary>` (e.g. `git commit -m "[Docs] Codify release/upcoming branching and commit naming standards"`)
+     - `[Infra] <Imperative Summary>` (e.g. `git commit -m "[Infra] Configure dev tunnel hosts and allowed hosts"`)
+     - `[Release] <Imperative Summary>` (e.g. `git commit -m "[Release] Bump version to v1.2.0 and update changelog"`)
+  4. **Grammar & Style Invariants**:
+     - Imperative Voice & Capitalization: Always use the imperative present tense (`Support`, `Add`, `Fix`, `Refactor`, `Update`, `Optimize`), never past tense (`Supported`, `Added`, `Fixed`).
+     - Zero Em Dashes: Never use em dashes anywhere in commit titles or descriptions.
 
 ### Step 4: Merge Child Branch into `release/upcoming`
 Once the ticket's work is committed and approved by the user, merge the child branch into `release/upcoming`:
