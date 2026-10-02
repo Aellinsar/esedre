@@ -5,7 +5,7 @@ All notable changes to Esedre are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.2] - 2026-10-02
+## [1.1.0] - 2026-10-02
 
 ### Added
 - **Completed Full Set of Edit Capabilities in the UI & Interactive Planning Engine**:
@@ -18,10 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Smart Data Hub Inheritance**: Enabled workspace configuration (`.esedre/esedre.json`) to omit `dataDir` and seamlessly inherit from user-level global configuration (`~/.esedre/config.json`) when the hub contains the project.
   - **Multi-Workspace Batch Upgrade Automation (`ese upgrade --all`)**: Extended `ese upgrade` with `--all` (`-a`) to automatically scan all registered workspace projects declared in `~/.esedre/config.json`, upgrade shell wrappers (`.esedre/esedre.cmd`, `.esedre/ese.cmd`, `.esedre/esedre.ps1`, `.esedre/ese.ps1`), synchronize agent skills, and regenerate `.esedre/snapshot.json` projections.
   - **Wrapper Health Diagnostics**: Added `isWrapperOutdated` and `findOutdatedWrappers` in `src/upgrade.ts` to detect legacy CMD wrappers containing parenthesized compound blocks or `goto :done`. Exposed non-blocking diagnostic notices in `ese status` and `ese status --json`.
+  - **Ticket Card Pill Layout Standardization**: Reorganized ticket card header metadata into two distinct rows: fixed-width pills in Row 1 (Type, Complexity, Priority, Blocked indicator, Status) and flexible-width badges in Row 2 (Project badge in All Projects view, Feature Flag, Milestone).
 
 ### Fixed
 - **Windows CMD Batch Label Error in Consuming Workspaces**: Hardened `WRAPPER_CMD` subroutine dispatch and eliminated legacy parenthesized `goto :done` blocks in downstream consuming repositories that caused `cmd.exe` to fail with `'The system cannot find the batch label specified - done'` (Ticket #43).
+- **Dual-Stack Loopback Binding**: Configured Vite development server (`vite.config.ts`) with `host: '0.0.0.0'`, ensuring consuming development reverse proxies can proxy planning endpoints to `http://127.0.0.1:5674` without `502 Bad Gateway` / `ECONNREFUSED` connection drops on Windows IPv4/IPv6 dual-stack setups.
+- **Deep-Linking & History Push for Multi-Part Projects**: Enhanced hash parsing and resolution (`parseTicketHash`, `resolveFeatureFromHash`, `getFeatureHash`) to robustly support hyphens and multi-word project names (e.g. `#ticket-alce-web-1`), deep link directly to tickets on page load with automatic project filter switching and scrolling, while preserving history push in standalone mode and preventing history interference in embedded mode.
 - **Root URL Hash Push Bug**: Fixed bug where navigating to the root standalone UI URL (`http://localhost:5674/`) automatically forced and pushed `#ticket-1` to the browser address bar. The UI now preserves clean root URLs without pushing ticket hashes unless a ticket is explicitly clicked or deep-linked.
+- **Header Popover Viewport Containment**: Constrained card header dropdown popovers (Type, Priority, Status, Complexity, Feature Flag, Milestone) to fit within viewport height with smooth vertical scrolling and sticky subheadings, preventing offscreen vertical clipping.
+- **Test Suite Data Hub Isolation Guard**: Hardened `getGlobalConfigDir()` in `src/config.ts` to automatically redirect to a temporary sandbox directory when running under Vitest (`process.env.VITEST`), preventing unit test runs from reading or mutating developer machines' active `~/.esedre/config.json` and real data hubs.
 
 ### Security & Hardening
 - **REST Endpoint Parameter Validation & Cache Invalidation**:

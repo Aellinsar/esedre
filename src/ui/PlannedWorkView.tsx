@@ -445,6 +445,105 @@ export function updateProjectUrlSearchParam(val: string, isEmbedded: boolean): v
   } catch (err) {}
 }
 
+export function parseTicketHash(hash: string): { project?: string; number: number } | undefined {
+  if (!hash || typeof hash !== 'string') return undefined;
+  let clean = hash.trim();
+  if (!clean.startsWith('#')) return undefined;
+  clean = clean.replace(/^#+/, '').trim();
+  if (!clean) return undefined;
+
+  // Pure numeric: #123
+  if (/^\d+$/.test(clean)) {
+    return { number: parseInt(clean, 10) };
+  }
+
+  // Generic prefix with number: #ticket-123 or #feature-123
+  const genericMatch = clean.match(/^(?:ticket|feature)[-_]+(\d+)$/i);
+  if (genericMatch) {
+    return { number: parseInt(genericMatch[1], 10) };
+  }
+
+  // Strip leading ticket- or feature- prefix if present: #ticket-alce-web-1 -> alce-web-1
+  const withoutPrefix = clean.replace(/^(?:ticket|feature)[-_]+/i, '');
+
+  // Match: <projectCode>-<number> where projectCode can have hyphens, underscores, letters, digits
+  const projectMatch = withoutPrefix.match(/^(.+)[-_](\d+)$/);
+  if (projectMatch) {
+    const rawProj = projectMatch[1].trim();
+    const num = parseInt(projectMatch[2], 10);
+    if (!isNaN(num) && rawProj.length > 0) {
+      return { project: rawProj, number: num };
+    }
+  }
+
+  return undefined;
+}
+
+export function resolveFeatureFromHash(
+  hash: string,
+  features: PlannedFeature[],
+  currentProjectFilter?: string
+): PlannedFeature | undefined {
+  const parsed = parseTicketHash(hash);
+  if (!parsed || !features || features.length === 0) return undefined;
+  const { project: projectPart, number: num } = parsed;
+
+  // 1. If project prefix was captured (e.g. "alce-web", "Esedre", "Prof", "Personal")
+  if (projectPart) {
+    const projLower = projectPart.toLowerCase();
+    const projMatch = features.find((f) => {
+      if (f.number !== num) return false;
+      const pCode = (f.project || '').toLowerCase();
+      const desc = getProjectDescriptor(f.projectId) || (f.project ? getProjectDescriptor(f.project) : undefined);
+      const descCode = (desc?.code || '').toLowerCase();
+      const descName = (desc?.name || '').toLowerCase();
+      return pCode === projLower || descCode === projLower || descName === projLower;
+    });
+    if (projMatch) return projMatch;
+
+    // Fallback: match by ticketId or id string (e.g. f.ticketId === "alce-web-1" or "1")
+    const idMatch = features.find((f) => {
+      const tId = (f.ticketId || '').toLowerCase();
+      const fId = (f.id || '').toLowerCase();
+      return (
+        tId === `${projLower}-${num}` ||
+        tId === String(num) ||
+        fId === `feature-${projLower}-${num}` ||
+        fId === `${projLower}-${num}`
+      );
+    });
+    if (idMatch) return idMatch;
+  }
+
+  // 2. If scoped to an active project filter and no project was in hash, prefer matching within that project
+  if (currentProjectFilter && currentProjectFilter !== 'all') {
+    const filterLower = currentProjectFilter.toLowerCase();
+    const scopedMatch = features.find((f) => {
+      if (f.number !== num) return false;
+      const pCode = (f.project || '').toLowerCase();
+      const desc = getProjectDescriptor(f.projectId) || (f.project ? getProjectDescriptor(f.project) : undefined);
+      const descCode = (desc?.code || '').toLowerCase();
+      return pCode === filterLower || descCode === filterLower;
+    });
+    if (scopedMatch) return scopedMatch;
+  }
+
+  // 3. Match by feature number
+  const numOnlyMatch = features.find((f) => f.number === num);
+  if (numOnlyMatch) return numOnlyMatch;
+
+  // 4. Fallback: match by ticketId string
+  return features.find((f) => f.ticketId === String(num));
+}
+
+export function getFeatureHash(f: PlannedFeature, _projectFilter?: string): string {
+  const pCode = f.project || getProjectDescriptor(f.projectId)?.code;
+  if (pCode) {
+    return `#ticket-${pCode}-${f.number}`;
+  }
+  return `#ticket-${f.number}`;
+}
+
 export function PlannedWorkView({
   className = '',
   onClose,
@@ -654,9 +753,9 @@ export function PlannedWorkView({
   const [expandedFeatureId, setExpandedFeatureId] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
       if (!isEmbedded && window.location.hash) {
-        const match = window.location.hash.match(/^#(?:ticket-|feature-)?(\d+)$/i);
-        if (match) {
-          return `feature-${match[1]}`;
+        const parsed = parseTicketHash(window.location.hash);
+        if (parsed) {
+          return parsed.project ? `feature-${parsed.project}-${parsed.number}` : `feature-${parsed.number}`;
         }
       }
       if (isEmbedded) {
@@ -666,6 +765,7 @@ export function PlannedWorkView({
     }
     return null;
   });
+  const previousExpandedIdRef = useRef<string | null>(expandedFeatureId);
   const [showToc, setShowToc] = useState(true);
   const [tocWidth, setTocWidth] = useState<number>(() => {
     if (typeof window !== 'undefined') {
@@ -1541,22 +1641,6 @@ export function PlannedWorkView({
         sessionStorage.removeItem('dev_plan_modal_expanded_feat');
       }
     }
-    if (!isEmbedded && typeof window !== 'undefined') {
-      if (expandedFeatureId) {
-        const match = expandedFeatureId.match(/^feature-(\d+)$/);
-        const num = match ? match[1] : null;
-        if (num) {
-          const expectedHash = `#ticket-${num}`;
-          if (window.location.hash !== expectedHash && window.location.hash !== `#feature-${num}`) {
-            window.location.hash = `ticket-${num}`;
-          }
-        }
-      } else {
-        if (window.location.hash && /^#(?:ticket-|feature-)?\d+$/i.test(window.location.hash)) {
-          window.history.replaceState({}, '', window.location.pathname + window.location.search);
-        }
-      }
-    }
   }, [expandedFeatureId, isEmbedded]);
 
   useEffect(() => {
@@ -1715,47 +1799,6 @@ export function PlannedWorkView({
     );
   }, [allFeatureFlags, projectFilter, allowedProjects]);
 
-  const handleJumpToFeature = (featId: string, featNum: number) => {
-    setExpandedFeatureId(featId);
-    setMobileView('detail');
-    setTimeout(() => {
-      const scrollContainer = document.getElementById('planned-work-cards-scroll-container');
-      const el = document.getElementById(`feature-card-${featNum}`);
-      if (scrollContainer && el) {
-        const containerRect = scrollContainer.getBoundingClientRect();
-        const cardRect = el.getBoundingClientRect();
-        const targetScrollTop = scrollContainer.scrollTop + (cardRect.top - containerRect.top) - 8;
-        scrollContainer.scrollTo({ top: Math.max(0, targetScrollTop), behavior: 'smooth' });
-      }
-    }, 100);
-  };
-
-  // Standalone UI URL Hash Navigation (ticket deep-linking & history traversal)
-  useEffect(() => {
-    if (isEmbedded || typeof window === 'undefined') return;
-    const handleHash = () => {
-      const hash = window.location.hash;
-      const match = hash.match(/^#(?:ticket-|feature-)?(\d+)$/i);
-      if (match) {
-        const num = parseInt(match[1], 10);
-        const featId = `feature-${num}`;
-        setExpandedFeatureId(featId);
-        setActiveTab('features');
-        handleJumpToFeature(featId, num);
-      } else if (!hash || hash === '#') {
-        setExpandedFeatureId(null);
-      }
-    };
-
-    window.addEventListener('hashchange', handleHash);
-    if (window.location.hash) {
-      setTimeout(handleHash, 150);
-    }
-    return () => window.removeEventListener('hashchange', handleHash);
-  }, [isEmbedded]);
-
-
-
   const isFeatureCompleted = React.useCallback(
     (f: PlannedFeature) => {
       const metaStatus = metasMap[f.ticketId]?.status;
@@ -1783,6 +1826,128 @@ export function PlannedWorkView({
     },
     [metasMap]
   );
+
+  const handleJumpToFeature = (featId: string, featNum: number) => {
+    setExpandedFeatureId(featId);
+    setMobileView('detail');
+    let attempts = 0;
+    const maxAttempts = 15;
+    const tryScroll = () => {
+      attempts++;
+      const scrollContainer = document.getElementById('planned-work-cards-scroll-container');
+      const cleanId = featId.replace(/^feature-/, '');
+      const el =
+        document.getElementById(`feature-card-${featId}`) ||
+        document.getElementById(`feature-card-${cleanId}`) ||
+        document.getElementById(featId) ||
+        document.getElementById(`feature-card-${featNum}`) ||
+        document.querySelector(`[data-feature-number="${featNum}"]`);
+      if (scrollContainer && el) {
+        const containerRect = scrollContainer.getBoundingClientRect();
+        const cardRect = el.getBoundingClientRect();
+        const targetScrollTop = scrollContainer.scrollTop + (cardRect.top - containerRect.top) - 8;
+        scrollContainer.scrollTo({ top: Math.max(0, targetScrollTop), behavior: 'smooth' });
+      } else if (attempts < maxAttempts) {
+        setTimeout(tryScroll, 100);
+      }
+    };
+    setTimeout(tryScroll, 50);
+  };
+
+  // Standalone UI URL Hash Navigation (ticket deep-linking & history traversal)
+  useEffect(() => {
+    if (isEmbedded || typeof window === 'undefined') return;
+
+    const handleHashOrPopState = () => {
+      const hash = window.location.hash;
+      if (!hash || hash === '#') {
+        if (expandedFeatureId !== null) {
+          setExpandedFeatureId(null);
+        }
+        return;
+      }
+      const matchedFeat = resolveFeatureFromHash(hash, parsedData.plannedFeatures, projectFilter);
+      if (matchedFeat) {
+        setExpandedFeatureId(matchedFeat.id);
+        previousExpandedIdRef.current = matchedFeat.id;
+
+        // Auto-switch project filter if deep-linking into another project
+        const featProj = matchedFeat.project || getProjectDescriptor(matchedFeat.projectId)?.code;
+        if (featProj && projectFilter !== 'all' && projectFilter.toLowerCase() !== featProj.toLowerCase()) {
+          setProjectFilter(featProj);
+          try {
+            sessionStorage.setItem('dev_plan_project_filter', featProj);
+            localStorage.setItem('dev_plan_project_filter', featProj);
+            updateProjectUrlSearchParam(featProj, isEmbedded);
+          } catch (e) {}
+        }
+
+        // Auto-reset inDevOnly if ticket is not In Development
+        if (inDevOnly && !isFeatureInDevelopment(matchedFeat)) {
+          setInDevOnly(false);
+        }
+
+        if (isFeatureCompleted(matchedFeat)) {
+          setActiveTab('completed');
+        } else if (isFeatureRejected(matchedFeat)) {
+          setActiveTab('rejected');
+        } else {
+          setActiveTab('features');
+        }
+        handleJumpToFeature(matchedFeat.id, matchedFeat.number);
+      }
+    };
+
+    window.addEventListener('hashchange', handleHashOrPopState);
+    window.addEventListener('popstate', handleHashOrPopState);
+
+    if (window.location.hash && parsedData.plannedFeatures.length > 0) {
+      handleHashOrPopState();
+    }
+
+    return () => {
+      window.removeEventListener('hashchange', handleHashOrPopState);
+      window.removeEventListener('popstate', handleHashOrPopState);
+    };
+  }, [
+    isEmbedded,
+    parsedData.plannedFeatures,
+    projectFilter,
+    inDevOnly,
+    isFeatureCompleted,
+    isFeatureRejected,
+    isFeatureInDevelopment,
+  ]);
+
+  // Standalone UI History Push Effect: Sync expanded ticket state to URL hash and push browser history
+  useEffect(() => {
+    if (isEmbedded || typeof window === 'undefined') return;
+
+    if (expandedFeatureId) {
+      previousExpandedIdRef.current = expandedFeatureId;
+      const feat = parsedData.plannedFeatures.find(
+        (f) =>
+          f.id === expandedFeatureId ||
+          (expandedFeatureId.startsWith('feature-') &&
+            f.id.toLowerCase() === expandedFeatureId.toLowerCase())
+      );
+      if (feat) {
+        const expectedHash = getFeatureHash(feat, projectFilter);
+        const currentMatch = resolveFeatureFromHash(window.location.hash, parsedData.plannedFeatures, projectFilter);
+        if (!currentMatch || currentMatch.id !== feat.id) {
+          window.location.hash = expectedHash.replace(/^#/, '');
+        }
+      }
+    } else {
+      // ONLY clear the hash if the user previously had an expanded ticket and just collapsed it
+      if (previousExpandedIdRef.current !== null) {
+        previousExpandedIdRef.current = null;
+        if (window.location.hash && window.location.hash !== '#') {
+          window.history.pushState({}, '', window.location.pathname + window.location.search);
+        }
+      }
+    }
+  }, [expandedFeatureId, isEmbedded, parsedData.plannedFeatures, projectFilter]);
 
   const matchesProject = React.useCallback(
     (f: PlannedFeature) => {
@@ -2527,7 +2692,8 @@ export function PlannedWorkView({
                     return (
                       <div
                         key={feat.id}
-                        id={`feature-card-${feat.number}`}
+                        id={`feature-card-${feat.id}`}
+                        data-feature-number={feat.number}
                         className={`border rounded-2xl transition-all duration-200 overflow-hidden ${
                           isExpanded
                             ? 'bg-[var(--bg-surface-elevated)] border-[var(--border-accent)] shadow-md ring-1 ring-[var(--border-accent)]'
@@ -2625,42 +2791,8 @@ export function PlannedWorkView({
                           </div>
                           <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0 pt-2 sm:pt-0 border-t border-[var(--border-subtle)] sm:border-t-0">
                             <div className="flex flex-wrap items-center gap-1.5 sm:flex-col sm:items-end">
-                              {/* ROW 1: Project -> Type (60px) -> Complexity (84px) -> Status (112px) */}
+                              {/* ROW 1: Strictly fixed-width items: Type (60px) -> Complexity (84px) -> Priority (76px) -> Blocked (68px) -> Status (112px) */}
                               <div className="flex flex-wrap items-center gap-1.5">
-                                {/* 0. Project Badge (Only displayed in All Projects view) */}
-                                {projectFilter === 'all' && (() => {
-                                  const desc = getProjectDescriptor(metasMap[feat.ticketId]?.projectId ?? metasMap[feat.ticketId]?.project ?? feat.projectId ?? feat.project);
-                                  const colors = desc?.colors || UNASSIGNED_PROJECT_COLORS;
-                                  const label = desc ? desc.name : 'Unassigned Project';
-                                  return isOwner ? (
-                                    <button
-                                      type="button"
-                                      data-popover-trigger="true"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        const rect = e.currentTarget.getBoundingClientRect();
-                                        setHeaderPopover((prev) =>
-                                          prev?.ticketId === feat.ticketId && prev?.type === 'project'
-                                            ? null
-                                            : { ticketId: feat.ticketId, type: 'project', x: rect.left + rect.width / 2, y: rect.bottom + 4 }
-                                        );
-                                      }}
-                                      className={`px-2 py-0.5 text-center inline-flex items-center gap-1 text-[10px] font-mono font-semibold rounded-full border transition-colors cursor-pointer ${colors.badge} hover:brightness-110`}
-                                      title={desc ? `Project: ${desc.name}. Click to edit.` : 'No project assigned. Click to assign.'}
-                                    >
-                                      <span className={`w-1.5 h-1.5 rounded-full ${colors.dot} shrink-0`} />
-                                      <span>{label}</span>
-                                    </button>
-                                  ) : (
-                                    <span
-                                      className={`px-2 py-0.5 text-center inline-flex items-center gap-1 text-[10px] font-mono font-semibold rounded-full border cursor-default ${colors.badge}`}
-                                    >
-                                      <span className={`w-1.5 h-1.5 rounded-full ${colors.dot} shrink-0`} />
-                                      <span>{label}</span>
-                                    </span>
-                                  );
-                                })()}
-
                                 {/* 1. Type (Category) (Leftmost, 60px) */}
                                 {isOwner ? (
                                   <button
@@ -2724,7 +2856,7 @@ export function PlannedWorkView({
                                   </span>
                                 )}
 
-                                {/* 2. Complexity (84px, just prior to the status pill) */}
+                                {/* 2. Complexity (84px, just prior to priority and status) */}
                                 {isOwner ? (
                                   <button
                                     type="button"
@@ -2755,7 +2887,7 @@ export function PlannedWorkView({
                                   </span>
                                 )}
 
-                                {/* Priority Badge / Picker */}
+                                {/* 3. Priority Badge / Picker (Fixed Width: 76px) */}
                                 {(() => {
                                   const prio = metasMap[feat.ticketId]?.priority || feat.priority;
                                   if (!prio && !isOwner) return null;
@@ -2774,7 +2906,7 @@ export function PlannedWorkView({
                                               : { ticketId: feat.ticketId, type: 'priority', x: rect.left + rect.width / 2, y: rect.bottom + 4 }
                                           );
                                         }}
-                                        className={`text-center inline-flex items-center justify-center gap-1 text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full border transition-colors cursor-pointer ${
+                                        className={`w-[76px] text-center inline-flex items-center justify-center gap-1 text-[10px] font-mono font-semibold py-0.5 rounded-full border transition-colors cursor-pointer ${
                                           conf
                                             ? `${conf.border} ${conf.bg} ${conf.text}`
                                             : 'border-[var(--border-subtle)] bg-[var(--bg-input)] text-[var(--text-muted)] hover:border-[var(--border-strong)]'
@@ -2782,34 +2914,34 @@ export function PlannedWorkView({
                                         title="Click to edit Priority"
                                       >
                                         {conf && <span className={`w-1.5 h-1.5 rounded-full ${conf.dot}`} />}
-                                        {prio || 'Priority'}
+                                        <span>{prio || 'Priority'}</span>
                                       </button>
                                     );
                                   }
                                   return (
                                     <span
-                                      className={`text-center inline-flex items-center justify-center gap-1 text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full border cursor-default ${
+                                      className={`w-[76px] text-center inline-flex items-center justify-center gap-1 text-[10px] font-mono font-semibold py-0.5 rounded-full border cursor-default ${
                                         conf ? `${conf.border} ${conf.bg} ${conf.text}` : ''
                                       }`}
                                     >
                                       {conf && <span className={`w-1.5 h-1.5 rounded-full ${conf.dot}`} />}
-                                      {prio}
+                                      <span>{prio}</span>
                                     </span>
                                   );
                                 })()}
 
-                                {/* Blocked Badge */}
+                                {/* 4. Blocked Badge (Fixed Width: 68px) */}
                                 {(feat.isBlocked || metasMap[feat.ticketId]?.isBlocked) && (
                                   <span
-                                    className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full border border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400 cursor-default"
+                                    className="w-[68px] text-center inline-flex items-center justify-center gap-1 text-[10px] font-mono font-semibold py-0.5 rounded-full border border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400 cursor-default"
                                     title="Blocked by uncompleted ticket"
                                   >
                                     <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-                                    Blocked
+                                    <span>Blocked</span>
                                   </span>
                                 )}
 
-                                {/* 3. Status State Pill (Rightmost in Row 1, 112px) */}
+                                {/* 5. Status State Pill (Rightmost in Row 1, 112px) */}
                                 {isOwner ? (
                                   <button
                                     type="button"
@@ -2893,8 +3025,41 @@ export function PlannedWorkView({
                                 )}
                               </div>
 
-                              {/* ROW 2: Feature Flag (Leftmost) */}
+                              {/* ROW 2: Flexible-width items: Project Badge (when All Projects) -> Feature Flag -> Milestone */}
                               <div className="flex flex-wrap items-center gap-1.5">
+                                {/* Project Badge (Only displayed in All Projects view) */}
+                                {projectFilter === 'all' && (() => {
+                                  const desc = getProjectDescriptor(metasMap[feat.ticketId]?.projectId ?? metasMap[feat.ticketId]?.project ?? feat.projectId ?? feat.project);
+                                  const colors = desc?.colors || UNASSIGNED_PROJECT_COLORS;
+                                  const label = desc ? desc.name : 'Unassigned Project';
+                                  return isOwner ? (
+                                    <button
+                                      type="button"
+                                      data-popover-trigger="true"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        const rect = e.currentTarget.getBoundingClientRect();
+                                        setHeaderPopover((prev) =>
+                                          prev?.ticketId === feat.ticketId && prev?.type === 'project'
+                                            ? null
+                                            : { ticketId: feat.ticketId, type: 'project', x: rect.left + rect.width / 2, y: rect.bottom + 4 }
+                                        );
+                                      }}
+                                      className={`max-w-[160px] truncate px-2 py-0.5 text-center inline-flex items-center gap-1 text-[10px] font-mono font-semibold rounded-full border transition-colors cursor-pointer ${colors.badge} hover:brightness-110`}
+                                      title={desc ? `Project: ${desc.name}. Click to edit.` : 'No project assigned. Click to assign.'}
+                                    >
+                                      <span className={`w-1.5 h-1.5 rounded-full ${colors.dot} shrink-0`} />
+                                      <span className="truncate">{label}</span>
+                                    </button>
+                                  ) : (
+                                    <span
+                                      className={`max-w-[160px] truncate px-2 py-0.5 text-center inline-flex items-center gap-1 text-[10px] font-mono font-semibold rounded-full border cursor-default ${colors.badge}`}
+                                    >
+                                      <span className={`w-1.5 h-1.5 rounded-full ${colors.dot} shrink-0`} />
+                                      <span className="truncate">{label}</span>
+                                    </span>
+                                  );
+                                })()}
                                 {/* Feature Flag (Compact Icon when unlinked, 118px Pill when linked) */}
                                 {(() => {
                                   const flagKey = metasMap[feat.ticketId]?.featureFlag || feat.featureFlag;
@@ -4037,8 +4202,17 @@ export function PlannedWorkView({
                   } catch (e) {}
                 }
                 setActiveTab('features');
-                setExpandedFeatureId(`feature-${ticketId}`);
-                handleJumpToFeature(`feature-${ticketId}`, Number(ticketId));
+                const targetFeat = parsedData.plannedFeatures.find(
+                  (f) =>
+                    f.ticketId === ticketId ||
+                    f.id === ticketId ||
+                    f.id === `feature-${ticketId}` ||
+                    (f.number === Number(ticketId) && (!targetProject || f.project?.toLowerCase() === targetProject.toLowerCase()))
+                );
+                const featId = targetFeat ? targetFeat.id : `feature-${ticketId}`;
+                const featNum = targetFeat ? targetFeat.number : Number(ticketId);
+                setExpandedFeatureId(featId);
+                handleJumpToFeature(featId, featNum);
               }}
               onSelectMilestone={(msTitle, msProject) => {
                 if (msProject && projectFilter !== 'all' && projectFilter.toLowerCase() !== msProject.toLowerCase()) {
@@ -4309,16 +4483,23 @@ export function PlannedWorkView({
       )}
 
       {/* Floating Header Field Popover Editor */}
-      {headerPopover && (
-        <div
-          ref={headerPopoverRef}
-          className="fixed z-[80] -translate-x-1/2 mt-1 bg-[var(--bg-surface)] border border-[var(--border-strong)] rounded-xl shadow-2xl p-2 font-sans animate-fade-in space-y-1"
-          style={{
-            left: typeof window !== 'undefined' ? Math.min(window.innerWidth - 110, Math.max(110, headerPopover.x)) : headerPopover.x,
-            top: typeof window !== 'undefined' ? Math.min(window.innerHeight - 200, Math.max(60, headerPopover.y)) : headerPopover.y,
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
+      {headerPopover && (() => {
+        const popoverMaxH = 340;
+        const winH = typeof window !== 'undefined' ? window.innerHeight : 800;
+        const winW = typeof window !== 'undefined' ? window.innerWidth : 1200;
+        const clampedTop = Math.max(16, Math.min(headerPopover.y, winH - popoverMaxH - 24));
+        const clampedLeft = Math.max(140, Math.min(headerPopover.x, winW - 140));
+
+        return (
+          <div
+            ref={headerPopoverRef}
+            className="fixed z-[80] -translate-x-1/2 mt-1 bg-[var(--bg-surface)] border border-[var(--border-strong)] rounded-xl shadow-2xl p-2 font-sans animate-fade-in space-y-1 max-h-[min(360px,calc(100vh-48px))] overflow-y-auto scrollbar-thin"
+            style={{
+              left: clampedLeft,
+              top: clampedTop,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
           {/* Popover 1: Flag Options when Flagged */}
           {headerPopover.type === 'flag' && (
             <div className="space-y-1 w-44">
@@ -4420,43 +4601,49 @@ export function PlannedWorkView({
 
           {/* Popover: Project Picker */}
           {headerPopover.type === 'project' && (
-            <div className="space-y-1 w-48">
-              <div className="text-[10px] font-mono font-bold text-[var(--text-muted)] uppercase tracking-wider px-2 py-0.5">
+            <div className="space-y-1 w-56">
+              <div className="text-[10px] font-mono font-bold text-[var(--text-muted)] uppercase tracking-wider px-2 py-0.5 sticky top-0 bg-[var(--bg-surface)] z-10">
                 Set Project
               </div>
-              {availableProjects.map((proj) => {
-                const currentMeta = metasMap[headerPopover.ticketId];
-                const currentDesc = getProjectDescriptor(currentMeta?.projectId ?? currentMeta?.project);
-                const isSelected = currentDesc ? currentDesc.id === proj.id : false;
-                return (
-                  <button
-                    key={proj.id}
-                    type="button"
-                    onClick={async () => {
-                      const ticketId = headerPopover.ticketId;
-                      setHeaderPopover(null);
-                      try {
-                        await activePlanningProvider.updateMeta(ticketId, { projectId: proj.id, project: proj.name });
-                        setMetasMap((prev) => ({
-                          ...prev,
-                          [ticketId]: { ...prev[ticketId], projectId: proj.id, project: proj.name },
-                        }));
-                      } catch (err) {
-                        console.error('Failed to update project:', err);
-                      }
-                    }}
-                    className={`w-full text-left px-2 py-1.5 rounded-lg text-xs hover:bg-[var(--accent-bg-subtle)] flex items-center justify-between font-mono transition-colors cursor-pointer ${
-                      isSelected ? 'bg-[var(--accent-bg-subtle)] text-[var(--accent-primary)] font-bold' : 'text-[var(--text-secondary)]'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full ${proj.colors.dot}`} />
-                      <span>{proj.name}</span>
-                    </div>
-                    {isSelected && <Check size={12} className="text-sky-600 dark:text-indigo-400 shrink-0" />}
-                  </button>
-                );
-              })}
+              <div className="max-h-60 overflow-y-auto space-y-0.5 pr-0.5 scrollbar-thin">
+                {availableProjects.map((proj) => {
+                  const currentMeta = metasMap[headerPopover.ticketId];
+                  const currentDesc = getProjectDescriptor(currentMeta?.projectId ?? currentMeta?.project);
+                  const isSelected = currentDesc ? currentDesc.id === proj.id : false;
+                  return (
+                    <button
+                      key={proj.id}
+                      type="button"
+                      onClick={async () => {
+                        const ticketId = headerPopover.ticketId;
+                        setHeaderPopover(null);
+                        try {
+                          const updatedMeta = await activePlanningProvider.updateMeta(ticketId, {
+                            projectId: proj.id,
+                            project: proj.code,
+                          });
+                          setMetasMap((prev) => ({
+                            ...prev,
+                            [ticketId]: updatedMeta || { ...prev[ticketId], projectId: proj.id, project: proj.code },
+                          }));
+                        } catch (err) {
+                          console.error('Failed to update project:', err);
+                        }
+                      }}
+                      className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs hover:bg-[var(--accent-bg-subtle)] flex items-center justify-between font-mono transition-colors cursor-pointer ${
+                        isSelected ? 'bg-[var(--accent-bg-subtle)] text-[var(--accent-primary)] font-bold' : 'text-[var(--text-secondary)]'
+                      }`}
+                      title={`Assign to ${proj.name} (${proj.code})`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0 pr-1">
+                        <span className={`w-2 h-2 rounded-full ${proj.colors.dot} shrink-0`} />
+                        <span className="truncate">{proj.name}</span>
+                      </div>
+                      {isSelected && <Check size={12} className="text-sky-600 dark:text-indigo-400 shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
 
@@ -4477,7 +4664,6 @@ export function PlannedWorkView({
                       await activePlanningProvider.updateMeta(ticketId, { type: cat as any, category: cat as any });
                       setMetasMap((prev) => ({
                         ...prev,
-                        [ticketId]: { ...prev[ticketId], type: cat as any, category: cat as any },
                         [ticketId]: { ...prev[ticketId], type: cat as any, category: cat as any },
                       }));
                     } catch (err) {
@@ -4652,47 +4838,9 @@ export function PlannedWorkView({
             </div>
           )}
 
-          {/* Popover 6: Project Picker */}
-          {headerPopover.type === 'project' && (
-            <div className="space-y-1 w-48">
-              <div className="text-[10px] font-mono font-bold text-[var(--text-muted)] uppercase tracking-wider px-2 py-0.5">
-                Set Project
-              </div>
-              {availableProjects.map((proj) => (
-                <button
-                  key={proj.id}
-                  type="button"
-                  onClick={async () => {
-                    const ticketId = headerPopover.ticketId;
-                    setHeaderPopover(null);
-                    try {
-                      const updatedMeta = await activePlanningProvider.updateMeta(ticketId, {
-                        projectId: proj.id,
-                        project: proj.code,
-                      });
-                      setMetasMap((prev) => ({
-                        ...prev,
-                        [ticketId]: updatedMeta,
-                      }));
-                    } catch (err) {
-                      console.error('Failed to update project:', err);
-                    }
-                  }}
-                  className={`w-full text-left px-2 py-1.5 rounded-lg text-xs font-mono font-semibold flex items-center justify-between transition-colors cursor-pointer border ${proj.colors.badge} hover:brightness-125`}
-                >
-                  <div className="flex items-center gap-1.5">
-                    <span className={`w-1.5 h-1.5 rounded-full ${proj.colors.dot} shrink-0`} />
-                    <span>{proj.name}</span>
-                  </div>
-                  {getProjectDescriptor(metasMap[headerPopover.ticketId]?.projectId ?? metasMap[headerPopover.ticketId]?.project)?.id === proj.id && (
-                    <Check size={12} className="shrink-0" />
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+          </div>
+        );
+      })()}
 
       {/* Create Ticket Modal */}
       <CreateTicketModal

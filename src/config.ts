@@ -129,6 +129,15 @@ export function getGlobalConfigDir(): string {
   if (process.env.ESEDRE_GLOBAL_DIR) {
     return process.env.ESEDRE_GLOBAL_DIR;
   }
+  if (process.env.VITEST) {
+    const testGlobalDir = path.join(os.tmpdir(), 'esedre-vitest-global');
+    if (!fs.existsSync(testGlobalDir)) {
+      try {
+        fs.mkdirSync(testGlobalDir, { recursive: true });
+      } catch {}
+    }
+    return testGlobalDir;
+  }
   return path.join(os.homedir(), '.esedre');
 }
 

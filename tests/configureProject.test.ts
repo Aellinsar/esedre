@@ -57,12 +57,20 @@ function request(
 
 describe('Project Registration & Configure Onboarding', () => {
   let tempDir: string;
+  let savedGlobalDir: string | undefined;
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-configure-test-'));
+    savedGlobalDir = process.env.ESEDRE_GLOBAL_DIR;
+    process.env.ESEDRE_GLOBAL_DIR = path.join(tempDir, 'global-store');
   });
 
   afterEach(() => {
+    if (savedGlobalDir !== undefined) {
+      process.env.ESEDRE_GLOBAL_DIR = savedGlobalDir;
+    } else {
+      delete process.env.ESEDRE_GLOBAL_DIR;
+    }
     if (fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
