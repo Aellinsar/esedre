@@ -219,5 +219,70 @@ describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
     expect(updatedTicket.detail?.summary).toBe('MCP updated ticket detail summary.');
     expect(updatedTicket.detail?.breakdown).toContain('Detail from MCP');
   });
+
+  it('returns hasPlan, summary, and hydrates planMarkdown when includePlan is true in esedre_list_tickets (Ticket #58)', async () => {
+    // 1. Create two tickets: one with a plan, one without
+    await adapter.createTicket({
+      title: 'Ticket With Plan',
+      category: 'Feature',
+      projectCode: 'Core',
+      summary: 'Summary for ticket with plan',
+    });
+    await adapter.createTicket({
+      title: 'Ticket Without Plan',
+      category: 'Bug',
+      projectCode: 'Core',
+      summary: 'Summary for ticket without plan',
+    });
+    await adapter.savePlan(1, '## Architectural Plan\n- Milestone 1\n- Milestone 2');
+
+    // 2. Query without includePlan
+    const defaultListRes = await callRpc(server, {
+      jsonrpc: '2.0',
+      id: 12,
+      method: 'tools/call',
+      params: {
+        name: 'esedre_list_tickets',
+        arguments: { project: 'Core' },
+      },
+    });
+
+    expect(defaultListRes.result).toBeDefined();
+    const defaultTickets = JSON.parse(defaultListRes.result.content[0].text);
+    expect(defaultTickets).toHaveLength(2);
+    const withPlan = defaultTickets.find((t: any) => t.id === 1);
+    const withoutPlan = defaultTickets.find((t: any) => t.id === 2);
+
+    expect(withPlan.hasPlan).toBe(true);
+    expect(withPlan.summary).toBe('Summary for ticket with plan');
+    expect(withPlan.planMarkdown).toBeUndefined();
+
+    expect(withoutPlan.hasPlan).toBe(false);
+    expect(withoutPlan.summary).toBe('Summary for ticket without plan');
+    expect(withoutPlan.planMarkdown).toBeUndefined();
+
+    // 3. Query with includePlan: true
+    const hydratedListRes = await callRpc(server, {
+      jsonrpc: '2.0',
+      id: 13,
+      method: 'tools/call',
+      params: {
+        name: 'esedre_list_tickets',
+        arguments: { project: 'Core', includePlan: true },
+      },
+    });
+
+    expect(hydratedListRes.result).toBeDefined();
+    const hydratedTickets = JSON.parse(hydratedListRes.result.content[0].text);
+    const hydratedWithPlan = hydratedTickets.find((t: any) => t.id === 1);
+    const hydratedWithoutPlan = hydratedTickets.find((t: any) => t.id === 2);
+
+    expect(hydratedWithPlan.hasPlan).toBe(true);
+    expect(hydratedWithPlan.planMarkdown).toContain('## Architectural Plan');
+
+    expect(hydratedWithoutPlan.hasPlan).toBe(false);
+    expect(hydratedWithoutPlan.planMarkdown).toBeNull();
+  });
 });
+
 

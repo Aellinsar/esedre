@@ -20,8 +20,8 @@ This skill details how the Esedre Model Context Protocol (MCP) server is structu
 The server registers the following tools in `tools/list`:
 
 1. `esedre_list_tickets`:
-   - Parameters: `{ project?: string, status?: string, type?: string, priority?: string, milestone?: string, isBlocked?: boolean, linkedTo?: string, search?: string }`
-   - Returns a structured list of roadmap tickets matching filters.
+   - Parameters: `{ project?: string, status?: string, type?: string, priority?: string, milestone?: string, isBlocked?: boolean, linkedTo?: string, search?: string, includePlan?: boolean }`
+   - Returns a structured list of roadmap tickets matching filters, including `hasPlan` and `summary`, with optional `planMarkdown` hydration when `includePlan: true`.
 2. `esedre_get_ticket`:
    - Parameters: `{ ticketId: number | string }`
    - Returns full metadata, summary, feature breakdown, technical details, comments, links, blocker status, and SHA-1 hash.
