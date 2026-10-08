@@ -260,6 +260,7 @@ export class EsedreMcpServer {
             search: { type: 'string', description: 'Search keywords in title or ID' },
             isBlocked: { type: 'boolean', description: 'Filter tickets blocked by uncompleted tickets' },
             linkedTo: { type: 'string', description: 'Filter tickets linked to a specific ticket ID or key' },
+            includePlan: { type: 'boolean', description: 'When true, includes implementation plan markdown (planMarkdown) for each ticket' },
           },
         },
       },
@@ -451,6 +452,7 @@ export class EsedreMcpServer {
     switch (canonical) {
       case 'list_tickets': {
         const type = (args.type || args.category) as TicketType | undefined;
+        const includePlan = Boolean(args.includePlan);
         const tickets = await this.storage.listTickets({
           project: args.project,
           status: args.status,
@@ -462,23 +464,42 @@ export class EsedreMcpServer {
           isBlocked: args.isBlocked !== undefined ? Boolean(args.isBlocked) : undefined,
           linkedTo: args.linkedTo,
         });
-        return tickets.map((t) => ({
-          id: t.meta.id,
-          title: t.meta.title,
-          type: t.meta.type || (t.meta as any).category,
-          category: t.meta.type || (t.meta as any).category,
-          status: t.meta.status,
-          priority: t.meta.priority,
-          complexity: t.meta.complexity,
-          effort: t.meta.estimatedEffort,
-          milestone: t.meta.milestone,
-          featureFlag: t.meta.featureFlag,
-          inheritedFeatureFlag: t.meta.inheritedFeatureFlag,
-          project: t.projectDescriptor?.code || t.meta.project || 'UNASSIGNED',
-          sha1: t.sha1 || t.meta.sha1,
-          isBlocked: t.isBlocked,
-          links: t.links,
-        }));
+        const results = await Promise.all(
+          tickets.map(async (t) => {
+            let planMarkdown: string | null | undefined = t.planMarkdown;
+            if (includePlan && planMarkdown === undefined) {
+              const lookupKey = t.projectDescriptor?.code ? `${t.projectDescriptor.code}-${t.meta.id}` : t.meta.id;
+              planMarkdown = (await this.storage.getPlan(lookupKey)) ?? null;
+            }
+
+            const hasPlan = Boolean(
+              (t.planMarkdown && t.planMarkdown.trim().length > 0) ||
+              (planMarkdown && planMarkdown.trim().length > 0)
+            );
+
+            return {
+              id: t.meta.id,
+              title: t.meta.title,
+              type: t.meta.type || (t.meta as any).category,
+              category: t.meta.type || (t.meta as any).category,
+              status: t.meta.status,
+              priority: t.meta.priority,
+              complexity: t.meta.complexity,
+              effort: t.meta.estimatedEffort,
+              milestone: t.meta.milestone,
+              featureFlag: t.meta.featureFlag,
+              inheritedFeatureFlag: t.meta.inheritedFeatureFlag,
+              project: t.projectDescriptor?.code || t.meta.project || 'UNASSIGNED',
+              summary: t.detail?.summary,
+              hasPlan,
+              ...(includePlan ? { planMarkdown: planMarkdown || null } : {}),
+              sha1: t.sha1 || t.meta.sha1,
+              isBlocked: t.isBlocked,
+              links: t.links,
+            };
+          })
+        );
+        return results;
       }
 
       case 'get_ticket': {
