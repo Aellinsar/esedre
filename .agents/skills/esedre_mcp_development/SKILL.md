@@ -44,7 +44,7 @@ The server registers the following tools in `tools/list`:
    - Parameters: `{ sourceTicketId: number | string, targetTicketId: number | string, relation?: string }`
    - Removes a bi-directional link between two tickets.
 9. `esedre_add_comment`:
-   - Parameters: `{ ticketId: number | string, text: string, author?: string }`
+   - Parameters: `{ ticketId: number | string, text?: string, file?: string, author?: string }`
    - Appends a developer or LLM agent verification note to the ticket.
 10. `esedre_list_milestones`:
    - Parameters: `{ project?: string }`

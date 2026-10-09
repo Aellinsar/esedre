@@ -26,7 +26,7 @@ When Esedre MCP is active in your agent session (`.agents/mcp_config.json`), use
 
 | Tool | Purpose | Key Arguments |
 |---|---|---|
-| `esedre_list_tickets` | List roadmap tickets with filters | `project` (e.g. `Profe`, `Esedre`, `Alce`), `status`, `type`, `priority`, `milestone`, `isBlocked`, `linkedTo`, `search` |
+| `esedre_list_tickets` | List roadmap tickets with filters | `project` (e.g. `Profe`, `Esedre`, `Alce`), `status`, `type`, `priority`, `milestone`, `isBlocked`, `linkedTo`, `search`, `includePlan` |
 | `esedre_get_ticket` | Full specification, summary, comments, links, revision & sha1 | `ticketId` (numeric e.g. `96` or compound e.g. `Profe-96`) |
 | `esedre_get_plan` | Active implementation plan markdown | `ticketId` (numeric or compound) |
 | `esedre_save_plan` | Save implementation plan markdown with OCC | `ticketId`, `planMarkdown`, `lastHash` |
@@ -38,7 +38,7 @@ When Esedre MCP is active in your agent session (`.agents/mcp_config.json`), use
 | `esedre_get_milestone` | Get milestone specs, umbrella flag, and member tickets | `milestoneId` (numeric or title), `project` |
 | `esedre_create_milestone` | Create a project milestone with optional umbrella flag | `title`, `project`, `featureFlag`, `status`, `targetDate`, `description` |
 | `esedre_update_milestone` | Update milestone status, umbrella flag, or title | `milestoneId`, `project`, `title`, `featureFlag`, `status`, `targetDate`, `description` |
-| `esedre_add_comment` | Append developer or agent comment | `ticketId`, `text`, `author` |
+| `esedre_add_comment` | Append developer or agent comment | `ticketId`, `text`, `file`, `author` |
 
 ## 2. Core CLI Commands (Fallback via `run_command`)
 
@@ -78,6 +78,13 @@ Both `esedre` and `ese` work interchangeably:
 .esedre/ese update <ticketId> --file <detailFilePath>       # Overwrites specification from file
 ```
 
+### Append Comments or Notes
+```bash
+.esedre/ese comment <ticketId> "Verified implementation." --author "Agent"
+.esedre/ese comment <ticketId> --file <commentFilePath> --author "Agent"
+.esedre/ese comment <ticketId> --text "Verified implementation." --author "Agent"
+```
+
 ### Link or Unlink Tickets
 ```bash
 .esedre/ese link <sourceId> <relation> <targetId> [--author "..."]
@@ -98,6 +105,7 @@ Both `esedre` and `ese` work interchangeably:
 ### Append Comments or Notes
 ```bash
 .esedre/ese comment <ticketId> "Verified implementation." --author "Agent"
+.esedre/ese comment <ticketId> --file <commentFilePath> --author "Agent"
 .esedre/ese comment <ticketId> --text "Verified implementation." --author "Agent"
 ```
 

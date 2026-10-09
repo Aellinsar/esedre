@@ -237,13 +237,13 @@ When Esedre MCP is active in your agent session (\`.agents/mcp_config.json\`), u
 
 | Tool | Purpose | Key Arguments |
 |---|---|---|
-| \`esedre_list_tickets\` | List roadmap tickets with filters | \`project\` (e.g. \`Profe\`, \`Esedre\`, \`Alce\`), \`status\`, \`type\`, \`search\` |
+| \`esedre_list_tickets\` | List roadmap tickets with filters | \`project\` (e.g. \`Profe\`, \`Esedre\`, \`Alce\`), \`status\`, \`type\`, \`priority\`, \`milestone\`, \`isBlocked\`, \`linkedTo\`, \`search\`, \`includePlan\` |
 | \`esedre_get_ticket\` | Full specification, summary, comments, revision & sha1 | \`ticketId\` (numeric e.g. \`96\` or compound e.g. \`Profe-96\`) |
 | \`esedre_get_plan\` | Active implementation plan markdown | \`ticketId\` (numeric or compound) |
 | \`esedre_save_plan\` | Save implementation plan markdown with OCC | \`ticketId\`, \`planMarkdown\`, \`lastHash\` |
 | \`esedre_create_ticket\` | Mint a new ticket with auto sequential ID | \`title\` (max 48 chars), \`type\`, \`project\`, \`effort\`, \`summary\`, \`detail\` |
 | \`esedre_update_ticket\` | Update ticket attributes with OCC | \`ticketId\`, \`status\`, \`type\`, \`title\`, \`complexity\`, \`effort\`, \`inDevelopment\`, \`featureFlag\`, \`lastHash\` |
-| \`esedre_add_comment\` | Append developer or agent comment | \`ticketId\`, \`text\`, \`author\` |
+| \`esedre_add_comment\` | Append developer or agent comment | \`ticketId\`, \`text\`, \`file\`, \`author\` |
 
 ## 2. Core CLI Commands (Fallback via \`run_command\`)
 
@@ -281,6 +281,7 @@ Both \`esedre\` and \`ese\` work interchangeably:
 ### Append Comments or Notes
 \`\`\`bash
 .esedre/ese comment <ticketId> "Verified implementation." --author "Agent"
+.esedre/ese comment <ticketId> --file <commentFilePath> --author "Agent"
 .esedre/ese comment <ticketId> --text "Verified implementation." --author "Agent"
 \`\`\`
 

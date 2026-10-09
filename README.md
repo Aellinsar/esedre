@@ -122,7 +122,7 @@ Core day-to-day workflow commands for scoping, viewing, planning, and verifying 
 | `link` | `ese link <sourceId> <relation> <targetId> [--author "..."]` | Establish a bi-directional link between two tickets. Relations: `relates-to`, `blocks`, `parent-of`, `duplicates`. |
 | `unlink` | `ese unlink <sourceId> <targetId> [--relation <relation>]` | Remove a bi-directional link between two tickets. |
 | `milestone` | `ese milestone [list\|get\|create\|update\|delete] [args...]` | Manage project milestones and umbrella feature flags with deliverables tracking. |
-| `comment` | `ese comment <id> ["<text>"] [--text "..."] [--author "..."]` | Append a developer or LLM agent note to ticket history. |
+| `comment` | `ese comment <id> ["<text>"] [--file <path>] [--text "..."] [--author "..."]` | Append a developer or LLM agent note to ticket history. |
 | `snapshot`, `refresh` | `ese snapshot [--project <code>] [--json]` | Generate or refresh projection `.esedre/snapshot.json` for zero-latency agent context. |
 | `projects` | `ese projects [--json]` | List registered projects within authorized scope. |
 
@@ -199,7 +199,7 @@ To connect Esedre to **Google Antigravity**, **Claude Code**, **Cursor**, or any
 ```
 
 ### Registered Tools
-- `esedre_list_tickets`: List tickets with optional project, status, type, priority, milestone, isBlocked, linkedTo, or search filter.
+- `esedre_list_tickets`: List tickets with optional project, status, type, priority, milestone, isBlocked, linkedTo, search, or includePlan filter.
 - `esedre_get_ticket`: Retrieve full specification, summary, comments, revision, links, blocker status, and content hash (`sha1`).
 - `esedre_get_plan` & `esedre_save_plan`: Inspect and update implementation plans with optimistic concurrency (`lastHash`).
 - `esedre_create_ticket`: Mint new roadmap tickets with project code validation (up to 8 chars), optional priority, optional milestone, and specification detail markdown.
@@ -210,7 +210,7 @@ To connect Esedre to **Google Antigravity**, **Claude Code**, **Cursor**, or any
 - `esedre_get_milestone`: Retrieve milestone specifications, umbrella feature flag, and member tickets.
 - `esedre_create_milestone`: Create a project milestone with optional umbrella feature flag and target date.
 - `esedre_update_milestone`: Update milestone status, title, description, or umbrella feature flag.
-- `esedre_add_comment`: Append developer or LLM agent verification notes.
+- `esedre_add_comment`: Append developer or LLM agent verification notes with optional file path or inline text.
 
 ### Cross-Project Linked Issues & Dependencies
 

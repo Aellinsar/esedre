@@ -76,7 +76,7 @@ ${colors.bold}ROADMAP COMMANDS (Pair Programming & LLM Agents):${colors.reset}
   ${colors.bold}update${colors.reset}      <id> [-s|--status <status>] [-t|--type <type>] [-P|--priority <prio>] [--title "..."] [--complexity <c>] [--effort "<e>"] [--detail "<md>"] [--file <path>] [--in-dev] [--flag <name>] [--last-hash <sha1>] [--force] [--json]
                Mutate ticket status, type, priority, title, complexity, effort, active state, or feature flag with OCC protection.
 
-  ${colors.bold}comment${colors.reset}     <id> ["<text>"] [--text "..."] [--author "..."] [--json]
+  ${colors.bold}comment${colors.reset}     <id> ["<text>"] [--file <path>] [--text "..."] [--author "..."] [--json]
                Append a research finding, test verification, or note to ticket history.
 
   ${colors.bold}link${colors.reset}        <sourceId> <relation> <targetId> [--author "..."] [--json]
@@ -153,7 +153,7 @@ ${colors.bold}OPTIONS:${colors.reset}
   --blocked            Filter tickets that are blocked by uncompleted tickets.
   --linked-to <key>    Filter tickets that are linked to a specific ticket.
   --detail "<md>"      Specification markdown for ticket detail during create or update.
-  --file <path>        Path to markdown file for detail (create, update) or implementation plan (plan).
+  --file <path>        Path to markdown file for detail (create, update), implementation plan (plan), or comment (comment).
   --json              Output raw machine-readable JSON (strongly recommended for autonomous LLM coding agents).
   --last-hash <hash>  Optimistic concurrency control: last known sha1 hash of the ticket from 'get'.
   --force             Bypass optimistic concurrency last-hash conflict checks on writes.
@@ -1447,10 +1447,31 @@ async function main(): Promise<void> {
         const projectFlag = flags['project'] as string;
         const lookupKey = projectFlag && /^\d+$/.test(idStr) ? `${projectFlag}-${idStr}` : idStr;
 
-        const positionalText = positionals.slice(1).join(' ').trim();
-        const text = (flags['text'] as string) || (positionalText || undefined);
+        let text: string | undefined;
+        const filePath = flags['file'] as string | undefined;
+        if (filePath) {
+          const resolvedPath = path.resolve(process.cwd(), filePath);
+          if (!fs.existsSync(resolvedPath)) {
+            console.error(`${colors.red}Error: File not found: ${filePath}${colors.reset}`);
+            process.exit(1);
+          }
+          if (!fs.statSync(resolvedPath).isFile()) {
+            console.error(`${colors.red}Error: Path is not a file: ${filePath}${colors.reset}`);
+            process.exit(1);
+          }
+          const fileContent = fs.readFileSync(resolvedPath, 'utf-8');
+          if (!fileContent.trim()) {
+            console.error(`${colors.red}Error: Comment file is empty: ${filePath}${colors.reset}`);
+            process.exit(1);
+          }
+          text = fileContent;
+        } else {
+          const positionalText = positionals.slice(1).join(' ').trim();
+          text = (flags['text'] as string) || (positionalText || undefined);
+        }
+
         if (!text) {
-          console.error(`${colors.red}Error: Comment text is required (e.g. ese comment 96 "Verified tests" or --text "...")${colors.reset}`);
+          console.error(`${colors.red}Error: Comment text or --file is required (e.g. ese comment 96 --file note.md or ese comment 96 "Verified tests")${colors.reset}`);
           process.exit(1);
         }
         const author = (flags['author'] as string) || 'User';

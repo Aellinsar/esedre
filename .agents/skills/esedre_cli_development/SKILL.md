@@ -42,7 +42,7 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 | `link` | `esedre link <sourceId> <relation> <targetId> [--author "..."]` | Creates a bi-directional link between two tickets. Relations: `relates-to`, `blocks`, `parent-of`, `duplicates`. |
 | `unlink` | `esedre unlink <sourceId> <targetId> [--relation <relation>]` | Removes a bi-directional link between two tickets. |
 | `milestone` | `esedre milestone [list\|get\|create\|update\|delete]` | Manages project milestones and umbrella feature flags with deliverables tracking. |
-| `comment` | `esedre comment <id> [-p\|--project <code>] --text "..." [--author "..."]` | Appends a developer or agent comment to the ticket's history. Accepts compound ID or numeric with `-p`. |
+| `comment` | `esedre comment <id> [-p\|--project <code>] ["<text>"] [--file <path>] [--text "..."] [--author "..."]` | Appends a developer or agent comment to the ticket's history. Accepts compound ID or numeric with `-p`. |
 | `projects` | `esedre projects [--json]` | Lists registered projects that are within the current authorized scope. |
 | `rename-project` | `esedre rename-project <oldCode> <newCode> [--name "<name>"]` | Renames a project code across directory storage paths, manifests, and tickets. |
 | `project` | `esedre project set <code> [--name "<name>"]` | Updates project metadata (such as display name). |
