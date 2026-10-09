@@ -11,6 +11,7 @@ import {
   CreateMilestoneInput,
   UpdateMilestoneInput,
   TicketLinkRelation,
+  TicketLeaseSummary,
 } from './types';
 
 export interface PlanningServiceProvider {
@@ -53,6 +54,7 @@ export interface PlanningServiceProvider {
   deleteMilestone?(id: string | number, project?: string): Promise<boolean>;
   linkTicket?(sourceId: string | number, relation: TicketLinkRelation, targetId: string | number, author?: string): Promise<{ success: boolean; source?: any; target?: any; error?: string }>;
   unlinkTicket?(sourceId: string | number, targetId: string | number): Promise<{ success: boolean; source?: any; target?: any; error?: string }>;
+  listLeases?(project?: string): Promise<TicketLeaseSummary[]>;
   getProjects?(): Promise<ProjectDescriptor[]>;
   getAll?(): Promise<any>;
 }
@@ -276,6 +278,15 @@ export class EsedreHttpPlanningProvider implements PlanningServiceProvider {
       method: 'POST',
       body: JSON.stringify({ sourceId, targetId }),
     });
+  }
+
+  async listLeases(project?: string): Promise<TicketLeaseSummary[]> {
+    try {
+      const q = project && project !== 'all' ? `?project=${encodeURIComponent(project)}` : '';
+      return (await this.request<TicketLeaseSummary[]>(`/planning/leases${q}`)) || [];
+    } catch {
+      return [];
+    }
   }
 }
 

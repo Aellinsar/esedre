@@ -1,4 +1,5 @@
-import { EsedreTicket, TicketPriority, Milestone } from '../types.js';
+import path from 'node:path';
+import { EsedreTicket, TicketPriority, Milestone, TicketLeaseSummary } from '../types.js';
 
 const isColorSupported = !process.env.NO_COLOR && (process.stdout.isTTY || process.env.FORCE_COLOR);
 
@@ -353,6 +354,42 @@ export function formatMilestoneListTable(milestones: Milestone[], tickets?: Esed
 
   const formattedRows = rows.map((r) => {
     return `${colors.bold}${pad(r.id, idWidth)}${colors.reset}  ${pad(r.project, projWidth)}  ${pad(r.status, statusWidth)}  ${pad(r.flag, flagWidth)}  ${pad(r.progress, progWidth)}  ${r.title}`;
+  });
+
+  return [header, divider, ...formattedRows].join('\n');
+}
+
+export function formatLeaseListTable(leases: TicketLeaseSummary[]): string {
+  if (leases.length === 0) {
+    return `${colors.dim}No active ticket leases found.${colors.reset}`;
+  }
+
+  const rows = leases.map((l) => {
+    const ticket = `#${l.ticketId}`;
+    const project = l.project || '-';
+    const holder = `${l.system}:${l.workerId}`;
+    const role = l.role;
+    const remaining = l.remainingSeconds > 0
+      ? `${Math.floor(l.remainingSeconds / 60)}m ${l.remainingSeconds % 60}s`
+      : 'expired';
+    const worktree = l.worktree ? path.basename(l.worktree) : '-';
+    const title = l.title;
+    return { ticket, project, holder, role, remaining, worktree, title };
+  });
+
+  const ticketWidth = Math.max(6, ...rows.map((r) => r.ticket.length));
+  const projWidth = Math.max(7, ...rows.map((r) => r.project.length));
+  const holderWidth = Math.max(16, ...rows.map((r) => r.holder.length));
+  const roleWidth = Math.max(6, ...rows.map((r) => r.role.length));
+  const remWidth = Math.max(9, ...rows.map((r) => r.remaining.length));
+  const wtWidth = Math.max(8, ...rows.map((r) => r.worktree.length));
+
+  const header = `${colors.bold}${pad('Ticket', ticketWidth)}  ${pad('Project', projWidth)}  ${pad('Holder', holderWidth)}  ${pad('Role', roleWidth)}  ${pad('Remaining', remWidth)}  ${pad('Worktree', wtWidth)}  Title${colors.reset}`;
+  const divider = `${colors.dim}${'-'.repeat(ticketWidth)}  ${'-'.repeat(projWidth)}  ${'-'.repeat(holderWidth)}  ${'-'.repeat(roleWidth)}  ${'-'.repeat(remWidth)}  ${'-'.repeat(wtWidth)}  ${'-'.repeat(25)}${colors.reset}`;
+
+  const formattedRows = rows.map((r) => {
+    const roleColored = r.role === 'anchor' ? `${colors.magenta}${r.role}${colors.reset}` : `${colors.blue}${r.role}${colors.reset}`;
+    return `${colors.bold}${pad(r.ticket, ticketWidth)}${colors.reset}  ${pad(r.project, projWidth)}  ${colors.cyan}${pad(r.holder, holderWidth)}${colors.reset}  ${pad(roleColored, roleWidth + (roleColored.length - r.role.length))}  ${colors.yellow}${pad(r.remaining, remWidth)}${colors.reset}  ${pad(r.worktree, wtWidth)}  ${r.title}`;
   });
 
   return [header, divider, ...formattedRows].join('\n');

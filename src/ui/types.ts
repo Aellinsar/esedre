@@ -254,6 +254,36 @@ export interface EnrichedTicketLink extends TicketLink {
   isTargetCompleted?: boolean;
 }
 
+export type CrewRole = 'lead' | 'anchor' | 'thug';
+
+export interface TicketLease {
+  system: string;
+  workerId: string;
+  role: CrewRole;
+  engine: 'antigravity' | 'claude' | 'shell' | 'headless';
+  machine: string;
+  acquiredAt: string;
+  expiresAt: string;
+  ttlMinutes: number;
+  worktree?: string;
+}
+
+export interface TicketLeaseSummary {
+  ticketId: number | string;
+  ticketKey: string;
+  title: string;
+  project: string;
+  system: string;
+  workerId: string;
+  role: CrewRole;
+  engine: string;
+  acquiredAt: string;
+  expiresAt: string;
+  ttlMinutes: number;
+  remainingSeconds: number;
+  worktree?: string;
+}
+
 export interface TicketMeta {
   id: number;
   title: string;
@@ -275,6 +305,8 @@ export interface TicketMeta {
   inheritedFeatureFlag?: string;
   projectId?: number;
   project?: string;
+  assignee?: string;
+  lease?: TicketLease | null;
   lastHash?: string;
   sha1?: string;
   links?: TicketLink[];
@@ -333,6 +365,8 @@ export interface PlannedFeature {
   projectId?: number;
   project?: string;
   projectDescriptor?: ProjectDescriptor;
+  assignee?: string;
+  lease?: TicketLease | null;
   submittedBy?: string;
   createdAt?: string;
   updatedAt?: string;

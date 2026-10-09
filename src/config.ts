@@ -24,6 +24,9 @@ export interface EsedreConfig {
   port?: number;
   ports?: EsedrePortsConfig;
   projects?: Record<string, string>;
+  debug?: boolean;
+  system?: string;
+  maxWorkers?: number;
 }
 
 export interface ResolvedPorts {
@@ -391,7 +394,7 @@ export function getGlobalConfigKey(key: string): any {
 export function setGlobalConfigKey(key: string, value: any): { key: string; value: any } {
   const current = readGlobalConfig() || { version: CURRENT_ESEDRE_VERSION, port: DEFAULT_ESEDRE_PORT };
   let parsedValue = value;
-  if ((key === 'port' || key.endsWith('.port') || key.startsWith('ports.')) && typeof value === 'string') {
+  if ((key === 'port' || key === 'maxWorkers' || key.endsWith('.port') || key.startsWith('ports.')) && typeof value === 'string') {
     const num = parseInt(value, 10);
     if (!isNaN(num)) parsedValue = num;
   }
@@ -604,6 +607,8 @@ export function migrateEsedreConfig(raw: any, targetVersion = CURRENT_ESEDRE_VER
     port: typeof raw?.port === 'number' && raw.port !== DEFAULT_ESEDRE_PORT ? raw.port : undefined,
     ports: typeof raw?.ports === 'object' && raw?.ports ? raw.ports : undefined,
     projects: typeof raw?.projects === 'object' && raw?.projects ? raw.projects : undefined,
+    system: typeof raw?.system === 'string' ? raw.system : undefined,
+    maxWorkers: typeof raw?.maxWorkers === 'number' ? raw.maxWorkers : undefined,
   };
   return migrated;
 }

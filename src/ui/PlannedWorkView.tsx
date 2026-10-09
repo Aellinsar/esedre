@@ -11,6 +11,9 @@ import { MilestonesView } from './MilestonesView';
 import { MilestoneModal } from './MilestoneModal';
 import { LinkTicketModal } from './LinkTicketModal';
 import { EsedreIcon } from './EsedreIcon';
+import { CrewStatusBadge } from './CrewStatusBadge';
+import { CrewStatusModal } from './CrewStatusModal';
+import { TicketLeaseSummary } from './types';
 
 export interface PlannedWorkViewProps {
   className?: string;
@@ -702,6 +705,29 @@ export function PlannedWorkView({
   useEffect(() => {
     loadMilestones();
   }, [loadMilestones]);
+
+  const [activeCrewLeases, setActiveCrewLeases] = useState<TicketLeaseSummary[]>([]);
+  const [isCrewModalOpen, setIsCrewModalOpen] = useState(false);
+  const [isLeasesLoading, setIsLeasesLoading] = useState(false);
+
+  const loadCrewLeases = useCallback(async () => {
+    if (!activePlanningProvider.listLeases) return;
+    setIsLeasesLoading(true);
+    try {
+      const ls = await activePlanningProvider.listLeases(projectFilter === 'all' ? undefined : projectFilter);
+      setActiveCrewLeases(ls || []);
+    } catch (err) {
+      console.error('Failed to load crew leases:', err);
+    } finally {
+      setIsLeasesLoading(false);
+    }
+  }, [projectFilter]);
+
+  useEffect(() => {
+    loadCrewLeases();
+    const interval = setInterval(loadCrewLeases, 10000);
+    return () => clearInterval(interval);
+  }, [loadCrewLeases]);
   type SortField = 'ticketNumber' | 'lastUpdated';
   type SortOrder = 'asc' | 'desc';
 
@@ -1030,7 +1056,10 @@ export function PlannedWorkView({
   };
 
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const handleRefresh = useCallback(() => setRefreshTrigger((v) => v + 1), []);
+  const handleRefresh = useCallback(() => {
+    setRefreshTrigger((v) => v + 1);
+    loadCrewLeases();
+  }, [loadCrewLeases]);
   const requestIdRef = useRef(0);
 
   useEffect(() => {
@@ -2422,6 +2451,13 @@ export function PlannedWorkView({
               </button>
             )}
 
+            {/* Autonomous Crew Fleet Status Badge */}
+            <CrewStatusBadge
+              leases={activeCrewLeases}
+              onClick={() => setIsCrewModalOpen(true)}
+              isLoading={isLeasesLoading}
+            />
+
             {isOwner && (
               <button
                 type="button"
@@ -3138,6 +3174,30 @@ export function PlannedWorkView({
                                     <span>Blocked</span>
                                   </span>
                                 )}
+
+                                {/* Active Crew Lease Badge */}
+                                {(() => {
+                                  const lease = feat.lease || metasMap[feat.ticketId]?.lease;
+                                  if (!lease || !lease.expiresAt) return null;
+                                  const now = Date.now();
+                                  const exp = new Date(lease.expiresAt).getTime();
+                                  if (exp <= now) return null;
+                                  const secs = Math.floor((exp - now) / 1000);
+                                  const mins = Math.floor(secs / 60);
+                                  return (
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 cursor-pointer hover:bg-emerald-500/20 transition-colors shrink-0"
+                                      title={`Leased by ${lease.system}:${lease.workerId} (${lease.role}) until ${new Date(lease.expiresAt).toLocaleTimeString()}`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setIsCrewModalOpen(true);
+                                      }}
+                                    >
+                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                      <span>Crew: {lease.workerId} ({mins}m)</span>
+                                    </span>
+                                  );
+                                })()}
 
                                 {/* 5. Status State Pill (Rightmost in Row 1, 112px) */}
                                 {isOwner ? (
@@ -5142,6 +5202,30 @@ export function PlannedWorkView({
           }}
         />
       )}
+
+      {/* Autonomous Crew Fleet Status Modal */}
+      <CrewStatusModal
+        isOpen={isCrewModalOpen}
+        onClose={() => setIsCrewModalOpen(false)}
+        leases={activeCrewLeases}
+        onRefresh={loadCrewLeases}
+        isLoading={isLeasesLoading}
+        onSelectTicket={(ticketKey) => {
+          const parts = ticketKey.split('-');
+          const ticketNum = Number(parts[parts.length - 1]);
+          const targetFeat = parsedData.plannedFeatures.find(
+            (f) =>
+              f.ticketId === ticketKey ||
+              f.id === ticketKey ||
+              f.id === `feature-${ticketKey}` ||
+              f.number === ticketNum
+          );
+          if (targetFeat) {
+            setExpandedFeatureId(targetFeat.id);
+            handleJumpToFeature(targetFeat.id, targetFeat.number);
+          }
+        }}
+      />
     </div>
     </div>
   );

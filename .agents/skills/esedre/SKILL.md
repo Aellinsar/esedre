@@ -14,9 +14,9 @@ All ticket discovery, inspection, and state management strictly follow this posi
 1. **Step 1 (Default for Read-Only Inspection) - Local Snapshot Projection**:
    Always read `.esedre/snapshot.json` in the workspace root first. It provides an immediate, zero-latency local projection containing all active and completed tickets, summaries, implementation plans, revision numbers, completion dates (`completedAt`), and staleness metrics (`daysSinceUpdate`).
 2. **Step 2 (Dynamic Queries & State Mutations) - Esedre MCP Tools**:
-   Use first-class MCP tools when active in the session (`esedre_list_tickets`, `esedre_get_ticket`, `esedre_get_plan`, `esedre_save_plan`, `esedre_update_ticket`, `esedre_add_comment`).
+   Use first-class MCP tools when active in the session (`esedre_list_tickets`, `esedre_get_ticket`, `esedre_get_plan`, `esedre_save_plan`, `esedre_update_ticket`, `esedre_claim_ticket`, `esedre_renew_lease`, `esedre_release_ticket`, `esedre_add_comment`).
 3. **Step 3 (Terminal & Script Fallback) - In-Repo CLI Wrapper**:
-   Use `.esedre/ese` (`.esedre/ese get`, `.esedre/ese plan`, `.esedre/ese update`, `.esedre/ese snapshot`).
+   Use `.esedre/ese` (`.esedre/ese get`, `.esedre/ese plan`, `.esedre/ese update`, `.esedre/ese claim`, `.esedre/ese release`, `.esedre/ese snapshot`).
 4. **Storage Boundary**:
    Backing ticket hubs (such as `esedre-data`) represent data storage managed by the engine. All agent interactions with roadmap tickets flow through the snapshot projection, MCP tools, or CLI wrappers.
 
@@ -32,6 +32,11 @@ When Esedre MCP is active in your agent session (`.agents/mcp_config.json`), use
 | `esedre_save_plan` | Save implementation plan markdown with OCC | `ticketId`, `planMarkdown`, `lastHash` |
 | `esedre_create_ticket` | Mint a new ticket with auto sequential ID | `title` (max 48 chars), `type`, `project`, `priority`, `milestone`, `effort`, `summary`, `detail` |
 | `esedre_update_ticket` | Update ticket attributes with OCC | `ticketId`, `status`, `type`, `priority`, `milestone`, `title`, `detail`, `detailMarkdown`, `complexity`, `effort`, `inDevelopment`, `featureFlag`, `lastHash` |
+| `esedre_claim_ticket` | Acquire rolling exclusive lease on a ticket | `ticketId`, `workerId`, `role` (`lead` \| `anchor` \| `thug`), `ttlMinutes`, `worktree`, `engine` |
+| `esedre_renew_lease` | Extend active lease heartbeat before expiry | `ticketId`, `workerId`, `additionalMinutes` |
+| `esedre_release_ticket` | Relinquish ticket lease upon completion or escalation | `ticketId`, `workerId`, `finalStatus` (`Completed` \| `Planned`), `notes`, `force` |
+| `esedre_list_leases` | List active or unexpired ticket leases across projects | `project`, `includeExpired` |
+| `esedre_get_crew_status` | Fleet diagnostics, active leases, role breakdown & pool | `project` |
 | `esedre_link_ticket` | Establish bi-directional ticket relationship | `sourceTicketId`, `relation` (`relates-to` \| `blocks` \| `parent-of` \| `duplicates`), `targetTicketId`, `author` |
 | `esedre_unlink_ticket` | Remove bi-directional ticket relationship | `sourceTicketId`, `targetTicketId`, `relation` |
 | `esedre_list_milestones` | List project milestones and deliverables progress | `project` |
@@ -40,49 +45,94 @@ When Esedre MCP is active in your agent session (`.agents/mcp_config.json`), use
 | `esedre_update_milestone` | Update milestone status, umbrella flag, or title | `milestoneId`, `project`, `title`, `featureFlag`, `status`, `targetDate`, `description` |
 | `esedre_add_comment` | Append developer or agent comment | `ticketId`, `text`, `file`, `author` |
 
-## 2. Core CLI Commands (Fallback via `run_command`)
+## 2. Headless Crew Fleet, Ticket Leases & Autonomous Coordination
+
+Esedre provides mutual exclusion locks (leases) and headless worker runners for coordinating autonomous agents, subagents, and human developers:
+
+### When to Use Ticket Leases:
+1. **Start of Ticket Work**: Whenever an agent begins implementing a ticket, claim an exclusive lease via MCP (`esedre_claim_ticket`) or CLI (`ese claim <ticketId>`). This prevents clobbering, declares active ownership to other agents, and updates the local snapshot and UI in real time.
+2. **Multi-Agent & Subagent Sessions**: When delegating subtasks or fanning out parallel work, each subagent claims its ticket under its assigned worker identity (`workerId: "thug-1"`, etc.).
+3. **Long-Running Operations (Background Tests, Builds, Refactors)**: Acquire a lease with a specified TTL (default 15 minutes), and maintain a rolling heartbeat via `esedre_renew_lease` or `ese renew <ticketId>`.
+4. **Task Completion**: Upon verifying implementation and running tests, release the lease via `esedre_release_ticket` or `ese release <ticketId> --status Completed --notes "Verified implementation"`.
+5. **Escalations & Blockers**: If an automated worker or subagent encounters a blocker, missing dependency, or unexpected failure, escalate immediately via `ese crew escalate <ticketId> --reason "..."` or release with `finalStatus: 'Planned'` and detailed notes.
+
+### Worker Roles:
+- **`lead`**: Architectural planner, orchestrator, or human developer. Full authority: can plan, claim, release, delegate tasks, and force-reclaim leases.
+- **`anchor`**: Senior pair or primary persistent agent. Can claim, release, delegate, or run test suites.
+- **`thug`**: Headless worker runner for executing bounded tasks, tests, or subroutines. Thugs execute tasks, auto-commit in worktrees, and release or escalate. Thugs cannot delegate to other workers.
+
+### Git Worktree Isolation:
+- Headless workers (`ese crew worker`) execute inside isolated git worktrees (`.worktrees/<workerId>`) on dedicated branches (`thug/<workerId>`), preventing `.git/index.lock` collisions and file clobbering in the active IDE.
+
+### Worker Pool Limits:
+- Controlled globally via `maxWorkers` in `~/.esedre/config.json` (configured via `ese configure set maxWorkers <n>`).
+- Workers check active unexpired leases on the local host machine; if active worker leases meet or exceed `maxWorkers`, additional workers idle and wait until capacity frees up.
+
+## 3. Core CLI Commands (Fallback via `run_command`)
 
 Both `esedre` and `ese` work interchangeably:
 
-### List Tickets
+### Ticket Operations
 ```bash
+# List tickets with filters
 .esedre/ese list [-p|--project <code|all>] [-s|--status <status>] [-t|--type <type>] [-P|--priority <priority>] [-m|--milestone <name>] [--blocked] [--linked-to <ticketKey>] [-q|--search <q>] [--json]
-```
 
-### Read Ticket Details
-```bash
+# Read ticket details
 .esedre/ese get <ticketId> [--json]
-```
 
-### Read or Update Implementation Plans
-```bash
+# Read or update implementation plans
 .esedre/ese plan <ticketId>
 .esedre/ese plan <ticketId> --file <planFilePath>
 .esedre/ese plan <ticketId> --set "<markdownContent>" [--last-hash <hash>]
-```
 
-### Create a Ticket
-```bash
+# Create a ticket
 .esedre/ese create --title "..." [-p|--project <code>] [-t|--type Feature] [-P|--priority High] [-m|--milestone <name>] [--complexity Medium] [--effort "2.0 - 4.0 hours"] [--detail "<md>"] [--file <path>] [--json]
-```
 
-### Update Ticket Status & Attributes
-```bash
+# Update ticket status & attributes
 .esedre/ese update <ticketId> --status "In Development"
 .esedre/ese update <ticketId> --status "Completed"
 .esedre/ese update <ticketId> --type Feature -P High --complexity Medium --effort "2.0 - 4.0 hours"
 .esedre/ese update <ticketId> -P none           # Clears priority
-.esedre/ese update <ticketId> -m "Release 1.0"  # Links ticket to milestone (inherits umbrella feature flag)
+.esedre/ese update <ticketId> -m "Release 1.0"  # Links ticket to milestone
 .esedre/ese update <ticketId> -m none           # Unlinks ticket from milestone
-.esedre/ese update <ticketId> --detail "<markdownContent>"  # Updates specification markdown
-.esedre/ese update <ticketId> --file <detailFilePath>       # Overwrites specification from file
-```
+.esedre/ese update <ticketId> --detail "<markdownContent>"
+.esedre/ese update <ticketId> --file <detailFilePath>
 
-### Append Comments or Notes
-```bash
+# Append comments or notes
 .esedre/ese comment <ticketId> "Verified implementation." --author "Agent"
 .esedre/ese comment <ticketId> --file <commentFilePath> --author "Agent"
 .esedre/ese comment <ticketId> --text "Verified implementation." --author "Agent"
+
+# Regenerate snapshot
+.esedre/ese snapshot
+.esedre/ese refresh
+```
+
+### Crew & Ticket Lease Commands
+```bash
+# Claim an exclusive lease on a ticket
+.esedre/ese claim <ticketId> [--role lead|anchor|thug] [--ttl <minutes>] [--worktree <path>] [--worker <id>]
+
+# Release a ticket lease upon completion or handoff
+.esedre/ese release <ticketId> [--status Completed|Planned] [--notes "<notes>"] [--force]
+
+# Renew active lease heartbeat
+.esedre/ese renew <ticketId> [--ttl <minutes>]
+
+# List active leases across projects
+.esedre/ese leases [-p|--project <code|all>] [--all]
+
+# Delegate a ticket to another worker (Leads and Anchors only)
+.esedre/ese crew delegate <ticketId> --worker <targetId> [--role thug]
+
+# Escalate a ticket when blocked or failed (resets to Planned and notifies Lead)
+.esedre/ese crew escalate <ticketId> --reason "<explanation>"
+
+# Launch a headless worker runner loop
+.esedre/ese crew worker [--id <id>] [--role thug] [--exec "<cmd>"] [--once] [--poll <sec>] [--max-workers <n>]
+
+# Display bound worker identity
+.esedre/ese crew whoami
 ```
 
 ### Link or Unlink Tickets
@@ -90,7 +140,6 @@ Both `esedre` and `ese` work interchangeably:
 .esedre/ese link <sourceId> <relation> <targetId> [--author "..."]
 .esedre/ese unlink <sourceId> <targetId> [--relation <relation>]
 # Supported relations: relates-to, blocks, parent-of, duplicates
-# Inverse reciprocal links are automatically synchronized.
 ```
 
 ### Manage Milestones & Umbrella Feature Flags
@@ -100,19 +149,6 @@ Both `esedre` and `ese` work interchangeably:
 .esedre/ese milestone create --title "..." [-p|--project <code>] [--flag <flag>] [--status <status>] [--target-date <YYYY-MM-DD>] [--description "..."] [--json]
 .esedre/ese milestone update <id|title> [-p|--project <code>] [--title "..."] [--flag <flag|none>] [--status <status>] [--target-date <YYYY-MM-DD>] [--description "..."] [--json]
 .esedre/ese milestone delete <id|title> [-p|--project <code>] [--json]
-```
-
-### Append Comments or Notes
-```bash
-.esedre/ese comment <ticketId> "Verified implementation." --author "Agent"
-.esedre/ese comment <ticketId> --file <commentFilePath> --author "Agent"
-.esedre/ese comment <ticketId> --text "Verified implementation." --author "Agent"
-```
-
-### Regenerate Snapshot
-```bash
-.esedre/ese snapshot
-.esedre/ese refresh
 ```
 
 ### Server Lifecycle & Daemon Management
@@ -133,7 +169,7 @@ Both `esedre` and `ese` work interchangeably:
 .esedre/ese stop [--port 5674] [--quiet] [--json]
 ```
 
-## 3. Embedded View & Theme Token Contract
+## 4. Embedded View & Theme Token Contract
 
 When embedding `<PlannedWorkView />` inside a host app (e.g. `PlannedWorkModal.tsx`):
 
@@ -148,7 +184,7 @@ If the host application declares any or all of the 12 core design tokens on `:ro
 - **Text**: `--text-primary`, `--text-secondary`, `--text-muted`
 - **Accent**: `--accent-primary`, `--accent-bg-subtle`, `--accent-border-subtle`
 
-## 4. Safety & Invariants
+## 5. Safety & Invariants
 - **Always use `--json`** for CLI programmatic inspection.
 - **Optimistic Concurrency**: Writes support `--last-hash <hash>` to prevent overwriting concurrent updates.
 - **Universal Type Naming**: Always use `type` (`Feature`, `Platform`, `Tools`, `Idea`, `Bug`). The legacy name `category` is deprecated.
@@ -161,3 +197,4 @@ If the host application declares any or all of the 12 core design tokens on `:ro
   - In web applications embedding Esedre (such as your host web app), `#/planner` and `#/plan` serve as direct secret developer entry routes.
   - **SEO Invariant**: These developer routes are private and MUST NEVER be exposed in `sitemap.xml`, `robots.txt`, `llms.txt`, or public navigation links.
   - The URL hash is preserved across hard page refreshes (F5) without falling back to `#/chat` or other views.
+

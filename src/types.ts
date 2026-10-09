@@ -122,6 +122,56 @@ export interface EnrichedTicketLink extends TicketLink {
   isBlockedByUncompleted?: boolean;
 }
 
+export type WorkerRole = 'anchor' | 'thug';
+export type CrewRole = 'lead' | WorkerRole;
+
+export interface TicketLease {
+  system: string;         // System/machine name (e.g. "Laptop", "Eris")
+  workerId: string;       // Execution instance identifier (e.g. "Laptop:thug-1")
+  role: CrewRole;         // 'lead' | 'anchor' | 'thug'
+  engine: 'antigravity' | 'claude' | 'shell' | 'headless';
+  machine: string;        // Hostname or "localhost"
+  acquiredAt: string;     // ISO timestamp
+  expiresAt: string;      // ISO timestamp (rolling TTL)
+  ttlMinutes: number;     // Rolling heartbeat (default: 15)
+  worktree?: string;      // Isolated git worktree path (e.g. ".worktrees/thug-1")
+}
+
+export interface ClaimTicketInput {
+  system: string;
+  workerId: string;
+  role?: CrewRole;
+  engine?: 'antigravity' | 'claude' | 'shell' | 'headless';
+  ttlMinutes?: number;
+  worktree?: string;
+  machine?: string;
+  force?: boolean;
+}
+
+export interface ReleaseTicketInput {
+  system: string;
+  workerId: string;
+  finalStatus?: 'Completed' | 'Planned' | 'In Development';
+  notes?: string;
+  force?: boolean;
+}
+
+export interface TicketLeaseSummary {
+  ticketId: number;
+  ticketKey: string;
+  title: string;
+  project: string;
+  system: string;
+  workerId: string;
+  role: CrewRole;
+  engine: string;
+  acquiredAt: string;
+  expiresAt: string;
+  ttlMinutes: number;
+  remainingSeconds: number;
+  worktree?: string;
+}
+
 export interface TicketMeta {
   id: number;
   title: string;
@@ -144,6 +194,8 @@ export interface TicketMeta {
   links?: TicketLink[];
   projectId?: number;
   project?: string;
+  assignee?: string;
+  lease?: TicketLease | null;
   lastHash?: string;
   sha1?: string;
 }

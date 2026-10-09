@@ -417,3 +417,74 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
      $OutputEncoding = [System.Text.Encoding]::UTF8
      ```
    - Prevents multi-byte non-ASCII Unicode characters (such as en-dashes or quotes) from rendering as mojibake on default Windows OEM code pages (e.g. CP 437).
+
+---
+
+## 19. Esedre Dogfooding, Bootstrapping & Grounding Ledger Mandate
+
+<!-- ESEDRE_DOGFOODING_START -->
+1. **The Self-Bootstrapping Engine Mandate**:
+   - You are working directly inside the source engine repository of Esedre. All roadmap management, task tracking, plan authoring, and verification records for this repository MUST strictly dogfood Esedre itself.
+   - **Crucially, PREFER MCP tools (`esedre_*`) over CLI execution whenever MCP is available in the session**, using the in-repo CLI wrapper (`.esedre/ese`) purely as a secondary fallback.
+   - As new crew and lease capabilities come online (such as `ese claim`, `ese release`, and `ese crew worker`), agents operating in this workspace MUST actively bootstrap their own workflow with them: claiming ticket leases, testing mutual exclusion, and delegating subtasks to local thugs.
+
+2. **In-Tree Build Freshness Invariant**:
+   - In this repository, the CLI wrapper (`.esedre/ese`) executes compiled artifacts in `dist/esedre.mjs`.
+   - When dogfooding or testing in-tree CLI changes, always compile via `npm run build:cli` first to ensure the toolchain exercises active source modifications rather than stale bundled artifacts.
+
+3. **Immediate Root-Cause Escalation & In-Source Repair**:
+   - Unlike consumer repositories that can only work around Esedre defects, you are working directly in the source engine.
+   - Whenever you encounter any friction, bug, formatting limitation, concurrency quirk, missing CLI flag, or output anomaly in Esedre:
+     - Prominently and explicitly surface it to the developer.
+     - Where appropriate, diagnose the architectural root cause and propose an immediate source fix or mint an official roadmap ticket.
+   - If an issue is raised and unacknowledged, persistently follow up in subsequent turns. Never let an internal defect or friction point slip by unaddressed.
+
+4. **Grounding & Crew Opportunity Shadowing**:
+   - At the conclusion of your response, evaluate whether any action in this turn could have genuinely benefited from an upcoming **Esedre Grounding Platform** or **`ese crew`** capability:
+     - *Zero-Latency Hot Standby Workers / Thugs*: Pre-warmed background containers/processes (`minWorkers: 1`) idling on compute nodes (e.g. desktop backbone `Eris`), allowing tasks to bind instantly with zero cold-start delay.
+     - *Native MCP Mesh*: Communication between Lead, Anchors, and Thugs over standard MCP (2024-11-05 spec) via the Esedre Gateway (port 5674), streaming progress comments and plan updates dynamically.
+     - *Isolated Git Worktrees & Child Branches*: Workers execute on isolated ticket child branches (`ticket/<ProjectCode>-<id>-<slug>`) with independent git worktrees, eliminating `.git/index.lock` collisions and file clobbering in the active editor.
+     - *Disposable Docker Sandboxing (`--sandbox=docker`)*: Ephemeral containers mounting only `/workspace`, with zero host home directory/key access, auto-cleaning on exit (`docker run --rm`).
+     - *Ticket Leases & Concurrency Protection*: Exclusive mutual exclusion locks preventing multiple agents or windows from clobbering the same tickets or plans concurrently.
+     - *Evaluation Scenarios*:
+       1. Isolated or Sequential Work (Even 30-60s Tasks): Any self-contained task, batch step, test run, or audit where firing the order to a hot standby worker over MCP unblocks the conversation immediately instead of making the user wait.
+       2. Parallel task fan-out (running independent subtasks concurrently on dedicated branches while continuing main chat).
+       3. Full build offload (delegating `npm run build` or the full Vitest suite to a background thug while continuing prompt interaction).
+       4. Zero-trust host protection (complex scripts/dependencies in disposable sandbox).
+       5. Cognitive plan grounding (anchoring long multi-turn sessions against compaction drift).
+
+5. **Mandatory Ledger Recording Invariant (`.esedre/GROUNDING_OPPORTUNITY_LEDGER.md`)**:
+   - Whenever a genuine grounding opportunity is identified, you MUST immediately record the new entry into `.esedre/GROUNDING_OPPORTUNITY_LEDGER.md` (incrementing the entry number, capturing Date, Session / Task, Affected Projects, Capability, Observed Friction, and Projected Grounding Benefit) across the ecosystem BEFORE outputting the callout.
+   - Never output a grounding opportunity callout to the user without simultaneously persisting it to the ledger.
+
+6. **Output Invariant**:
+   - If a genuine opportunity occurred, persist it to `.esedre/GROUNDING_OPPORTUNITY_LEDGER.md` and append a concise 2-line callout at the very bottom:
+     > **Esedre Grounding Opportunity**: `[Feature/Command]`  
+     > *[One sentence explaining the exact real-world time, parallelization, or safety benefit right here]*  
+   - If no clear, high-value opportunity existed in this turn, output **NOTHING**. Zero filler or hypothetical praise on trivial edits.
+<!-- ESEDRE_DOGFOODING_END -->
+
+---
+
+## 20. Headless Crew Fleet, Worker Pools & Ticket Leases
+
+1. **Ticket Leases & Mutual Exclusion**:
+   - Whenever an agent begins work on a ticket or task, it MUST acquire an exclusive lease via MCP (`esedre_claim_ticket`) or CLI (`ese claim <ticketId>`) before modifying code or running implementations.
+   - Leases have a default rolling TTL (15 minutes) and must be maintained via heartbeats (`esedre_renew_lease` or `ese renew <ticketId>`) during long-running tasks or test suites.
+   - Upon completing the task, the agent MUST release the lease (`esedre_release_ticket` or `ese release <ticketId> --status Completed --notes "<verification notes>"`).
+   - If an implementation task encounters unresolvable blockers or test failures, escalate immediately (`ese crew escalate <ticketId> --reason "<explanation>"` or release with `finalStatus: 'Planned'`).
+
+2. **Worker Role Hierarchy**:
+   - **`lead`**: Architectural planner, orchestrator, or human developer. Has full authority to claim, release, delegate, or force-reclaim leases.
+   - **`anchor`**: Senior pair or primary persistent agent. Can claim, release, delegate, and run verification.
+   - **`thug`**: Headless worker runner for executing bounded tasks, tests, or subroutines. Thugs execute tasks, auto-commit in worktrees, and release or escalate. Thugs are strictly forbidden from delegating tasks to other workers.
+
+3. **Git Worktree Isolation & Automated Commits**:
+   - Headless workers (`ese crew worker`) execute inside isolated git worktrees (`.worktrees/<workerId>`) on dedicated branches (`thug/<workerId>`), eliminating `.git/index.lock` collisions and file clobbering in the active IDE.
+   - Worktree commits adhere strictly to imperative commit message conventions: `[#<id>] Execute automated worker task (<workerId>)`.
+
+4. **Worker Pool Limits & Machine Throttling**:
+   - Machine worker capacity is governed by `maxWorkers` in `~/.esedre/config.json` (configured via `ese configure set maxWorkers <n>`).
+   - Workers query active unexpired leases on the local host machine; if active worker leases meet or exceed `maxWorkers`, additional workers idle and wait until capacity frees up.
+
+

@@ -31,11 +31,27 @@ import {
   TicketLink,
   EnrichedTicketLink,
   INVERSE_RELATIONS,
+  ClaimTicketInput,
+  ReleaseTicketInput,
+  TicketLease,
+  TicketLeaseSummary,
+  CrewRole,
+  WorkerRole,
 } from '../types.js';
-import { StorageAdapter, CreateTicketInput, UpdateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './adapter.js';
+import {
+  TicketRepository,
+  StorageAdapter,
+  CreateTicketInput,
+  UpdateTicketInput,
+  ListTicketsFilter,
+  RegisterProjectInput,
+  DuplicateProjectWarning,
+  EsedreLeaseConflictError,
+} from './repository.js';
 import { EsedreConfig, findEsedreConfig, expandHome, validateProjectCode, validateProjectName } from '../config.js';
 import { computeTicketHash, verifyTicketHash } from '../snapshot.js';
 import { normalizeDashesAndMojibake, normalizeTicketFields, normalizePriority } from '../utils/formatter.js';
+import { logDebug } from '../utils/logger.js';
 
 function writeSafeFile(filePath: string, content: string | Buffer): void {
   const dir = path.dirname(filePath);
@@ -84,7 +100,7 @@ export interface CachedTicketRecord {
   stats: Record<string, { mtimeMs: number; size: number }>;
 }
 
-export class FilesystemStorageAdapter implements StorageAdapter {
+export class FilesystemTicketRepository implements TicketRepository {
   private workspaceRoot: string;
   private config: EsedreConfig;
   private isConfigExplicit = false;
@@ -2680,4 +2696,255 @@ ${input.summary || 'Summary to be defined.'}
     const updatedSource = (await this.getTicket(sourceInfo.key))!;
     return { source: updatedSource, target: updatedTarget };
   }
+
+  public async claimTicket(id: number | string, input: ClaimTicketInput): Promise<EsedreTicket> {
+    const locInfo = this.findTicketLocation(id);
+    if (!locInfo) {
+      throw new Error(`Ticket #${id} could not be located on disk`);
+    }
+
+    const metaPath = path.join(locInfo.ticketDir, 'meta.json');
+    if (!fs.existsSync(metaPath)) {
+      throw new Error(`Ticket #${id} is missing meta.json`);
+    }
+
+    const metaRaw = fs.readFileSync(metaPath, 'utf-8');
+    const meta: TicketMeta = JSON.parse(metaRaw);
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    // Check existing active lease
+    if (meta.lease && meta.lease.expiresAt) {
+      const expiresAtMs = new Date(meta.lease.expiresAt).getTime();
+      const isUnexpired = expiresAtMs > now.getTime();
+
+      if (isUnexpired) {
+        const isSameHolder =
+          meta.lease.system.trim().toLowerCase() === input.system.trim().toLowerCase() &&
+          meta.lease.workerId.trim().toLowerCase() === input.workerId.trim().toLowerCase();
+
+        if (!isSameHolder && !input.force) {
+          throw new EsedreLeaseConflictError(
+            id,
+            `${meta.lease.system}:${meta.lease.workerId}`,
+            meta.lease.role,
+            meta.lease.expiresAt
+          );
+        }
+      } else {
+        logDebug('lease', `Lease expired for ${meta.lease.system}:${meta.lease.workerId}. Reclaiming ticket #${id}`, {
+          previousHolder: `${meta.lease.system}:${meta.lease.workerId}`,
+          newHolder: `${input.system}:${input.workerId}`,
+        });
+      }
+    }
+
+    const ttlMinutes = typeof input.ttlMinutes === 'number' && input.ttlMinutes > 0 ? input.ttlMinutes : 15;
+    const expiresAt = new Date(now.getTime() + ttlMinutes * 60 * 1000).toISOString();
+    const role: CrewRole = input.role || 'thug';
+    const engine = input.engine || 'antigravity';
+    const machine = input.machine || os.hostname() || 'localhost';
+
+    const lease: TicketLease = {
+      system: input.system.trim(),
+      workerId: input.workerId.trim(),
+      role,
+      engine,
+      machine,
+      acquiredAt: nowIso,
+      expiresAt,
+      ttlMinutes,
+      worktree: input.worktree ? input.worktree.trim() : undefined,
+    };
+
+    meta.lease = lease;
+    if (!meta.assignee) {
+      meta.assignee = input.system.trim();
+    }
+    meta.status = 'In Development';
+    meta.updatedAt = nowIso;
+    meta.revision = (meta.revision || 1) + 1;
+
+    writeSafeFile(metaPath, JSON.stringify(meta, null, 2) + '\n');
+    this.invalidateTicketCache(locInfo.ticketDir);
+
+    logDebug('lease', `Ticket #${id} claimed by ${lease.system}:${lease.workerId} (${lease.role})`, {
+      ticketId: id,
+      system: lease.system,
+      workerId: lease.workerId,
+      role: lease.role,
+      ttlMinutes,
+      expiresAt,
+    });
+
+    const updated = await this.getTicket(id);
+    return updated!;
+  }
+
+  public async renewLease(
+    id: number | string,
+    system: string,
+    workerId: string,
+    ttlMinutes?: number
+  ): Promise<TicketLease> {
+    const locInfo = this.findTicketLocation(id);
+    if (!locInfo) {
+      throw new Error(`Ticket #${id} could not be located on disk`);
+    }
+
+    const metaPath = path.join(locInfo.ticketDir, 'meta.json');
+    if (!fs.existsSync(metaPath)) {
+      throw new Error(`Ticket #${id} is missing meta.json`);
+    }
+
+    const metaRaw = fs.readFileSync(metaPath, 'utf-8');
+    const meta: TicketMeta = JSON.parse(metaRaw);
+
+    if (!meta.lease) {
+      throw new Error(`Ticket #${id} has no active lease to renew.`);
+    }
+
+    const isMatch =
+      meta.lease.system.trim().toLowerCase() === system.trim().toLowerCase() &&
+      meta.lease.workerId.trim().toLowerCase() === workerId.trim().toLowerCase();
+
+    if (!isMatch) {
+      throw new EsedreLeaseConflictError(
+        id,
+        `${meta.lease.system}:${meta.lease.workerId}`,
+        meta.lease.role,
+        meta.lease.expiresAt
+      );
+    }
+
+    const effectiveTtl = typeof ttlMinutes === 'number' && ttlMinutes > 0 ? ttlMinutes : meta.lease.ttlMinutes || 15;
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + effectiveTtl * 60 * 1000).toISOString();
+
+    meta.lease.expiresAt = expiresAt;
+    meta.lease.ttlMinutes = effectiveTtl;
+    meta.updatedAt = now.toISOString();
+
+    writeSafeFile(metaPath, JSON.stringify(meta, null, 2) + '\n');
+    this.invalidateTicketCache(locInfo.ticketDir);
+
+    logDebug('lease', `Lease renewed for ticket #${id} by ${system}:${workerId}`, {
+      ticketId: id,
+      system,
+      workerId,
+      expiresAt,
+      ttlMinutes: effectiveTtl,
+    });
+
+    return meta.lease;
+  }
+
+  public async releaseTicket(id: number | string, input: ReleaseTicketInput): Promise<EsedreTicket> {
+    const locInfo = this.findTicketLocation(id);
+    if (!locInfo) {
+      throw new Error(`Ticket #${id} could not be located on disk`);
+    }
+
+    const metaPath = path.join(locInfo.ticketDir, 'meta.json');
+    if (!fs.existsSync(metaPath)) {
+      throw new Error(`Ticket #${id} is missing meta.json`);
+    }
+
+    const metaRaw = fs.readFileSync(metaPath, 'utf-8');
+    const meta: TicketMeta = JSON.parse(metaRaw);
+
+    if (meta.lease && !input.force) {
+      const isMatch =
+        meta.lease.system.trim().toLowerCase() === input.system.trim().toLowerCase() &&
+        meta.lease.workerId.trim().toLowerCase() === input.workerId.trim().toLowerCase();
+
+      if (!isMatch) {
+        const expiresAtMs = new Date(meta.lease.expiresAt).getTime();
+        if (expiresAtMs > Date.now()) {
+          throw new EsedreLeaseConflictError(
+            id,
+            `${meta.lease.system}:${meta.lease.workerId}`,
+            meta.lease.role,
+            meta.lease.expiresAt
+          );
+        }
+      }
+    }
+
+    const now = new Date().toISOString();
+    meta.lease = null;
+
+    if (input.finalStatus) {
+      meta.status = input.finalStatus;
+      if (input.finalStatus === 'Completed') {
+        meta.completedAt = meta.completedAt || now;
+      } else {
+        delete meta.completedAt;
+      }
+    } else {
+      meta.status = 'Completed';
+      meta.completedAt = meta.completedAt || now;
+    }
+
+    meta.updatedAt = now;
+    meta.revision = (meta.revision || 1) + 1;
+
+    writeSafeFile(metaPath, JSON.stringify(meta, null, 2) + '\n');
+    this.invalidateTicketCache(locInfo.ticketDir);
+
+    if (input.notes) {
+      try {
+        await this.addComment(id, {
+          author: `${input.system}:${input.workerId}`,
+          text: input.notes,
+        });
+      } catch (err) {
+        logDebug('lease', `Failed to append completion notes comment for ticket #${id}`, { error: String(err) });
+      }
+    }
+
+    logDebug('lease', `Ticket #${id} released by ${input.system}:${input.workerId} with status ${meta.status}`, {
+      ticketId: id,
+      finalStatus: meta.status,
+    });
+
+    const updated = await this.getTicket(id);
+    return updated!;
+  }
+
+  public async listActiveLeases(project?: string): Promise<TicketLeaseSummary[]> {
+    const filter = project && project !== 'all' ? { project } : undefined;
+    const allTickets = await this.listTickets(filter);
+    const now = Date.now();
+    const activeLeases: TicketLeaseSummary[] = [];
+
+    for (const t of allTickets) {
+      if (t.meta.lease && t.meta.lease.expiresAt) {
+        const expiresAtMs = new Date(t.meta.lease.expiresAt).getTime();
+        if (expiresAtMs > now) {
+          const remainingSeconds = Math.max(0, Math.floor((expiresAtMs - now) / 1000));
+          activeLeases.push({
+            ticketId: t.meta.id,
+            ticketKey: `${t.meta.project || ''}-${t.meta.id}`,
+            title: t.meta.title,
+            project: t.meta.project || '',
+            system: t.meta.lease.system,
+            workerId: t.meta.lease.workerId,
+            role: t.meta.lease.role,
+            engine: t.meta.lease.engine,
+            acquiredAt: t.meta.lease.acquiredAt,
+            expiresAt: t.meta.lease.expiresAt,
+            ttlMinutes: t.meta.lease.ttlMinutes,
+            remainingSeconds,
+            worktree: t.meta.lease.worktree,
+          });
+        }
+      }
+    }
+
+    return activeLeases.sort((a, b) => new Date(a.expiresAt).getTime() - new Date(b.expiresAt).getTime());
+  }
 }
+
+export { FilesystemTicketRepository as FilesystemStorageAdapter };

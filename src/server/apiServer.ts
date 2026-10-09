@@ -116,6 +116,13 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
           return true;
         }
 
+        if (pathname === '/api/planning/leases') {
+          const project = url.searchParams.get('project') || undefined;
+          const leases = await reqStorage.listActiveLeases(project === 'all' ? undefined : project);
+          sendJson(res, 200, leases);
+          return true;
+        }
+
         if (pathname === '/api/planning/tickets') {
           const project = url.searchParams.get('project') || undefined;
           const status = (url.searchParams.get('status') as any) || undefined;

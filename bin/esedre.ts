@@ -40,6 +40,8 @@ import {
 } from '../src/upgrade.js';
 import { startGatewayCluster } from '../src/server/gateway.js';
 import { startDaemon, stopDaemon, getDaemonStatus, printDaemonLogs } from '../src/server/daemon.js';
+import { handleClaim, handleRelease, handleRenew, handleLeases, handleCrew, handleWorker } from '../src/cli/crew.js';
+import { EsedreLeaseConflictError } from '../src/storage/index.js';
 
 function printHelp(config?: any): void {
   const port = config?.port || DEFAULT_ESEDRE_PORT;
@@ -96,6 +98,27 @@ ${colors.bold}ROADMAP COMMANDS (Pair Programming & LLM Agents):${colors.reset}
                • create: ese milestone create --title "..." [-p <project>] [--flag <name>] [--status <status>] [--target-date <date>] [--desc "..."]
                • update: ese milestone update <id> [--title "..."] [--flag <name>] [--status <status>] [--target-date <date>] [--desc "..."]
                • delete: ese milestone delete <id> [-p <project>]
+
+${colors.bold}CREW & TICKET LEASES (Autonomous Fleets & Multi-Agent Teams):${colors.reset}
+  ${colors.bold}claim${colors.reset}       <id> [--role anchor|thug] [--ttl <m>] [--worktree <path>] [--force] [--json]
+               Acquire an exclusive lease on a ticket for a worker process.
+               • Machine identity is strictly host-authoritative.
+               • Non-lead callers cannot use --force.
+
+  ${colors.bold}release${colors.reset}     <id> [--status <status>] [--notes "<notes>"] [--force] [--json]
+               Relinquish lease upon task completion or pause.
+
+  ${colors.bold}renew${colors.reset}       <id> [--ttl <m>] [--json]
+               Extend active lease heartbeat before expiry.
+
+  ${colors.bold}leases${colors.reset}      [-p|--project <code|all>] [--json]
+               List active ticket leases and time-to-live across projects.
+
+  ${colors.bold}crew${colors.reset}        <claim|release|renew|leases|delegate|escalate|worker|whoami>
+               Crew management commands for autonomous fleet coordination.
+
+  ${colors.bold}worker${colors.reset}      [--id <id>] [--role anchor|thug] [--exec "<cmd>"] [--once]
+               Launch a headless worker runner with rolling heartbeat and git worktree isolation.
 
 ${colors.bold}SERVICE DAEMON COMMANDS:${colors.reset}
   ${colors.bold}start${colors.reset}       [--port <n>] [--foreground | -f] [--quiet] [--json]
@@ -669,6 +692,9 @@ async function main(): Promise<void> {
         console.log(`\n${colors.bold}${colors.cyan}Esedre Central Configuration${colors.reset}`);
         console.log(`  • Config File:  ${configPath} ${fs.existsSync(configPath) ? colors.green + '(active)' + colors.reset : colors.dim + '(default)' + colors.reset}`);
         console.log(`  • Default Port: ${globalCfg.port || DEFAULT_ESEDRE_PORT}`);
+        if (globalCfg.maxWorkers) {
+          console.log(`  • Worker Pool Limit: ${globalCfg.maxWorkers}`);
+        }
 
         console.log(`\n${colors.bold}Data Hubs (dataDir):${colors.reset}`);
         if (globalCfg.dataDir) {
@@ -1545,6 +1571,30 @@ async function main(): Promise<void> {
         return;
       }
 
+      case 'claim': {
+        return handleClaim(storage, positionals, flags, isJson, discovered);
+      }
+
+      case 'release': {
+        return handleRelease(storage, positionals, flags, isJson, discovered);
+      }
+
+      case 'renew': {
+        return handleRenew(storage, positionals, flags, isJson, discovered);
+      }
+
+      case 'leases': {
+        return handleLeases(storage, positionals, flags, isJson, discovered);
+      }
+
+      case 'crew': {
+        return handleCrew(storage, positionals, flags, isJson, discovered);
+      }
+
+      case 'worker': {
+        return handleWorker(storage, positionals, flags, isJson, discovered);
+      }
+
       default: {
         console.error(`${colors.red}Error: Unknown command "${command}"${colors.reset}`);
         printHelp();
@@ -1552,6 +1602,10 @@ async function main(): Promise<void> {
       }
     }
   } catch (err: any) {
+    if (err instanceof EsedreLeaseConflictError || err.name === 'EsedreLeaseConflictError') {
+      console.error(`${colors.red}Lease Conflict: ${err.message}${colors.reset}`);
+      process.exit(1);
+    }
     if (err instanceof EsedreConflictError || err.name === 'EsedreConflictError') {
       console.error(`${colors.red}Conflict Error: ${err.message}${colors.reset}`);
       console.error(`${colors.dim}Use --force to override if you are certain.${colors.reset}`);

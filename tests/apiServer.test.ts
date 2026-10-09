@@ -56,6 +56,7 @@ describe('Esedre REST API Server', () => {
   let tempDir: string;
   let server: http.Server | null = null;
   let baseUrl = '';
+  let storage: SecurityFilter;
 
   beforeEach(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-api-test-'));
@@ -72,7 +73,7 @@ describe('Esedre REST API Server', () => {
     );
 
     const rawStorage = new FilesystemStorageAdapter(tempDir);
-    const storage = new SecurityFilter(rawStorage);
+    storage = new SecurityFilter(rawStorage);
 
     // Create an initial ticket
     await storage.createTicket({
@@ -437,6 +438,32 @@ describe('Esedre REST API Server', () => {
     const resFlag = await request(`${baseUrl}/api/planning/toggle-flag`, 'POST', { flagged: true });
     expect(resFlag.status).toBe(400);
     expect(resFlag.json().error).toContain('ticketId is required');
+  });
+
+  it('returns active ticket leases via GET /api/planning/leases', async () => {
+    // Initially empty
+    const resEmpty = await request(`${baseUrl}/api/planning/leases`, 'GET');
+    expect(resEmpty.status).toBe(200);
+    expect(resEmpty.json()).toEqual([]);
+
+    // Claim a ticket
+    await storage.claimTicket(1, {
+      system: 'Laptop',
+      workerId: 'thug-1',
+      role: 'thug',
+      ttlMinutes: 20,
+    });
+
+    // Query active leases
+    const resLeases = await request(`${baseUrl}/api/planning/leases`, 'GET');
+    expect(resLeases.status).toBe(200);
+    const leases = resLeases.json();
+    expect(leases).toHaveLength(1);
+    expect(leases[0].ticketId).toBe(1);
+    expect(leases[0].workerId).toBe('thug-1');
+    expect(leases[0].role).toBe('thug');
+    expect(leases[0].ttlMinutes).toBe(20);
+    expect(leases[0].remainingSeconds).toBeGreaterThan(0);
   });
 });
 

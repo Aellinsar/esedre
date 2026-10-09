@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { EsedreTicket, TicketType, TicketCategory, TicketStatus, TicketPriority, Milestone, MilestoneStatus, CURRENT_ESEDRE_VERSION, TicketLink } from './types.js';
+import { EsedreTicket, TicketType, TicketCategory, TicketStatus, TicketPriority, Milestone, MilestoneStatus, CURRENT_ESEDRE_VERSION, TicketLink, TicketLease } from './types.js';
 import { StorageAdapter } from './storage/adapter.js';
 
 export interface TicketSnapshotEntry {
@@ -23,6 +23,8 @@ export interface TicketSnapshotEntry {
   isBlocked?: boolean;
   hasPlan: boolean;
   planMarkdown?: string;
+  assignee?: string;
+  lease?: TicketLease | null;
 
   // Revision and temporal metadata for design staleness awareness
   createdAt?: string;
@@ -158,6 +160,8 @@ export async function generateProjectSnapshot(
       isBlocked: ticketObj.isBlocked || false,
       hasPlan: Boolean(plan && plan.trim().length > 0),
       planMarkdown: plan && plan.trim().length > 0 ? plan : undefined,
+      assignee: ticketObj.meta.assignee,
+      lease: ticketObj.meta.lease || undefined,
       createdAt,
       updatedAt,
       completedAt,

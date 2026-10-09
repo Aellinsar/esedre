@@ -126,6 +126,21 @@ Core day-to-day workflow commands for scoping, viewing, planning, and verifying 
 | `snapshot`, `refresh` | `ese snapshot [--project <code>] [--json]` | Generate or refresh projection `.esedre/snapshot.json` for zero-latency agent context. |
 | `projects` | `ese projects [--json]` | List registered projects within authorized scope. |
 
+### Crew Fleet & Ticket Leases
+
+Coordinate autonomous multi-agent fleets, background test suites, and subagent worktrees:
+
+| Command | Usage | Description |
+|---|---|---|
+| `claim` | `ese claim <id> [--role lead\|anchor\|thug] [--ttl <m>] [--worktree <path>]` | Acquire a rolling exclusive lease on a ticket. |
+| `release` | `ese release <id> [--status <status>] [--notes "<notes>"] [--force]` | Relinquish ticket lease upon task completion or pause. |
+| `renew` | `ese renew <id> [--ttl <m>]` | Extend active lease heartbeat before expiry. |
+| `leases` | `ese leases [-p\|--project <code\|all>] [--all]` | List active and unexpired ticket leases across projects. |
+| `crew delegate` | `ese crew delegate <id> --worker <target> [--role thug]` | Delegate a ticket to another worker (Leads and Anchors only). |
+| `crew escalate` | `ese crew escalate <id> --reason "<explanation>"` | Escalate a ticket when blocked or failed (resets to Planned and notifies Lead). |
+| `crew worker` | `ese crew worker [--id <id>] [--role thug] [--exec "<cmd>"] [--once] [--poll <sec>] [--max-workers <n>]` | Run a headless worker loop with automatic worktree isolation and commit on success. |
+| `crew whoami` | `ese crew whoami` | Display active worker identity and bound role. |
+
 ### Service Daemon Commands
 
 Manage the local web dashboard and API server:
@@ -204,6 +219,11 @@ To connect Esedre to **Google Antigravity**, **Claude Code**, **Cursor**, or any
 - `esedre_get_plan` & `esedre_save_plan`: Inspect and update implementation plans with optimistic concurrency (`lastHash`).
 - `esedre_create_ticket`: Mint new roadmap tickets with project code validation (up to 8 chars), optional priority, optional milestone, and specification detail markdown.
 - `esedre_update_ticket`: Modify status, title, type, priority, milestone, complexity, or effort with optimistic concurrency (`lastHash`).
+- `esedre_claim_ticket`: Acquire rolling exclusive lease on a ticket with worker identity, role (`lead`, `anchor`, `thug`), TTL minutes, and optional worktree path.
+- `esedre_renew_lease`: Extend active lease heartbeat before expiry for long-running workflows.
+- `esedre_release_ticket`: Relinquish ticket lease upon task completion (`Completed`) or escalation (`Planned`) with execution notes.
+- `esedre_list_leases`: List active or unexpired ticket leases across registered projects.
+- `esedre_get_crew_status`: System-wide crew fleet diagnostics, active leases, role breakdown, and host pool capacity.
 - `esedre_link_ticket`: Establish a bi-directional link between two tickets (`relates-to`, `blocks`, `parent-of`, `duplicates`).
 - `esedre_unlink_ticket`: Remove a bi-directional relationship between two tickets.
 - `esedre_list_milestones`: List milestones and progress metrics for a project.
@@ -241,6 +261,22 @@ Esedre introduces first-class milestone management to group related tickets towa
 <p align="center">
   <img src="https://cdn.jsdelivr.net/npm/esedre/docs/assets/esedre-milestones.png" alt="Esedre Milestones & Deliverables Tracking" width="100%" />
 </p>
+
+### Headless Crew Fleet, Ticket Leases & Worktree Isolation
+
+Esedre provides mutual exclusion locks (leases) and headless worker runners for coordinating autonomous agent fleets, background test suites, and subagent worktrees:
+
+- **Rolling Exclusive Ticket Leases**: Before an agent or human begins implementation, acquiring a lease reserves the ticket exclusively. Leases carry an automatic time-to-live (TTL) and rolling heartbeat renewal (`esedre_renew_lease` or `ese renew`), preventing stale locks if a worker process crashes or loses network connectivity.
+- **Worker Role Hierarchy**:
+  - `lead`: Architectural planner, orchestrator, or human developer. Full authority to claim, release, delegate tasks (`ese crew delegate`), and force-reclaim leases.
+  - `anchor`: Senior pair or primary persistent agent. Can claim, release, delegate, or run test suites.
+  - `thug`: Headless worker runner for executing bounded commands, scripts, or test suites. Thugs auto-commit in worktrees and release or escalate. Thugs cannot delegate to other workers.
+- **Git Worktree Isolation**:
+  - Headless workers (`ese crew worker`) execute inside isolated git worktrees (`.worktrees/<workerId>`) on dedicated branches (`thug/<workerId>`), eliminating `.git/index.lock` collisions and file clobbering in the active IDE.
+- **Worker Pool Limits**:
+  - Machine capacity is governed by `maxWorkers` in `~/.esedre/config.json` (configured via `ese configure set maxWorkers <n>`). Workers automatically query active unexpired leases on the local host machine; if active worker leases meet or exceed `maxWorkers`, additional workers idle and wait until capacity frees up.
+- **Automatic Task Escalation**:
+  - If a headless worker command fails, the worker automatically resets the ticket status to `Planned`, posts an escalation comment describing the failure, and relinquishes the lease so the Lead or human developer can triage the issue.
 
 ### Resources
 - URI Scheme: `esedre://tickets/{id}` (MIME type: `text/markdown`)

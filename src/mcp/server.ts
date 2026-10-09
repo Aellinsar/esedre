@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { StorageAdapter } from '../storage/adapter.js';
-import { TicketType, TicketCategory, TicketStatus, TicketPriority, EsedreConflictError, CURRENT_ESEDRE_VERSION } from '../types.js';
+import { EsedreLeaseConflictError } from '../storage/index.js';
+import { resolveWorkerIdentity, resolveSystemIdentity } from '../utils/identity.js';
+import { TicketType, TicketCategory, TicketStatus, TicketPriority, EsedreConflictError, CURRENT_ESEDRE_VERSION, WorkerRole } from '../types.js';
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -139,6 +141,22 @@ export class EsedreMcpServer {
                   ticketId: err.ticketId,
                   currentHash: err.currentHash,
                   lastHash: err.lastHash,
+                },
+              },
+            };
+          }
+          if (err instanceof EsedreLeaseConflictError || err.name === 'EsedreLeaseConflictError') {
+            return {
+              jsonrpc: '2.0',
+              id,
+              error: {
+                code: -32001,
+                message: err.message,
+                data: {
+                  ticketId: err.ticketId,
+                  activeHolder: err.activeHolder,
+                  role: err.role,
+                  expiresAt: err.expiresAt,
                 },
               },
             };
@@ -447,6 +465,74 @@ export class EsedreMcpServer {
           required: ['sourceTicketId', 'targetTicketId'],
         },
       },
+      {
+        name: 'esedre_claim_ticket',
+        description: 'Acquire an exclusive lease on a roadmap ticket for an agent or worker process.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ticketId: { type: ['integer', 'string'], description: 'Numeric ticket ID or compound key (e.g. 42 or Core-42)' },
+            workerId: { type: 'string', description: 'Worker identifier (defaults to process env ESEDRE_WORKER_ID or "lead")' },
+            role: { type: 'string', enum: ['anchor', 'thug', 'lead'], description: 'Worker role' },
+            ttlMinutes: { type: 'integer', description: 'Lease duration in minutes (default: 15)' },
+            worktree: { type: 'string', description: 'Path to assigned git worktree directory' },
+            engine: { type: 'string', description: 'Executing agent engine (e.g. antigravity)' },
+            force: { type: 'boolean', description: 'Force break/acquire lease (restricted to Lead role)' },
+          },
+          required: ['ticketId'],
+        },
+      },
+      {
+        name: 'esedre_renew_lease',
+        description: 'Extend the heartbeat TTL on an actively leased ticket.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ticketId: { type: ['integer', 'string'], description: 'Numeric ticket ID or compound key' },
+            workerId: { type: 'string', description: 'Worker identifier' },
+            ttlMinutes: { type: 'integer', description: 'New TTL duration in minutes (default: 15)' },
+          },
+          required: ['ticketId'],
+        },
+      },
+      {
+        name: 'esedre_release_ticket',
+        description: 'Relinquish lease on a ticket upon task completion or pause.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ticketId: { type: ['integer', 'string'], description: 'Numeric ticket ID or compound key' },
+            workerId: { type: 'string', description: 'Worker identifier' },
+            status: { type: 'string', enum: ['Completed', 'Planned', 'In Development', 'Rejected'], description: 'New ticket status' },
+            notes: { type: 'string', description: 'Completion or progress notes' },
+            force: { type: 'boolean', description: 'Force release active lease (restricted to Lead role)' },
+          },
+          required: ['ticketId'],
+        },
+      },
+      {
+        name: 'esedre_list_leases',
+        description: 'List all currently active ticket leases and their remaining time-to-live.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Optional project code filter' },
+          },
+        },
+      },
+      {
+        name: 'esedre_escalate_ticket',
+        description: 'Escalate an active task when an agent encounters roadblocks or architectural complexity. Releases lease and resets status to Planned.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ticketId: { type: ['integer', 'string'], description: 'Numeric ticket ID or compound key' },
+            reason: { type: 'string', description: 'Detailed explanation of why the task is being escalated' },
+            workerId: { type: 'string', description: 'Worker identifier' },
+          },
+          required: ['ticketId', 'reason'],
+        },
+      },
     ];
   }
 
@@ -653,6 +739,87 @@ export class EsedreMcpServer {
           success: true,
           source: result.source,
           target: result.target,
+        };
+      }
+
+      case 'claim_ticket': {
+        const id = this.parseTicketId(args.ticketId);
+        const caller = resolveWorkerIdentity(undefined, { workerId: args.workerId, role: args.role });
+        if (args.force && caller.role !== 'lead') {
+          throw new Error('Access Denied: Only a Lead may use force to break or override ticket leases.');
+        }
+        const ticket = await this.storage.claimTicket(id, {
+          system: caller.system,
+          workerId: caller.workerId,
+          role: caller.role,
+          ttlMinutes: args.ttlMinutes,
+          worktree: args.worktree,
+          engine: args.engine || 'antigravity',
+          force: Boolean(args.force),
+        });
+        return {
+          success: true,
+          ticket,
+          lease: ticket.meta.lease,
+        };
+      }
+
+      case 'renew_lease': {
+        const id = this.parseTicketId(args.ticketId);
+        const caller = resolveWorkerIdentity(undefined, { workerId: args.workerId });
+        const lease = await this.storage.renewLease(id, caller.system, caller.workerId, args.ttlMinutes);
+        return {
+          success: true,
+          ticketId: id,
+          lease,
+        };
+      }
+
+      case 'release_ticket': {
+        const id = this.parseTicketId(args.ticketId);
+        const caller = resolveWorkerIdentity(undefined, { workerId: args.workerId });
+        if (args.force && caller.role !== 'lead') {
+          throw new Error('Access Denied: Only a Lead may use force to break or override ticket leases.');
+        }
+        const ticket = await this.storage.releaseTicket(id, {
+          system: caller.system,
+          workerId: caller.workerId,
+          finalStatus: args.status,
+          notes: args.notes,
+          force: Boolean(args.force),
+        });
+        return {
+          success: true,
+          ticket,
+        };
+      }
+
+      case 'list_leases': {
+        const leases = await this.storage.listActiveLeases(args.project);
+        return {
+          total: leases.length,
+          leases,
+        };
+      }
+
+      case 'escalate_ticket': {
+        const id = this.parseTicketId(args.ticketId);
+        if (!args.reason || !args.reason.trim()) {
+          throw new Error('Escalation reason is required.');
+        }
+        const caller = resolveWorkerIdentity(undefined, { workerId: args.workerId });
+        const ticket = await this.storage.releaseTicket(id, {
+          system: caller.system,
+          workerId: caller.workerId,
+          finalStatus: 'Planned',
+          notes: `[Escalation] ${args.reason.trim()}`,
+          force: true,
+        });
+        return {
+          success: true,
+          ticket,
+          escalatedBy: caller,
+          reason: args.reason.trim(),
         };
       }
 

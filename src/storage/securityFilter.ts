@@ -1,0 +1,427 @@
+import {
+  EsedreTicket,
+  TicketMeta,
+  ProjectDescriptor,
+  TicketComment,
+  UpdateProjectInput,
+  RenameProjectCodeInput,
+  RenameProjectCodeResult,
+  Milestone,
+  CreateMilestoneInput,
+  UpdateMilestoneInput,
+  TicketLinkRelation,
+  ClaimTicketInput,
+  ReleaseTicketInput,
+  TicketLease,
+  TicketLeaseSummary,
+} from '../types.js';
+import {
+  TicketRepository,
+  CreateTicketInput,
+  UpdateTicketInput,
+  ListTicketsFilter,
+  RegisterProjectInput,
+  DuplicateProjectWarning,
+} from './repository.js';
+import { EsedreConfig, isProjectAuthorized, EsedreAuthorizationError } from '../config.js';
+
+/**
+ * SecurityFilter wraps a TicketRepository to enforce the Agent Project Allow-List,
+ * isolating projects that an agent or session is not authorized to inspect or mutate.
+ */
+export class SecurityFilter implements TicketRepository {
+  constructor(
+    private readonly target: TicketRepository,
+    private readonly config: EsedreConfig = {}
+  ) {}
+
+  public getDuplicateProjectWarnings(): DuplicateProjectWarning[] {
+    return this.target.getDuplicateProjectWarnings ? this.target.getDuplicateProjectWarnings() : [];
+  }
+
+  public async getProjects(): Promise<ProjectDescriptor[]> {
+    const projs = await this.target.getProjects();
+    if (!this.config.allowedProjects || this.config.allowedProjects.length === 0) {
+      return projs;
+    }
+    return projs.filter((p) => isProjectAuthorized(p.code, this.config.allowedProjects));
+  }
+
+  public async registerProject(input: RegisterProjectInput): Promise<ProjectDescriptor> {
+    const proj = await this.target.registerProject(input);
+    if (this.config.allowedProjects && !this.config.allowedProjects.includes('*')) {
+      const upper = proj.code.toUpperCase();
+      if (!this.config.allowedProjects.some((p) => p.toUpperCase() === upper)) {
+        this.config.allowedProjects.push(proj.code);
+      }
+    }
+    return proj;
+  }
+
+  public async updateProject(input: UpdateProjectInput): Promise<ProjectDescriptor> {
+    if (!isProjectAuthorized(input.code, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(input.code);
+    }
+    return this.target.updateProject(input);
+  }
+
+  public async renameProjectCode(input: RenameProjectCodeInput): Promise<RenameProjectCodeResult> {
+    if (!isProjectAuthorized(input.oldCode, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(input.oldCode);
+    }
+    const result = await this.target.renameProjectCode(input);
+    if (this.config.allowedProjects && !this.config.allowedProjects.includes('*')) {
+      const oldUpper = input.oldCode.toUpperCase();
+      const idx = this.config.allowedProjects.findIndex((p) => p.toUpperCase() === oldUpper);
+      if (idx >= 0) {
+        this.config.allowedProjects[idx] = result.newCode;
+      }
+    }
+    return result;
+  }
+
+  private redactLinks(ticket: EsedreTicket): EsedreTicket {
+    if (!ticket.links || ticket.links.length === 0) return ticket;
+    if (!this.config.allowedProjects || this.config.allowedProjects.includes('*')) {
+      return ticket;
+    }
+    for (const link of ticket.links) {
+      if (link.targetProject && !isProjectAuthorized(link.targetProject, this.config.allowedProjects)) {
+        link.targetTitle = '[Restricted Project]';
+        delete link.targetType;
+        delete link.targetStatus;
+        delete link.targetPriority;
+        delete link.isBlockedByUncompleted;
+        link.isResolved = false;
+      }
+    }
+    return ticket;
+  }
+
+  public async listTickets(filter?: ListTicketsFilter): Promise<EsedreTicket[]> {
+    if (filter?.project && !isProjectAuthorized(filter.project, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(filter.project);
+    }
+    const tickets = await this.target.listTickets(filter);
+    if (!this.config.allowedProjects || this.config.allowedProjects.length === 0) {
+      return tickets.map((t) => this.redactLinks(t));
+    }
+    return tickets
+      .filter((t) => {
+        const code = t.projectDescriptor?.code || t.meta.project;
+        if (!code) return true;
+        return isProjectAuthorized(code, this.config.allowedProjects);
+      })
+      .map((t) => this.redactLinks(t));
+  }
+
+  public async getTicket(id: number | string): Promise<EsedreTicket | null> {
+    const ticket = await this.target.getTicket(id);
+    if (!ticket) return null;
+    const code = ticket.projectDescriptor?.code || ticket.meta.project;
+    if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(code);
+    }
+    return this.redactLinks(ticket);
+  }
+
+  public async createTicket(input: CreateTicketInput): Promise<EsedreTicket> {
+    const targetCode = input.projectCode || this.config.projectCode;
+    if (targetCode && !isProjectAuthorized(targetCode, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(targetCode);
+    }
+    return this.target.createTicket(input);
+  }
+
+  public async updateTicket(id: number | string, updates: UpdateTicketInput, lastHash?: string): Promise<EsedreTicket> {
+    const existing = await this.target.getTicket(id);
+    if (existing) {
+      const code = existing.projectDescriptor?.code || existing.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    if (updates.project && !isProjectAuthorized(updates.project, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(updates.project);
+    }
+    return this.target.updateTicket(id, updates, lastHash);
+  }
+
+  public async getPlan(id: number | string): Promise<string | null> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    return this.target.getPlan(id);
+  }
+
+  public async savePlan(id: number | string, planMarkdown: string, lastHash?: string): Promise<void> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    return this.target.savePlan(id, planMarkdown, lastHash);
+  }
+
+  public async addComment(id: number | string, comment: { author: string; text: string }): Promise<TicketComment> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    return this.target.addComment(id, comment);
+  }
+
+  public async listMilestones(projectCode?: string): Promise<Milestone[]> {
+    if (projectCode && projectCode !== 'all' && !isProjectAuthorized(projectCode, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(projectCode);
+    }
+    const all = await this.target.listMilestones(projectCode);
+    if (!this.config.allowedProjects || this.config.allowedProjects.length === 0) {
+      return all;
+    }
+    if (this.config.allowedProjects.includes('*')) {
+      return all;
+    }
+    return all.filter((m) => isProjectAuthorized(m.project, this.config.allowedProjects));
+  }
+
+  public async getMilestone(id: number | string, projectCode?: string): Promise<Milestone | null> {
+    if (projectCode && projectCode !== 'all' && !isProjectAuthorized(projectCode, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(projectCode);
+    }
+    const milestone = await this.target.getMilestone(id, projectCode);
+    if (!milestone) return null;
+    if (milestone.project && !isProjectAuthorized(milestone.project, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(milestone.project);
+    }
+    return milestone;
+  }
+
+  public async createMilestone(input: CreateMilestoneInput): Promise<Milestone> {
+    const targetCode = input.projectCode || this.config.projectCode;
+    if (targetCode && !isProjectAuthorized(targetCode, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(targetCode);
+    }
+    return this.target.createMilestone(input);
+  }
+
+  public async updateMilestone(id: number | string, input: UpdateMilestoneInput, projectCode?: string): Promise<Milestone> {
+    const existing = await this.target.getMilestone(id, projectCode);
+    if (existing) {
+      if (existing.project && !isProjectAuthorized(existing.project, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(existing.project);
+      }
+    }
+    return this.target.updateMilestone(id, input, projectCode);
+  }
+
+  public async deleteMilestone(id: number | string, projectCode?: string): Promise<boolean> {
+    const existing = await this.target.getMilestone(id, projectCode);
+    if (existing) {
+      if (existing.project && !isProjectAuthorized(existing.project, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(existing.project);
+      }
+    }
+    return this.target.deleteMilestone(id, projectCode);
+  }
+
+  public async addTicketLink(
+    sourceId: number | string,
+    relation: TicketLinkRelation,
+    targetId: number | string,
+    options?: { author?: string; project?: string }
+  ): Promise<{ source: EsedreTicket; target?: EsedreTicket }> {
+    const sourceTicket = await this.target.getTicket(sourceId);
+    if (sourceTicket) {
+      const code = sourceTicket.projectDescriptor?.code || sourceTicket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    } else if (options?.project && !isProjectAuthorized(options.project, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(options.project);
+    }
+    const result = await this.target.addTicketLink(sourceId, relation, targetId, options);
+    return {
+      source: this.redactLinks(result.source),
+      target: result.target ? this.redactLinks(result.target) : undefined,
+    };
+  }
+
+  public async removeTicketLink(
+    sourceId: number | string,
+    targetId: number | string,
+    options?: { relation?: TicketLinkRelation; project?: string }
+  ): Promise<{ source: EsedreTicket; target?: EsedreTicket }> {
+    const sourceTicket = await this.target.getTicket(sourceId);
+    if (sourceTicket) {
+      const code = sourceTicket.projectDescriptor?.code || sourceTicket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    } else if (options?.project && !isProjectAuthorized(options.project, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(options.project);
+    }
+    const result = await this.target.removeTicketLink(sourceId, targetId, options);
+    return {
+      source: this.redactLinks(result.source),
+      target: result.target ? this.redactLinks(result.target) : undefined,
+    };
+  }
+
+  public async getAnswers(id: number | string): Promise<Record<string, string>> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    return this.target.getAnswers(id);
+  }
+
+  public async saveAnswer(id: number | string, questionIndex: number, answer: string): Promise<Record<string, string>> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    return this.target.saveAnswer(id, questionIndex, answer);
+  }
+
+  public async saveDetail(
+    id: number | string,
+    detailMarkdown: string,
+    metaUpdates?: Partial<TicketMeta>
+  ): Promise<{ success: boolean; meta?: TicketMeta; detail?: string }> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    return this.target.saveDetail(id, detailMarkdown, metaUpdates);
+  }
+
+  public async getInlineComments(id: number | string): Promise<any[]> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    return this.target.getInlineComments ? this.target.getInlineComments(id) : [];
+  }
+
+  public async saveInlineComment(
+    id: number | string,
+    selectedText: string,
+    comment: string,
+    author?: string
+  ): Promise<any[]> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    return this.target.saveInlineComment ? this.target.saveInlineComment(id, selectedText, comment, author) : [];
+  }
+
+  public async saveAttachment(
+    id: number | string,
+    filename: string,
+    buffer: Buffer
+  ): Promise<{ filename: string; relativePath: string }> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    if (!this.target.saveAttachment) {
+      throw new Error('Attachments are not supported by target storage adapter.');
+    }
+    return this.target.saveAttachment(id, filename, buffer);
+  }
+
+  public getAttachmentPath(id: number | string, filename: string): string | null {
+    if ((this.target as any).findTicketLocation) {
+      const locInfo = (this.target as any).findTicketLocation(id);
+      if (locInfo) {
+        const code = locInfo.loc?.project?.code;
+        if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+          throw new EsedreAuthorizationError(code);
+        }
+      }
+    }
+    return this.target.getAttachmentPath ? this.target.getAttachmentPath(id, filename) : null;
+  }
+
+  public async claimTicket(id: number | string, input: ClaimTicketInput): Promise<EsedreTicket> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    const claimed = await this.target.claimTicket(id, input);
+    return this.redactLinks(claimed);
+  }
+
+  public async renewLease(
+    id: number | string,
+    system: string,
+    workerId: string,
+    ttlMinutes?: number
+  ): Promise<TicketLease> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    return this.target.renewLease(id, system, workerId, ttlMinutes);
+  }
+
+  public async releaseTicket(id: number | string, input: ReleaseTicketInput): Promise<EsedreTicket> {
+    const ticket = await this.target.getTicket(id);
+    if (ticket) {
+      const code = ticket.projectDescriptor?.code || ticket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    }
+    const released = await this.target.releaseTicket(id, input);
+    return this.redactLinks(released);
+  }
+
+  public async listActiveLeases(project?: string): Promise<TicketLeaseSummary[]> {
+    if (project && project !== 'all' && !isProjectAuthorized(project, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(project);
+    }
+    const leases = await this.target.listActiveLeases(project);
+    if (!this.config.allowedProjects || this.config.allowedProjects.length === 0 || this.config.allowedProjects.includes('*')) {
+      return leases;
+    }
+    return leases.filter((l) => isProjectAuthorized(l.project, this.config.allowedProjects));
+  }
+}
+
+export { SecurityFilter as AuthorizedTicketRepository };
