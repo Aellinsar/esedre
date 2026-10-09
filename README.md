@@ -277,6 +277,13 @@ Esedre provides mutual exclusion locks (leases) and headless worker runners for 
   - Machine capacity is governed by `maxWorkers` in `~/.esedre/config.json` (configured via `ese configure set maxWorkers <n>`). Workers automatically query active unexpired leases on the local host machine; if active worker leases meet or exceed `maxWorkers`, additional workers idle and wait until capacity frees up.
 - **Automatic Task Escalation**:
   - If a headless worker command fails, the worker automatically resets the ticket status to `Planned`, posts an escalation comment describing the failure, and relinquishes the lease so the Lead or human developer can triage the issue.
+- **Operating as the Crew Lead**:
+  - In conversational AI coding sessions, the agent acts as the Crew Lead. The Lead interacts with the human developer, delegates bounded tasks to background thugs (`ese crew delegate`), monitors fleet health, triages worker escalations with clear explanations, and reviews/merges completed worktree branches (`thug/<workerId>`).
+- **Worker Execution Runbook**:
+  - Single-task execution: `ese crew worker --id thug-1 --role thug --exec "npm test" --once --json`
+  - Long-running polling runner: `ese crew worker --id thug-1 --role thug --poll 10`
+  - Dry run preview: `ese crew worker --id thug-1 --dry-run --once --json`
+  - Check active leases: `ese leases --all` or MCP `esedre_get_crew_status`
 
 ### Resources
 - URI Scheme: `esedre://tickets/{id}` (MIME type: `text/markdown`)

@@ -68,6 +68,78 @@ Esedre provides mutual exclusion locks (leases) and headless worker runners for 
 - Controlled globally via `maxWorkers` in `~/.esedre/config.json` (configured via `ese configure set maxWorkers <n>`).
 - Workers check active unexpired leases on the local host machine; if active worker leases meet or exceed `maxWorkers`, additional workers idle and wait until capacity frees up.
 
+### Operating as the Crew Lead (Conversational & Orchestration Guide):
+In an interactive development session with the user, **you operate as the Crew Lead**:
+1. **The Lead is the Human's Interface**: The user talks directly to you. You are the project architect, pair programmer, and fleet coordinator. Headless workers (thugs) operate under your direction.
+2. **Transparent Delegation**: Whenever you offload tasks to background workers, inform the user clearly:
+   - Identify the ticket number and title being worked on.
+   - State the worker ID (e.g. `thug-1`) and explain that execution is sandboxed in a dedicated git worktree (`.worktrees/thug-1`).
+   - Mention the command being run (e.g. `npm test`, test suite verification, build).
+3. **Status Reporting & Health Checks**:
+   - Check fleet health and active leases via `esedre_get_crew_status`, `esedre_list_leases`, or `.esedre/ese leases`.
+   - Provide concise, plain-language updates on what workers are actively running, what has completed, and remaining lease TTLs.
+4. **Handling Escalations with Clarity**:
+   - When a worker encounters an error or blocker, it releases its lease back to `Planned` and records an escalation comment.
+   - The Lead triages the escalation notes, explains the root cause plainly to the user, and proposes an architectural solution or next action. Never hide worker failures.
+5. **Reviewing and Merging Worker Output**:
+   - When a worker successfully completes a task in its worktree, it commits to `thug/<workerId>`.
+   - As Lead, inspect the changes (`git diff HEAD..thug/<workerId>`), verify correctness, merge into the active branch (`git merge thug/<workerId>`), and report the verified outcome to the user.
+6. **Pool Concurrency Discipline**:
+   - Respect the configured `maxWorkers` limit (e.g. 3 on this machine). Never launch more concurrent workers than the local pool permits.
+
+### Launching, Checking & Managing Headless Workers (Runbook):
+
+#### 1. Launch a Single-Task Headless Worker:
+Execute a specific command against an assigned or next available planned ticket and exit when done:
+```bash
+.esedre/ese crew worker --id thug-1 --role thug --exec "npm test" --once --json
+```
+
+#### 2. Launch a Continuous Background Worker Daemon:
+Launch a polling worker in the background that continuously claims matching tickets, runs commands, and renews heartbeats:
+```bash
+.esedre/ese crew worker --id thug-1 --role thug --poll 10
+```
+
+#### 3. Preview Worker Ticket Selection (Dry Run):
+Check which ticket a worker would claim without acquiring leases or running commands:
+```bash
+.esedre/ese crew worker --id thug-1 --dry-run --once --json
+```
+
+#### 4. Delegate a Ticket from Lead to Worker:
+Assign and claim a ticket directly for a specific worker:
+```bash
+.esedre/ese crew delegate <ticketId> --worker thug-1 --role thug
+```
+
+#### 5. Escalate a Blocked or Failed Task:
+Release the active lease, reset ticket status to Planned, and post an escalation reason for the Lead:
+```bash
+.esedre/ese crew escalate <ticketId> --reason "Unit tests failed with syntax error in auth module"
+```
+
+#### 6. Inspect Active Leases & Fleet Status:
+```bash
+# Check all active leases across projects
+.esedre/ese leases --all
+
+# Display current process crew identity and role
+.esedre/ese crew whoami
+
+# Query fleet status via MCP
+# Use tool: esedre_get_crew_status or esedre_list_leases
+```
+
+#### 7. Review and Merge Worktree Branch:
+```bash
+# Inspect changes made by worker
+git diff HEAD..thug/thug-1
+
+# Merge worker branch into active branch
+git merge thug/thug-1
+```
+
 ## 3. Core CLI Commands (Fallback via `run_command`)
 
 Both `esedre` and `ese` work interchangeably:

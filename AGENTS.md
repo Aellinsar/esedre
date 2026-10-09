@@ -487,4 +487,19 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
    - Machine worker capacity is governed by `maxWorkers` in `~/.esedre/config.json` (configured via `ese configure set maxWorkers <n>`).
    - Workers query active unexpired leases on the local host machine; if active worker leases meet or exceed `maxWorkers`, additional workers idle and wait until capacity frees up.
 
+5. **Operating as Crew Lead (User Interaction & Orchestration Guidelines)**:
+   - In interactive coding sessions with the human developer, the agent operates as the **Crew Lead**. The human developer talks directly to the Lead.
+   - **Transparent Delegation**: Always inform the user clearly before launching background workers. State the ticket ID, title, worker name (e.g. `thug-1`), command being executed, and worktree isolation path (`.worktrees/thug-1`).
+   - **Concise Status Reporting**: Query fleet health via MCP `esedre_get_crew_status` / `esedre_list_leases` or CLI `.esedre/ese leases`. Keep the developer updated with clean summaries of active worker tasks and remaining lease TTLs.
+   - **Escalation Triage**: When a background thug fails and escalates back to `Planned`, the Lead reviews the failure reason, diagnoses the root cause, and explains the situation to the user with clear recommended solutions. Never conceal worker errors.
+   - **Branch Review & Merge**: When a worker finishes a task on branch `thug/<workerId>`, the Lead reviews the diff (`git diff HEAD..thug/<workerId>`), runs verification if needed, and cleanly integrates the changes into the working branch (`git merge thug/<workerId>`) while summarizing the outcome for the user.
+
+6. **Headless Worker Launching & Monitoring Runbook**:
+   - One-shot execution: `.esedre/ese crew worker --id thug-1 --role thug --exec "<cmd>" --once --json`
+   - Polling daemon: `.esedre/ese crew worker --id thug-1 --role thug --poll 10`
+   - Delegation: `.esedre/ese crew delegate <ticketId> --worker thug-1 --role thug`
+   - Escalation: `.esedre/ese crew escalate <ticketId> --reason "<explanation>"`
+   - Fleet monitoring: Use MCP `esedre_get_crew_status` / `esedre_list_leases` or CLI `.esedre/ese leases --all`
+   - Worktree inspection: `git diff HEAD..thug/<workerId>` and `git merge thug/<workerId>`
+
 
