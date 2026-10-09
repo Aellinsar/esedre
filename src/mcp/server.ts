@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import readline from 'node:readline';
 import { StorageAdapter } from '../storage/adapter.js';
 import { TicketType, TicketCategory, TicketStatus, TicketPriority, EsedreConflictError, CURRENT_ESEDRE_VERSION } from '../types.js';
@@ -352,9 +354,10 @@ export class EsedreMcpServer {
           properties: {
             ticketId: { type: ['integer', 'string'], description: 'Numeric ticket ID or compound key' },
             text: { type: 'string', description: 'Comment message' },
+            file: { type: 'string', description: 'Path to local file containing comment message markdown' },
             author: { type: 'string', description: 'Author name (e.g. Antigravity, Developer)' },
           },
-          required: ['ticketId', 'text'],
+          required: ['ticketId'],
         },
       },
       {
@@ -565,8 +568,26 @@ export class EsedreMcpServer {
 
       case 'add_comment': {
         const id = this.parseTicketId(args.ticketId);
+        let text = args.text;
+        if (!text && args.file) {
+          const resolvedPath = path.resolve(process.cwd(), args.file);
+          if (!fs.existsSync(resolvedPath)) {
+            throw new Error(`File not found: ${args.file}`);
+          }
+          if (!fs.statSync(resolvedPath).isFile()) {
+            throw new Error(`Path is not a file: ${args.file}`);
+          }
+          const fileContent = fs.readFileSync(resolvedPath, 'utf-8');
+          if (!fileContent.trim()) {
+            throw new Error(`Comment file is empty: ${args.file}`);
+          }
+          text = fileContent;
+        }
+        if (!text || !text.trim()) {
+          throw new Error('Comment text or file is required');
+        }
         const comment = await this.storage.addComment(id, {
-          text: args.text,
+          text,
           author: args.author || 'Agent',
         });
         return comment;
