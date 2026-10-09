@@ -5,6 +5,20 @@ All notable changes to Esedre are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-10-09
+
+### Added
+- **MCP Ticket Listing Implementation Plan Hydration (`includePlan` and `hasPlan`) (Ticket #58)**:
+  - Extended `esedre_list_tickets` MCP tool to return `hasPlan: boolean` on all listed tickets, indicating whether an implementation plan exists on disk.
+  - Added optional `includePlan: boolean` parameter to `esedre_list_tickets` to hydrate full `planMarkdown` directly in ticket listings, eliminating redundant sequential `esedre_get_plan` tool calls when agents review multiple active tickets.
+  - Added unit test suite in `tests/mcpServer.test.ts` verifying `hasPlan` and `includePlan` behavior across multiple tickets.
+- **Comment File Input Option for CLI & MCP Tool (Ticket #62)**:
+  - Added `--file <path>` option to `ese comment` CLI command, reading verification notes directly from UTF-8 markdown or text files on disk.
+  - Bypasses Windows `cmd.exe` `%VAR%` parameter expansion and stripping, preserving percent signs (`100%`) and literal characters verbatim.
+  - Added priority precedence for `--file` over inline `--text` and positional arguments, with existence, regular file, and non-empty content validation.
+  - Added parity `file?: string` property to `esedre_add_comment` MCP tool, with automatic local file resolution and relaxed `required: ['ticketId']` schema constraint.
+  - Added comprehensive automated test suite in `tests/cliComment.test.ts` covering error handling, priority precedence, percent preservation, and MCP execution.
+
 ## [1.1.0] - 2026-10-02
 
 ### Added
