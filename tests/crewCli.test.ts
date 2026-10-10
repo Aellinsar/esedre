@@ -282,4 +282,55 @@ describe('Esedre Crew Fleet CLI and Lease Mutex (Ticket #66)', () => {
     expect(parsed.workerId).toBe('anchor-1');
     expect(parsed.role).toBe('anchor');
   });
+
+  it('manages leases via namespaced ese lease subcommands (claim, renew, release, list)', () => {
+    // 1. ese lease claim
+    const claimRes = runCli(['lease', 'claim', '1', '--role', 'thug', '--ttl', '30', '--json'], {
+      ESEDRE_WORKER_ID: 'thug-99',
+      ESEDRE_WORKER_ROLE: 'thug',
+    });
+    expect(claimRes.status).toBe(0);
+    const claimParsed = JSON.parse(claimRes.stdout);
+    expect(claimParsed.lease.workerId).toBe('thug-99');
+    expect(claimParsed.ticket.meta.status).toBe('In Development');
+
+    // 2. ese lease list
+    const listRes = runCli(['lease', 'list', '--json']);
+    expect(listRes.status).toBe(0);
+    const listParsed = JSON.parse(listRes.stdout);
+    expect(listParsed.length).toBe(1);
+    expect(listParsed[0].workerId).toBe('thug-99');
+
+    // ese lease (default with no subcommands lists leases)
+    const listDefaultRes = runCli(['lease', '--json']);
+    expect(listDefaultRes.status).toBe(0);
+    const listDefaultParsed = JSON.parse(listDefaultRes.stdout);
+    expect(listDefaultParsed.length).toBe(1);
+
+    // 3. ese lease renew
+    const renewRes = runCli(['lease', 'renew', '1', '--ttl', '60', '--json'], {
+      ESEDRE_WORKER_ID: 'thug-99',
+      ESEDRE_WORKER_ROLE: 'thug',
+    });
+    expect(renewRes.status).toBe(0);
+    const renewParsed = JSON.parse(renewRes.stdout);
+    expect(renewParsed.workerId).toBe('thug-99');
+    expect(renewParsed.ttlMinutes).toBe(60);
+
+    // 4. ese lease release
+    const releaseRes = runCli(['lease', 'release', '1', '--status', 'Completed', '--notes', 'Task done via ese lease', '--json'], {
+      ESEDRE_WORKER_ID: 'thug-99',
+      ESEDRE_WORKER_ROLE: 'thug',
+    });
+    expect(releaseRes.status).toBe(0);
+    const releaseParsed = JSON.parse(releaseRes.stdout);
+    expect(releaseParsed.meta.lease).toBeNull();
+    expect(releaseParsed.meta.status).toBe('Completed');
+
+    // 5. check lease list is now empty
+    const listEmptyRes = runCli(['lease', 'list', '--json']);
+    expect(listEmptyRes.status).toBe(0);
+    expect(JSON.parse(listEmptyRes.stdout).length).toBe(0);
+  });
 });
+

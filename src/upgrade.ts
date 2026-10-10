@@ -209,6 +209,8 @@ export const HISTORIC_SKILL_HASHES: string[] = [
   '23716c9db561e52e5115dc364fe154d3a7bc1e23',
   '75d50d5f9cf9348cca9d9b2466e04cf7992ef17e',
   'e5d4fe4f2ae0bd464bad877ea1e5ab63cef747fa',
+  '1a33bdba76ad74dd83bb6fcf1e52c58578f312c4',
+  'a5fc85d1635a1d13beb84bb55af04f037337600e',
 ];
 
 export const ESEDRE_SKILL_TEMPLATE = `---
@@ -229,7 +231,7 @@ All ticket discovery, inspection, and state management strictly follow this posi
 2. **Step 2 (Dynamic Queries & State Mutations) - Esedre MCP Tools**:
    Use first-class MCP tools when active in the session (\`esedre_list_tickets\`, \`esedre_get_ticket\`, \`esedre_get_plan\`, \`esedre_save_plan\`, \`esedre_update_ticket\`, \`esedre_claim_ticket\`, \`esedre_renew_lease\`, \`esedre_release_ticket\`, \`esedre_add_comment\`).
 3. **Step 3 (Terminal & Script Fallback) - In-Repo CLI Wrapper**:
-   Use \`.esedre/ese\` (\`.esedre/ese get\`, \`.esedre/ese plan\`, \`.esedre/ese update\`, \`.esedre/ese claim\`, \`.esedre/ese release\`, \`.esedre/ese snapshot\`).
+   Use \`.esedre/ese\` (\`.esedre/ese get\`, \`.esedre/ese plan\`, \`.esedre/ese update\`, \`.esedre/ese lease claim\`, \`.esedre/ese lease release\`, \`.esedre/ese crew\`, \`.esedre/ese snapshot\`).
 4. **Storage Boundary**:
    Backing ticket hubs (such as \`esedre-data\`) represent data storage managed by the engine. All agent interactions with roadmap tickets flow through the snapshot projection, MCP tools, or CLI wrappers.
 
@@ -263,10 +265,10 @@ When Esedre MCP is active in your agent session (\`.agents/mcp_config.json\`), u
 Esedre provides mutual exclusion locks (leases) and headless worker runners for coordinating autonomous agents, subagents, and human developers:
 
 ### When to Use Ticket Leases:
-1. **Start of Ticket Work**: Whenever an agent begins implementing a ticket, claim an exclusive lease via MCP (\`esedre_claim_ticket\`) or CLI (\`ese claim <ticketId>\`). This prevents clobbering, declares active ownership to other agents, and updates the local snapshot and UI in real time.
+1. **Start of Ticket Work**: Whenever an agent begins implementing a ticket, claim an exclusive lease via MCP (\`esedre_claim_ticket\`) or CLI (\`ese lease claim <ticketId>\`). This prevents clobbering, declares active ownership to other agents, and updates the local snapshot and UI in real time.
 2. **Multi-Agent & Subagent Sessions**: When delegating subtasks or fanning out parallel work, each subagent claims its ticket under its assigned worker identity (\`workerId: "thug-1"\`, etc.).
-3. **Long-Running Operations (Background Tests, Builds, Refactors)**: Acquire a lease with a specified TTL (default 15 minutes), and maintain a rolling heartbeat via \`esedre_renew_lease\` or \`ese renew <ticketId>\`.
-4. **Task Completion**: Upon verifying implementation and running tests, release the lease via \`esedre_release_ticket\` or \`ese release <ticketId> --status Completed --notes "Verified implementation"\`.
+3. **Long-Running Operations (Background Tests, Builds, Refactors)**: Acquire a lease with a specified TTL (default 15 minutes), and maintain a rolling heartbeat via \`esedre_renew_lease\` or \`ese lease renew <ticketId>\`.
+4. **Task Completion**: Upon verifying implementation and running tests, release the lease via \`esedre_release_ticket\` or \`ese lease release <ticketId> --status Completed --notes "Verified implementation"\`.
 5. **Escalations & Blockers**: If an automated worker or subagent encounters a blocker, missing dependency, or unexpected failure, escalate immediately via \`ese crew escalate <ticketId> --reason "..."\` or release with \`finalStatus: 'Planned'\` and detailed notes.
 
 ### Worker Roles:
@@ -289,7 +291,7 @@ In an interactive development session with the user, **you operate as the Crew L
    - State the worker ID (e.g. \`thug-1\`) and explain that execution is sandboxed in a dedicated git worktree (\`.worktrees/thug-1\`).
    - Mention the command being run (e.g. \`npm test\`, test suite verification, build).
 3. **Status Reporting & Health Checks**:
-   - Check fleet health and active leases via \`esedre_get_crew_status\`, \`esedre_list_leases\`, or \`.esedre/ese leases\`.
+   - Check fleet health and active leases via \`esedre_get_crew_status\`, \`esedre_list_leases\`, \`.esedre/ese lease list\`, or \`.esedre/ese crew leases\`.
    - Provide concise, plain-language updates on what workers are actively running, what has completed, and remaining lease TTLs.
 4. **Handling Escalations with Clarity**:
    - When a worker encounters an error or blocker, it releases its lease back to \`Planned\` and records an escalation comment.
@@ -335,7 +337,8 @@ Release the active lease, reset ticket status to Planned, and post an escalation
 #### 6. Inspect Active Leases & Fleet Status:
 \`\`\`bash
 # Check all active leases across projects
-.esedre/ese leases --all
+.esedre/ese lease list --all
+# or: .esedre/ese crew leases
 
 # Display current process crew identity and role
 .esedre/ese crew whoami
@@ -393,20 +396,23 @@ Both \`esedre\` and \`ese\` work interchangeably:
 .esedre/ese refresh
 \`\`\`
 
-### Crew & Ticket Lease Commands
+### Concurrency & Ticket Leases
 \`\`\`bash
 # Claim an exclusive lease on a ticket
-.esedre/ese claim <ticketId> [--role lead|anchor|thug] [--ttl <minutes>] [--worktree <path>] [--worker <id>]
+.esedre/ese lease claim <ticketId> [--role lead|anchor|thug] [--ttl <minutes>] [--worktree <path>] [--worker <id>]
 
 # Release a ticket lease upon completion or handoff
-.esedre/ese release <ticketId> [--status Completed|Planned] [--notes "<notes>"] [--force]
+.esedre/ese lease release <ticketId> [--status Completed|Planned] [--notes "<notes>"] [--force]
 
 # Renew active lease heartbeat
-.esedre/ese renew <ticketId> [--ttl <minutes>]
+.esedre/ese lease renew <ticketId> [--ttl <minutes>]
 
 # List active leases across projects
-.esedre/ese leases [-p|--project <code|all>] [--all]
+.esedre/ese lease list [-p|--project <code|all>] [--all]
+\`\`\`
 
+### Autonomous Crew Fleet Commands
+\`\`\`bash
 # Delegate a ticket to another worker (Leads and Anchors only)
 .esedre/ese crew delegate <ticketId> --worker <targetId> [--role thug]
 
@@ -416,9 +422,14 @@ Both \`esedre\` and \`ese\` work interchangeably:
 # Launch a headless worker runner loop
 .esedre/ese crew worker [--id <id>] [--role thug] [--exec "<cmd>"] [--once] [--poll <sec>] [--max-workers <n>]
 
+# Display active leases across the fleet
+.esedre/ese crew leases [-p|--project <code|all>] [--all]
+
 # Display bound worker identity
 .esedre/ese crew whoami
 \`\`\`
+
+> *Convenience aliases*: Direct commands \`ese claim\`, \`ese release\`, \`ese renew\`, \`ese leases\`, and \`ese worker\` remain available as direct aliases.
 
 ### Link or Unlink Tickets
 \`\`\`bash

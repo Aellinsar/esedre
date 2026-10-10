@@ -51,8 +51,8 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
    - Each project repository running Esedre maintains an authoritative read-only projection at `.esedre/snapshot.json`.
    - Agents interacting with tickets MUST strictly adhere to this positive access hierarchy:
      1. **Primary Read-Only Inspection**: Always check `.esedre/snapshot.json` in the workspace root first. It provides an immediate, zero-latency projection of all active and completed tickets, summaries, implementation plans, and revision hashes without network calls.
-     2. **Dynamic Lookups & Mutations (MCP)**: Use Esedre MCP tools (`esedre_list_tickets`, `esedre_get_ticket`, `esedre_get_plan`, `esedre_save_plan`, `esedre_create_ticket`, `esedre_update_ticket`, `esedre_link_ticket`, `esedre_unlink_ticket`, `esedre_list_milestones`, `esedre_get_milestone`, `esedre_create_milestone`, `esedre_update_milestone`, `esedre_add_comment`) when MCP is active in the session.
-     3. **CLI Ingress**: Use `.esedre/ese` or global `ese` (`ese get`, `ese plan`, `ese update`, `ese comment`, `ese create`, `ese link`, `ese unlink`, `ese milestone`, `ese snapshot`, `ese refresh`) for terminal workflows.
+     2. **Dynamic Lookups & Mutations (MCP)**: Use Esedre MCP tools (`esedre_list_tickets`, `esedre_get_ticket`, `esedre_get_plan`, `esedre_save_plan`, `esedre_create_ticket`, `esedre_update_ticket`, `esedre_claim_ticket`, `esedre_renew_lease`, `esedre_release_ticket`, `esedre_list_leases`, `esedre_get_crew_status`, `esedre_link_ticket`, `esedre_unlink_ticket`, `esedre_list_milestones`, `esedre_get_milestone`, `esedre_create_milestone`, `esedre_update_milestone`, `esedre_add_comment`) when MCP is active in the session.
+     3. **CLI Ingress**: Use `.esedre/ese` or global `ese` (`ese get`, `ese plan`, `ese update`, `ese lease claim`, `ese lease release`, `ese lease renew`, `ese lease list`, `ese crew`, `ese comment`, `ese create`, `ese link`, `ese unlink`, `ese milestone`, `ese snapshot`, `ese refresh`) for terminal workflows.
      4. **Storage Boundary**: Registered data hubs (such as `esedre-data`) represent backing storage for the engine. Agent ticket discovery and management strictly flows through the snapshot projection, MCP tools, or the `ese` CLI.
 
 ---
@@ -469,9 +469,9 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 ## 20. Headless Crew Fleet, Worker Pools & Ticket Leases
 
 1. **Ticket Leases & Mutual Exclusion**:
-   - Whenever an agent begins work on a ticket or task, it MUST acquire an exclusive lease via MCP (`esedre_claim_ticket`) or CLI (`ese claim <ticketId>`) before modifying code or running implementations.
-   - Leases have a default rolling TTL (15 minutes) and must be maintained via heartbeats (`esedre_renew_lease` or `ese renew <ticketId>`) during long-running tasks or test suites.
-   - Upon completing the task, the agent MUST release the lease (`esedre_release_ticket` or `ese release <ticketId> --status Completed --notes "<verification notes>"`).
+   - Whenever an agent begins work on a ticket or task, it MUST acquire an exclusive lease via MCP (`esedre_claim_ticket`) or CLI (`ese lease claim <ticketId>`) before modifying code or running implementations.
+   - Leases have a default rolling TTL (15 minutes) and must be maintained via heartbeats (`esedre_renew_lease` or `ese lease renew <ticketId>`) during long-running tasks or test suites.
+   - Upon completing the task, the agent MUST release the lease (`esedre_release_ticket` or `ese lease release <ticketId> --status Completed --notes "<verification notes>"`).
    - If an implementation task encounters unresolvable blockers or test failures, escalate immediately (`ese crew escalate <ticketId> --reason "<explanation>"` or release with `finalStatus: 'Planned'`).
 
 2. **Worker Role Hierarchy**:
@@ -490,7 +490,7 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
 5. **Operating as Crew Lead (User Interaction & Orchestration Guidelines)**:
    - In interactive coding sessions with the human developer, the agent operates as the **Crew Lead**. The human developer talks directly to the Lead.
    - **Transparent Delegation**: Always inform the user clearly before launching background workers. State the ticket ID, title, worker name (e.g. `thug-1`), command being executed, and worktree isolation path (`.worktrees/thug-1`).
-   - **Concise Status Reporting**: Query fleet health via MCP `esedre_get_crew_status` / `esedre_list_leases` or CLI `.esedre/ese leases`. Keep the developer updated with clean summaries of active worker tasks and remaining lease TTLs.
+   - **Concise Status Reporting**: Query fleet health via MCP `esedre_get_crew_status` / `esedre_list_leases` or CLI `.esedre/ese lease list` (or `.esedre/ese crew leases`). Keep the developer updated with clean summaries of active worker tasks and remaining lease TTLs.
    - **Escalation Triage**: When a background thug fails and escalates back to `Planned`, the Lead reviews the failure reason, diagnoses the root cause, and explains the situation to the user with clear recommended solutions. Never conceal worker errors.
    - **Branch Review & Merge**: When a worker finishes a task on branch `thug/<workerId>`, the Lead reviews the diff (`git diff HEAD..thug/<workerId>`), runs verification if needed, and cleanly integrates the changes into the working branch (`git merge thug/<workerId>`) while summarizing the outcome for the user.
 
@@ -499,7 +499,7 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
    - Polling daemon: `.esedre/ese crew worker --id thug-1 --role thug --poll 10`
    - Delegation: `.esedre/ese crew delegate <ticketId> --worker thug-1 --role thug`
    - Escalation: `.esedre/ese crew escalate <ticketId> --reason "<explanation>"`
-   - Fleet monitoring: Use MCP `esedre_get_crew_status` / `esedre_list_leases` or CLI `.esedre/ese leases --all`
+   - Fleet monitoring: Use MCP `esedre_get_crew_status` / `esedre_list_leases` or CLI `.esedre/ese lease list --all` (or `.esedre/ese crew leases`)
    - Worktree inspection: `git diff HEAD..thug/<workerId>` and `git merge thug/<workerId>`
 
 

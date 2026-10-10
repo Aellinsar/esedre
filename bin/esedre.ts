@@ -40,7 +40,7 @@ import {
 } from '../src/upgrade.js';
 import { startGatewayCluster } from '../src/server/gateway.js';
 import { startDaemon, stopDaemon, getDaemonStatus, printDaemonLogs } from '../src/server/daemon.js';
-import { handleClaim, handleRelease, handleRenew, handleLeases, handleCrew, handleWorker } from '../src/cli/crew.js';
+import { handleClaim, handleRelease, handleRenew, handleLeases, handleCrew, handleWorker, handleLease } from '../src/cli/crew.js';
 import { EsedreLeaseConflictError } from '../src/storage/index.js';
 
 function printHelp(config?: any): void {
@@ -98,27 +98,22 @@ ${colors.bold}ROADMAP COMMANDS (Pair Programming & LLM Agents):${colors.reset}
                • create: ese milestone create --title "..." [-p <project>] [--flag <name>] [--status <status>] [--target-date <date>] [--desc "..."]
                • update: ese milestone update <id> [--title "..."] [--flag <name>] [--status <status>] [--target-date <date>] [--desc "..."]
                • delete: ese milestone delete <id> [-p <project>]
+${colors.bold}CONCURRENCY & TICKET LEASES:${colors.reset}
+  ${colors.bold}lease${colors.reset}       [list | claim | release | renew]
+               Manage ticket leases and rolling mutual exclusion locks.
+               • list:    ese lease list [-p <project>] [--all] (alias: ese leases)
+               • claim:   ese lease claim <id> [--role anchor|thug] [--ttl <m>] [--worktree <path>] [--force]
+               • release: ese lease release <id> [--status <status>] [--notes "<notes>"] [--force]
+               • renew:   ese lease renew <id> [--ttl <m>]
 
-${colors.bold}CREW & TICKET LEASES (Autonomous Fleets & Multi-Agent Teams):${colors.reset}
-  ${colors.bold}claim${colors.reset}       <id> [--role anchor|thug] [--ttl <m>] [--worktree <path>] [--force] [--json]
-               Acquire an exclusive lease on a ticket for a worker process.
-               • Machine identity is strictly host-authoritative.
-               • Non-lead callers cannot use --force.
-
-  ${colors.bold}release${colors.reset}     <id> [--status <status>] [--notes "<notes>"] [--force] [--json]
-               Relinquish lease upon task completion or pause.
-
-  ${colors.bold}renew${colors.reset}       <id> [--ttl <m>] [--json]
-               Extend active lease heartbeat before expiry.
-
-  ${colors.bold}leases${colors.reset}      [-p|--project <code|all>] [--json]
-               List active ticket leases and time-to-live across projects.
-
-  ${colors.bold}crew${colors.reset}        <claim|release|renew|leases|delegate|escalate|worker|whoami>
+${colors.bold}AUTONOMOUS CREW FLEET:${colors.reset}
+  ${colors.bold}crew${colors.reset}        <worker | delegate | escalate | whoami | leases>
                Crew management commands for autonomous fleet coordination.
-
-  ${colors.bold}worker${colors.reset}      [--id <id>] [--role anchor|thug] [--exec "<cmd>"] [--once]
-               Launch a headless worker runner with rolling heartbeat and git worktree isolation.
+               • worker:   ese crew worker [--id <id>] [--role anchor|thug] [--exec "<cmd>"] [--once]
+               • delegate: ese crew delegate <id> --worker <target>
+               • escalate: ese crew escalate <id> --reason "<explanation>"
+               • whoami:   ese crew whoami
+               • leases:   ese crew leases
 
 ${colors.bold}SERVICE DAEMON COMMANDS:${colors.reset}
   ${colors.bold}start${colors.reset}       [--port <n>] [--foreground | -f] [--quiet] [--json]
@@ -186,9 +181,10 @@ ${colors.bold}OPTIONS:${colors.reset}
 ${colors.bold}TYPICAL AGENT WORKFLOW:${colors.reset}
   1. Inspect active tickets:  ese list --status "In Development" --json
   2. Inspect ticket spec:     ese get 96 --json
-  3. Update plan markdown:    ese plan 96 --file plan.md --last-hash <sha1>
-  4. Complete ticket:         ese update 96 --status "Completed" --last-hash <sha1>
-  5. Add verification note:   ese comment 96 --text "Verified tests pass." --author "Agent"
+  3. Acquire ticket lease:    ese lease claim 96 --json
+  4. Update plan markdown:    ese plan 96 --file plan.md --last-hash <sha1>
+  5. Complete ticket:         ese update 96 --status "Completed" --last-hash <sha1>
+  6. Release lease:           ese lease release 96 --notes "Verified tests pass." --json
   * Tip: Read .esedre/snapshot.json directly for zero-latency roadmap context without subprocess execution.
 `);
 }
@@ -1569,6 +1565,10 @@ async function main(): Promise<void> {
           console.log(`${colors.green}✔ Unlinked #${result.source.meta.id} from #${targetId}${colors.reset}`);
         }
         return;
+      }
+
+      case 'lease': {
+        return handleLease(storage, positionals, flags, isJson, discovered);
       }
 
       case 'claim': {

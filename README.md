@@ -126,20 +126,30 @@ Core day-to-day workflow commands for scoping, viewing, planning, and verifying 
 | `snapshot`, `refresh` | `ese snapshot [--project <code>] [--json]` | Generate or refresh projection `.esedre/snapshot.json` for zero-latency agent context. |
 | `projects` | `ese projects [--json]` | List registered projects within authorized scope. |
 
-### Crew Fleet & Ticket Leases
+### Concurrency & Ticket Leases
+
+Coordinate multi-agent exclusion locks and task reservations:
+
+| Command | Usage | Description |
+|---|---|---|
+| `lease claim` | `ese lease claim <id> [--role lead\|anchor\|thug] [--ttl <m>] [--worktree <path>]` | Acquire a rolling exclusive lease on a ticket. |
+| `lease release` | `ese lease release <id> [--status <status>] [--notes "<notes>"] [--force]` | Relinquish ticket lease upon task completion or pause. |
+| `lease renew` | `ese lease renew <id> [--ttl <m>]` | Extend active lease heartbeat before expiry. |
+| `lease list` | `ese lease list [-p\|--project <code\|all>] [--all]` | List active and unexpired ticket leases across projects. |
+
+> *Convenience aliases*: Direct commands `ese claim`, `ese release`, `ese renew`, and `ese leases` remain supported.
+
+### Autonomous Crew Fleet
 
 Coordinate autonomous multi-agent fleets, background test suites, and subagent worktrees:
 
 | Command | Usage | Description |
 |---|---|---|
-| `claim` | `ese claim <id> [--role lead\|anchor\|thug] [--ttl <m>] [--worktree <path>]` | Acquire a rolling exclusive lease on a ticket. |
-| `release` | `ese release <id> [--status <status>] [--notes "<notes>"] [--force]` | Relinquish ticket lease upon task completion or pause. |
-| `renew` | `ese renew <id> [--ttl <m>]` | Extend active lease heartbeat before expiry. |
-| `leases` | `ese leases [-p\|--project <code\|all>] [--all]` | List active and unexpired ticket leases across projects. |
+| `crew worker` | `ese crew worker [--id <id>] [--role thug] [--exec "<cmd>"] [--once] [--poll <sec>] [--max-workers <n>]` | Run a headless worker loop with automatic worktree isolation and commit on success. |
 | `crew delegate` | `ese crew delegate <id> --worker <target> [--role thug]` | Delegate a ticket to another worker (Leads and Anchors only). |
 | `crew escalate` | `ese crew escalate <id> --reason "<explanation>"` | Escalate a ticket when blocked or failed (resets to Planned and notifies Lead). |
-| `crew worker` | `ese crew worker [--id <id>] [--role thug] [--exec "<cmd>"] [--once] [--poll <sec>] [--max-workers <n>]` | Run a headless worker loop with automatic worktree isolation and commit on success. |
 | `crew whoami` | `ese crew whoami` | Display active worker identity and bound role. |
+| `crew leases` | `ese crew leases [-p\|--project <code\|all>] [--all]` | List active leases across the fleet. |
 
 ### Service Daemon Commands
 
@@ -266,7 +276,7 @@ Esedre introduces first-class milestone management to group related tickets towa
 
 Esedre provides mutual exclusion locks (leases) and headless worker runners for coordinating autonomous agent fleets, background test suites, and subagent worktrees:
 
-- **Rolling Exclusive Ticket Leases**: Before an agent or human begins implementation, acquiring a lease reserves the ticket exclusively. Leases carry an automatic time-to-live (TTL) and rolling heartbeat renewal (`esedre_renew_lease` or `ese renew`), preventing stale locks if a worker process crashes or loses network connectivity.
+- **Rolling Exclusive Ticket Leases**: Before an agent or human begins implementation, acquiring a lease reserves the ticket exclusively (`ese lease claim <id>`). Leases carry an automatic time-to-live (TTL) and rolling heartbeat renewal (`esedre_renew_lease` or `ese lease renew <id>`), preventing stale locks if a worker process crashes or loses network connectivity.
 - **Worker Role Hierarchy**:
   - `lead`: Architectural planner, orchestrator, or human developer. Full authority to claim, release, delegate tasks (`ese crew delegate`), and force-reclaim leases.
   - `anchor`: Senior pair or primary persistent agent. Can claim, release, delegate, or run test suites.
@@ -283,7 +293,7 @@ Esedre provides mutual exclusion locks (leases) and headless worker runners for 
   - Single-task execution: `ese crew worker --id thug-1 --role thug --exec "npm test" --once --json`
   - Long-running polling runner: `ese crew worker --id thug-1 --role thug --poll 10`
   - Dry run preview: `ese crew worker --id thug-1 --dry-run --once --json`
-  - Check active leases: `ese leases --all` or MCP `esedre_get_crew_status`
+  - Check active leases: `ese lease list --all` (or `ese crew leases`) or MCP `esedre_get_crew_status`
 
 ### Resources
 - URI Scheme: `esedre://tickets/{id}` (MIME type: `text/markdown`)

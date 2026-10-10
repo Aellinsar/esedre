@@ -305,6 +305,41 @@ export async function handleWorker(
   }
 }
 
+export async function handleLease(
+  storage: TicketRepository,
+  positionals: string[],
+  flags: Record<string, any>,
+  isJson: boolean,
+  discovered: any
+): Promise<void> {
+  const sub = positionals[0]?.toLowerCase();
+  const subPositionals = positionals.slice(1);
+
+  switch (sub) {
+    case 'claim':
+      return handleClaim(storage, subPositionals, flags, isJson, discovered);
+    case 'release':
+      return handleRelease(storage, subPositionals, flags, isJson, discovered);
+    case 'renew':
+      return handleRenew(storage, subPositionals, flags, isJson, discovered);
+    case 'list':
+    case 'ls':
+      return handleLeases(storage, subPositionals, flags, isJson, discovered);
+    default: {
+      if (!sub || sub === 'all') {
+        return handleLeases(storage, positionals, flags, isJson, discovered);
+      }
+      console.error(`${colors.red}Error: Unknown lease subcommand "${sub}"${colors.reset}`);
+      console.log(`\nUsage:`);
+      console.log(`  ese lease list [-p <project>] [--all]`);
+      console.log(`  ese lease claim <ticketId> [--role anchor|thug] [--ttl <minutes>]`);
+      console.log(`  ese lease release <ticketId> [--status <status>] [--notes "<notes>"]`);
+      console.log(`  ese lease renew <ticketId> [--ttl <minutes>]`);
+      process.exit(1);
+    }
+  }
+}
+
 export async function handleCrew(
   storage: TicketRepository,
   positionals: string[],
@@ -346,14 +381,12 @@ export async function handleCrew(
     }
     default: {
       console.log(`${colors.bold}Esedre Crew Fleet Commands:${colors.reset}`);
-      console.log(`  ese claim <id> [--role anchor|thug] [--ttl <m>] [--worktree <p>] [--force]`);
-      console.log(`  ese release <id> [--status <s>] [--notes "..."] [--force]`);
-      console.log(`  ese renew <id> [--ttl <m>]`);
-      console.log(`  ese leases [-p <code|all>]`);
+      console.log(`  ese lease [list | claim | release | renew]`);
+      console.log(`  ese crew worker [--id <id>] [--role anchor|thug] [--exec "<cmd>"] [--once]`);
       console.log(`  ese crew delegate <id> --worker <workerId>`);
       console.log(`  ese crew escalate <id> --reason "<explanation>"`);
-      console.log(`  ese crew worker [--id <id>] [--role anchor|thug] [--exec "<cmd>"] [--once]`);
       console.log(`  ese crew whoami`);
+      console.log(`  ese crew leases`);
       return;
     }
   }
