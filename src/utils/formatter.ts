@@ -359,7 +359,18 @@ export function formatMilestoneListTable(milestones: Milestone[], tickets?: Esed
   return [header, divider, ...formattedRows].join('\n');
 }
 
-export function formatLeaseListTable(leases: TicketLeaseSummary[]): string {
+/** Minimal view of a dead detached worker, used to flag stale leases. */
+export interface StaleLeaseInfo {
+  pid: number;
+  logFile: string;
+}
+
+export function formatLeaseListTable(
+  leases: TicketLeaseSummary[],
+  stale?: Map<string, StaleLeaseInfo>
+): string {
+  const staleFor = (l: TicketLeaseSummary): StaleLeaseInfo | undefined =>
+    stale?.get(`${l.project || ''}-${l.ticketId}`.toLowerCase());
   if (leases.length === 0) {
     return `${colors.dim}No active ticket leases found.${colors.reset}`;
   }
@@ -369,9 +380,12 @@ export function formatLeaseListTable(leases: TicketLeaseSummary[]): string {
     const project = l.project || '-';
     const holder = `${l.system}:${l.workerId}`;
     const role = l.role;
-    const remaining = l.remainingSeconds > 0
-      ? `${Math.floor(l.remainingSeconds / 60)}m ${l.remainingSeconds % 60}s`
-      : 'expired';
+    const dead = staleFor(l);
+    const remaining = dead
+      ? 'STALE (dead)'
+      : l.remainingSeconds > 0
+        ? `${Math.floor(l.remainingSeconds / 60)}m ${l.remainingSeconds % 60}s`
+        : 'expired';
     const worktree = l.worktree ? path.basename(l.worktree) : '-';
     const title = l.title;
     return { ticket, project, holder, role, remaining, worktree, title };
@@ -392,6 +406,16 @@ export function formatLeaseListTable(leases: TicketLeaseSummary[]): string {
     return `${colors.bold}${pad(r.ticket, ticketWidth)}${colors.reset}  ${pad(r.project, projWidth)}  ${colors.cyan}${pad(r.holder, holderWidth)}${colors.reset}  ${pad(roleColored, roleWidth + (roleColored.length - r.role.length))}  ${colors.yellow}${pad(r.remaining, remWidth)}${colors.reset}  ${pad(r.worktree, wtWidth)}  ${r.title}`;
   });
 
-  return [header, divider, ...formattedRows].join('\n');
+  const table = [header, divider, ...formattedRows].join('\n');
+
+  const staleNotes = leases
+    .map((l) => ({ l, s: staleFor(l) }))
+    .filter((x) => x.s)
+    .map(({ l, s }) =>
+      `${colors.red}STALE${colors.reset} ${l.project || ''}-${l.ticketId}: worker ${l.workerId} PID ${s!.pid} is gone but the lease is still held. ` +
+      `Log: ${s!.logFile}. Release with: ese lease release ${l.project || ''}-${l.ticketId} --force`
+    );
+
+  return staleNotes.length > 0 ? `${table}\n\n${staleNotes.join('\n')}` : table;
 }
 

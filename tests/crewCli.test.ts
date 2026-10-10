@@ -332,5 +332,103 @@ describe('Esedre Crew Fleet CLI and Lease Mutex (Ticket #66)', () => {
     expect(listEmptyRes.status).toBe(0);
     expect(JSON.parse(listEmptyRes.stdout).length).toBe(0);
   });
+
+  it('runs targeted worker with -t and leaves ticket In Development on exit 0 when --complete is omitted', () => {
+    const res = runCli([
+      'crew',
+      'worker',
+      '-t',
+      '1',
+      '--id',
+      'thug-targeted',
+      '--exec',
+      'node -e "process.exit(0)"',
+      '--once',
+      '--no-worktree',
+      '--json',
+    ]);
+    expect(res.status).toBe(0);
+    const parsed = JSON.parse(res.stdout);
+    expect(parsed[0].action).toBe('claimed_and_executed');
+    expect(parsed[0].ticketId).toBe(1);
+
+    // Verify ticket remains In Development and lease is released
+    const getRes = runCli(['get', '1', '--json']);
+    const getParsed = JSON.parse(getRes.stdout);
+    expect(getParsed.meta.status).toBe('In Development');
+    expect(getParsed.meta.lease).toBeNull();
+  });
+
+  it('runs targeted worker with --complete and transitions ticket to Completed on exit 0', () => {
+    const res = runCli([
+      'crew',
+      'worker',
+      '--ticket',
+      '1',
+      '--id',
+      'thug-finisher',
+      '--exec',
+      'node -e "process.exit(0)"',
+      '--once',
+      '--complete',
+      '--no-worktree',
+      '--json',
+    ]);
+    expect(res.status).toBe(0);
+    const parsed = JSON.parse(res.stdout);
+    expect(parsed[0].action).toBe('claimed_and_completed');
+
+    const getRes = runCli(['get', '1', '--json']);
+    const getParsed = JSON.parse(getRes.stdout);
+    expect(getParsed.meta.status).toBe('Completed');
+    expect(getParsed.meta.lease).toBeNull();
+  });
+
+  it('dispatches a ticket foreground with ese crew dispatch', () => {
+    // Reset ticket 1 to Planned
+    runCli(['update', '1', '--status', 'Planned']);
+
+    const res = runCli([
+      'crew',
+      'dispatch',
+      '1',
+      '--worker',
+      'thug-dispatch',
+      '--exec',
+      'node -e "process.exit(0)"',
+      '--no-worktree',
+      '--json',
+    ]);
+    expect(res.status).toBe(0);
+    const parsed = JSON.parse(res.stdout);
+    expect(parsed[0].action).toBe('claimed_and_executed');
+
+    const getRes = runCli(['get', '1', '--json']);
+    const getParsed = JSON.parse(getRes.stdout);
+    expect(getParsed.meta.status).toBe('In Development');
+    expect(getParsed.meta.lease).toBeNull();
+  });
+
+  it('renders dedicated help screens for subcommands with --help', () => {
+    const workerHelp = runCli(['crew', 'worker', '--help']);
+    expect(workerHelp.status).toBe(0);
+    expect(workerHelp.stdout).toContain('Usage: ese crew worker [options]');
+    expect(workerHelp.stdout).toContain('--complete');
+    expect(workerHelp.stdout).toContain('-t, --ticket');
+
+    const dispatchHelp = runCli(['crew', 'dispatch', '--help']);
+    expect(dispatchHelp.status).toBe(0);
+    expect(dispatchHelp.stdout).toContain('Usage: ese crew dispatch <ticketId> [options]');
+    expect(dispatchHelp.stdout).toContain('--bg, --background');
+
+    const claimHelp = runCli(['lease', 'claim', '--help']);
+    expect(claimHelp.status).toBe(0);
+    expect(claimHelp.stdout).toContain('Usage: ese lease claim <ticketId> [options]');
+
+    const releaseHelp = runCli(['lease', 'release', '--help']);
+    expect(releaseHelp.status).toBe(0);
+    expect(releaseHelp.stdout).toContain('Usage: ese lease release <ticketId> [options]');
+  });
 });
+
 

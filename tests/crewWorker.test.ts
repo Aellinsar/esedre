@@ -5,6 +5,8 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { FilesystemTicketRepository } from '../src/storage/filesystem.js';
 import { AuthorizedTicketRepository } from '../src/storage/securityFilter.js';
+import { interpolateAgentCommand, buildAgentPrompt, generatePlanTaskPrompt, isPlanEmpty } from '../src/cli/worker.js';
+import { migrateEsedreConfig } from '../src/config.js';
 
 describe('Headless Worker Runner Loop (Ticket #66)', () => {
   let tempRepo: string;
@@ -58,6 +60,8 @@ describe('Headless Worker Runner Loop (Ticket #66)', () => {
       )
     );
     fs.writeFileSync(path.join(ticketsDir, 'detail.md'), '# Ticket #1: Core Feature\n');
+    // Agent-driven implementation requires an implementation plan (no-plan guard)
+    fs.writeFileSync(path.join(ticketsDir, 'implementation_plan.md'), '# Plan\n- Implement the core feature\n');
   });
 
   afterEach(() => {
@@ -118,6 +122,7 @@ describe('Headless Worker Runner Loop (Ticket #66)', () => {
       '--exec',
       execCmd,
       '--once',
+      '--complete',
       '--json',
     ]);
 
@@ -150,6 +155,33 @@ describe('Headless Worker Runner Loop (Ticket #66)', () => {
       encoding: 'utf-8',
     });
     expect(log).toContain('[#1] Execute automated worker task (thug-1)');
+  });
+
+  it('leaves ticket In Development on success when --complete is omitted (non-aggressive)', () => {
+    // Reset ticket 1 to Planned
+    runCli(['update', '1', '--status', 'Planned']);
+
+    const res = runCli([
+      'crew',
+      'worker',
+      '-t',
+      '1',
+      '--id',
+      'thug-non-aggressive',
+      '--exec',
+      'node -e "process.exit(0)"',
+      '--once',
+      '--json',
+    ]);
+
+    expect(res.status).toBe(0);
+    const results = JSON.parse(res.stdout);
+    expect(results[0].action).toBe('claimed_and_executed');
+
+    const getRes = runCli(['get', '1', '--json']);
+    const ticket = JSON.parse(getRes.stdout);
+    expect(ticket.meta.status).toBe('In Development');
+    expect(ticket.meta.lease).toBeNull();
   });
 
   it('automatically escalates task to Planned when execution command fails', () => {
@@ -255,5 +287,331 @@ describe('Headless Worker Runner Loop (Ticket #66)', () => {
     const ticket2 = JSON.parse(get2.stdout);
     expect(ticket2.meta.lease).toBeUndefined();
   });
+
+  it('interpolates agent command tokens correctly', () => {
+    const interpolated = interpolateAgentCommand(
+      'my-agent --task {{taskFile}} --id {{ticketId}} --key {{ticketKey}}',
+      42,
+      'Core-42',
+      '/path/to/.esedre/TASK.md'
+    );
+    expect(interpolated).toBe('my-agent --task /path/to/.esedre/TASK.md --id 42 --key Core-42');
+
+    // Default agy shortcut
+    const agyCmd = interpolateAgentCommand('agy', 42, 'Core-42', '/path/to/.esedre/TASK.md');
+    expect(agyCmd).toBe('agy -p "Implement ticket #42 as specified in /path/to/.esedre/TASK.md" --dangerously-skip-permissions');
+
+    // Default claude shortcut
+    const claudeCmd = interpolateAgentCommand('claude', 42, 'Core-42', '/path/to/.esedre/TASK.md');
+    expect(claudeCmd).toBe('claude -p "Implement ticket #42 as specified in /path/to/.esedre/TASK.md" --dangerously-skip-permissions');
+
+    // Appending taskFilePath when no template placeholders
+    const customCmd = interpolateAgentCommand('python run.py', 42, 'Core-42', '/path/to/.esedre/TASK.md');
+    expect(customCmd).toBe('python run.py "/path/to/.esedre/TASK.md"');
+
+    // {{prompt}} expands to a correctly quoted instruction (no inner shell quoting needed in config)
+    const promptCmd = interpolateAgentCommand('agy -p {{prompt}} --dangerously-skip-permissions', 42, 'Core-42', '/path/to/.esedre/TASK.md');
+    expect(promptCmd).toBe('agy -p "Implement ticket #42 as specified in /path/to/.esedre/TASK.md" --dangerously-skip-permissions');
+  });
+
+  it('fails fast and escalates to Planned when no agent CLI or agentCommand is available', () => {
+    // When --exec is omitted and PATH does not contain agy or claude, worker must not stall
+    const res = runCli([
+      'crew',
+      'worker',
+      '--id',
+      'thug-1',
+      '--once',
+      '--json',
+    ], {
+      // Filter PATH and LOCALAPPDATA so no agy or claude can be found
+      PATH: (process.env.PATH || '')
+        .split(path.delimiter)
+        .filter((p) => !p.toLowerCase().includes('agy') && !p.toLowerCase().includes('claude'))
+        .join(path.delimiter),
+      LOCALAPPDATA: path.join(tempRepo, '.fake-localappdata'),
+    });
+
+    expect(res.status).toBe(0);
+    const results = JSON.parse(res.stdout);
+    expect(results.length).toBe(1);
+    expect(results[0].ticketId).toBe(1);
+    expect(results[0].action).toBe('claimed_and_escalated');
+    expect(results[0].error).toContain('No autonomous agent CLI');
+
+    // Ticket lease is released and status is cleanly reverted to Planned
+    const getRes = runCli(['get', '1', '--json']);
+    const ticket = JSON.parse(getRes.stdout);
+    expect(ticket.meta.status).toBe('Planned');
+    expect(ticket.meta.lease).toBeNull();
+
+    // Verify .esedre/TASK.md was generated in worktree
+    const worktreePath = path.join(tempRepo, '.worktrees', 'thug-1');
+    const taskPath = path.join(worktreePath, '.esedre', 'TASK.md');
+    expect(fs.existsSync(taskPath)).toBe(true);
+    const taskContent = fs.readFileSync(taskPath, 'utf-8');
+    expect(taskContent).toContain('Autonomous Task: Ticket #1');
+  });
+
+  it('executes autonomous task via --agent-cmd and completes ticket', () => {
+    // Agent command writes a file to verify execution
+    const agentCmd = 'node -e "require(\'fs\').writeFileSync(\'agent_result.txt\', \'agent success\')"';
+
+    const res = runCli([
+      'crew',
+      'worker',
+      '--id',
+      'thug-1',
+      '--agent-cmd',
+      agentCmd,
+      '--once',
+      '--complete',
+      '--json',
+    ]);
+
+    expect(res.status).toBe(0);
+    const results = JSON.parse(res.stdout);
+    expect(results.length).toBe(1);
+    expect(results[0].ticketId).toBe(1);
+    expect(results[0].action).toBe('claimed_and_completed');
+
+    // Verify ticket completed and lease released
+    const getRes = runCli(['get', '1', '--json']);
+    const ticket = JSON.parse(getRes.stdout);
+    expect(ticket.meta.status).toBe('Completed');
+    expect(ticket.meta.lease).toBeNull();
+
+    // Verify file committed in worktree branch
+    const worktreePath = path.join(tempRepo, '.worktrees', 'thug-1');
+    expect(fs.existsSync(path.join(worktreePath, 'agent_result.txt'))).toBe(true);
+  });
+
+  it('preserves agentCommand and engine when migrating workspace config (ese upgrade must not wipe them)', () => {
+    const migrated = migrateEsedreConfig({
+      projectCode: 'Core',
+      agentCommand: 'my-agent {{taskFile}}',
+      engine: 'claude',
+    });
+    expect(migrated.agentCommand).toBe('my-agent {{taskFile}}');
+    expect(migrated.engine).toBe('claude');
+
+    const invalid = migrateEsedreConfig({ projectCode: 'Core', agentCommand: '   ', engine: 'bogus' });
+    expect(invalid.agentCommand).toBeUndefined();
+    expect(invalid.engine).toBeUndefined();
+  });
+
+  it('honors project-level agentCommand from .esedre/esedre.json and keeps it through ese upgrade', () => {
+    const cfgPath = path.join(tempRepo, '.esedre', 'esedre.json');
+    const agentCmd = 'node -e "require(\'fs\').writeFileSync(\'project_agent.txt\', \'ok\')" {{taskFile}}';
+    fs.writeFileSync(
+      cfgPath,
+      JSON.stringify({ projectCode: 'Core', allowedProjects: ['Core'], agentCommand: agentCmd }, null, 2)
+    );
+
+    const upgradeRes = runCli(['upgrade', '.', '--force']);
+    expect(upgradeRes.status).toBe(0);
+    const afterUpgrade = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+    expect(afterUpgrade.agentCommand).toBe(agentCmd);
+
+    const res = runCli(['crew', 'worker', '--id', 'thug-1', '--once', '--complete', '--json']);
+    expect(res.status).toBe(0);
+    const results = JSON.parse(res.stdout);
+    expect(results[0].action).toBe('claimed_and_completed');
+    expect(fs.existsSync(path.join(tempRepo, '.worktrees', 'thug-1', 'project_agent.txt'))).toBe(true);
+  });
+
+  describe('no-plan guard (agent-driven implementation)', () => {
+    const planFile = () => path.join(tempRepo, '.esedre', 'tickets', '1', 'implementation_plan.md');
+    const agentCmd = 'node -e "require(\'fs\').writeFileSync(\'agent_result.txt\', \'ran\')"';
+
+    it('blocks agent implementation of a ticket with no plan and takes no lease', () => {
+      fs.rmSync(planFile());
+
+      const res = runCli(['crew', 'worker', '-t', '1', '--id', 'thug-1', '--agent-cmd', agentCmd, '--once', '--json']);
+      expect(res.status).toBe(0);
+      const results = JSON.parse(res.stdout);
+      expect(results[0].action).toBe('blocked_no_plan');
+      expect(results[0].error).toContain('no implementation plan');
+      expect(results[0].error).toContain('--mode plan');
+
+      const ticket = JSON.parse(runCli(['get', '1', '--json']).stdout);
+      expect(ticket.meta.status).toBe('Planned');
+      expect(ticket.meta.lease).toBeUndefined();
+      expect(fs.existsSync(path.join(tempRepo, '.worktrees', 'thug-1', 'agent_result.txt'))).toBe(false);
+    });
+
+    it('treats a whitespace-only plan as no plan', () => {
+      fs.writeFileSync(planFile(), '   \n\n');
+      const res = runCli(['crew', 'worker', '-t', '1', '--id', 'thug-1', '--agent-cmd', agentCmd, '--once', '--json']);
+      expect(JSON.parse(res.stdout)[0].action).toBe('blocked_no_plan');
+    });
+
+    it('allows implementation from the spec alone with --allow-no-plan', () => {
+      fs.rmSync(planFile());
+
+      const res = runCli([
+        'crew', 'worker', '-t', '1', '--id', 'thug-1', '--agent-cmd', agentCmd,
+        '--allow-no-plan', '--once', '--json',
+      ]);
+      expect(res.status).toBe(0);
+      expect(JSON.parse(res.stdout)[0].action).toBe('claimed_and_executed');
+      expect(fs.existsSync(path.join(tempRepo, '.worktrees', 'thug-1', 'agent_result.txt'))).toBe(true);
+    });
+
+    it('does not apply to raw --exec commands', () => {
+      fs.rmSync(planFile());
+      const res = runCli(['crew', 'worker', '-t', '1', '--id', 'thug-1', '--exec', 'node -e "process.exit(0)"', '--once', '--json']);
+      expect(JSON.parse(res.stdout)[0].action).toBe('claimed_and_executed');
+    });
+
+    it('refuses `crew dispatch` of an unplanned ticket before claiming it', () => {
+      fs.rmSync(planFile());
+
+      const res = runCli(['crew', 'dispatch', '1', '--worker', 'thug-1', '--agent-cmd', agentCmd]);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain('no implementation plan');
+      expect(res.stderr).toContain('--mode plan');
+
+      const ticket = JSON.parse(runCli(['get', '1', '--json']).stdout);
+      expect(ticket.meta.status).toBe('Planned');
+      expect(ticket.meta.lease).toBeUndefined();
+    });
+
+    it('scanning workers skip tickets without a plan', () => {
+      fs.rmSync(planFile());
+      // Unassign so the ticket is only reachable through backlog scanning
+      runCli(['update', '1', '--assignee', '']);
+
+      const res = runCli(['crew', 'worker', '--id', 'thug-7', '--agent-cmd', agentCmd, '--once', '--json']);
+      expect(res.status).toBe(0);
+      expect(JSON.parse(res.stdout)[0].action).toBe('idle');
+    });
+
+    it('isPlanEmpty detects null, empty and whitespace plans', () => {
+      expect(isPlanEmpty(null)).toBe(true);
+      expect(isPlanEmpty(undefined)).toBe(true);
+      expect(isPlanEmpty('  \n ')).toBe(true);
+      expect(isPlanEmpty('# Plan')).toBe(false);
+    });
+  });
+
+  describe('plan mode (anchor writes the implementation plan)', () => {
+    const planFile = () => path.join(tempRepo, '.esedre', 'tickets', '1', 'implementation_plan.md');
+    const savePlanCmd =
+      'node -e "require(\'fs\').writeFileSync(\'.esedre/tickets/1/implementation_plan.md\', \'# Anchor plan\\n- step one\\n\')"';
+
+    it('builds a planning-specific prompt and task file content', () => {
+      expect(buildAgentPrompt(42, '/t/PLAN_TASK.md', 'plan')).toBe(
+        '"Write the implementation plan for ticket #42 as specified in /t/PLAN_TASK.md. Do not modify source files."'
+      );
+      expect(interpolateAgentCommand('agy -p {{prompt}}', 42, 'Core-42', '/t/PLAN_TASK.md', 'plan')).toContain(
+        'Write the implementation plan'
+      );
+
+      const md = generatePlanTaskPrompt(
+        { meta: { id: 42, title: 'T', type: 'Feature', project: 'Core' }, detail: { raw: 'Spec body' } } as any,
+        'Core-42',
+        null,
+        '/t/plan-draft-42.md',
+        'anchor-1'
+      );
+      expect(md).toContain('Planning Task: Ticket Core-42');
+      expect(md).toContain('Do NOT modify, create, or delete any source files');
+      expect(md).toContain('.esedre/ese plan Core-42 --file "/t/plan-draft-42.md"');
+      expect(md).toContain('This ticket has no implementation plan yet');
+    });
+
+    it('plans a ticket with no plan: saves the plan, no worktree, status unchanged, lease released', () => {
+      fs.rmSync(planFile());
+
+      const res = runCli([
+        'crew', 'worker', '--mode', 'plan', '-t', '1', '--id', 'anchor-1',
+        '--exec', savePlanCmd, '--once', '--json',
+      ]);
+      expect(res.status).toBe(0);
+      const results = JSON.parse(res.stdout);
+      expect(results[0].action).toBe('claimed_and_planned');
+
+      const ticket = JSON.parse(runCli(['get', '1', '--json']).stdout);
+      expect(ticket.meta.status).toBe('Planned');
+      expect(ticket.meta.lease).toBeNull();
+      expect(fs.readFileSync(planFile(), 'utf-8')).toContain('# Anchor plan');
+      expect(ticket.comments[ticket.comments.length - 1].text).toContain('[Plan] Implementation plan saved by anchor-1');
+
+      // Planning never uses a worktree and writes PLAN_TASK.md, not TASK.md
+      expect(fs.existsSync(path.join(tempRepo, '.worktrees', 'anchor-1'))).toBe(false);
+      expect(fs.existsSync(path.join(tempRepo, '.esedre', 'PLAN_TASK.md'))).toBe(true);
+    });
+
+    it('restores the original In Development status instead of leaving it changed', () => {
+      runCli(['update', '1', '--status', 'In Development']);
+      fs.rmSync(planFile());
+
+      const res = runCli([
+        'crew', 'worker', '--mode', 'plan', '-t', '1', '--id', 'anchor-1',
+        '--exec', savePlanCmd, '--once', '--json',
+      ]);
+      expect(JSON.parse(res.stdout)[0].action).toBe('claimed_and_planned');
+
+      const ticket = JSON.parse(runCli(['get', '1', '--json']).stdout);
+      expect(ticket.meta.status).toBe('In Development');
+      expect(ticket.meta.lease).toBeNull();
+    });
+
+    it('escalates when the planning agent exits 0 without saving a new plan', () => {
+      const res = runCli([
+        'crew', 'worker', '--mode', 'plan', '-t', '1', '--id', 'anchor-1',
+        '--exec', 'node -e "process.exit(0)"', '--once', '--json',
+      ]);
+      expect(res.status).toBe(0);
+      const results = JSON.parse(res.stdout);
+      expect(results[0].action).toBe('claimed_and_escalated');
+      expect(results[0].error).toContain('no new plan was saved');
+
+      const ticket = JSON.parse(runCli(['get', '1', '--json']).stdout);
+      expect(ticket.meta.status).toBe('Planned');
+      expect(ticket.meta.lease).toBeNull();
+      expect(ticket.comments[ticket.comments.length - 1].text).toContain('[Escalation] Automated worker planning failed');
+    });
+
+    it('rejects plan mode for the thug role and for scanning (no ticket)', () => {
+      const thug = runCli(['crew', 'worker', '--mode', 'plan', '-t', '1', '--role', 'thug', '--once', '--exec', savePlanCmd]);
+      expect(thug.status).toBe(1);
+      expect(thug.stderr).toContain("requires the 'anchor' role");
+
+      const noTicket = runCli(['crew', 'worker', '--mode', 'plan', '--once', '--exec', savePlanCmd]);
+      expect(noTicket.status).toBe(1);
+      expect(noTicket.stderr).toContain('requires a target ticket');
+
+      const bad = runCli(['crew', 'worker', '--mode', 'bogus', '--once']);
+      expect(bad.status).toBe(1);
+      expect(bad.stderr).toContain("Invalid --mode 'bogus'");
+    });
+
+    it('dispatch --mode plan defaults to anchor-1, rejects thug, and plans without claiming up front', () => {
+      const thug = runCli(['crew', 'dispatch', '1', '--mode', 'plan', '--role', 'thug', '--exec', savePlanCmd]);
+      expect(thug.status).toBe(1);
+      expect(thug.stderr).toContain("requires the 'anchor' role");
+
+      fs.rmSync(planFile());
+      const res = runCli(['crew', 'dispatch', '1', '--mode', 'plan', '--exec', savePlanCmd, '--json']);
+      expect(res.status).toBe(0);
+      const results = JSON.parse(res.stdout.slice(res.stdout.indexOf('[')));
+      expect(results[0].action).toBe('claimed_and_planned');
+
+      const ticket = JSON.parse(runCli(['get', '1', '--json']).stdout);
+      expect(ticket.meta.status).toBe('Planned');
+      expect(ticket.meta.lease).toBeNull();
+      expect(fs.readFileSync(planFile(), 'utf-8')).toContain('# Anchor plan');
+    });
+
+    it('refuses to plan a ticket leased by another worker', () => {
+      runCli(['claim', '1', '--worker', 'thug-9', '--ttl', '30', '--json']);
+      const res = runCli(['crew', 'dispatch', '1', '--mode', 'plan', '--exec', savePlanCmd]);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain('is leased by');
+    });
+  });
 });
+
 

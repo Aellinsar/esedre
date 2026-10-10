@@ -134,7 +134,7 @@ describe('Autonomous Crew Fleet E2E Multi-Role Integration (Ticket #66)', () => 
     // 4. Thug-1 runs task in isolated worktree and succeeds
     const execSuccess = 'node -e "require(\'fs\').writeFileSync(\'feature1.txt\', \'fleet feature 1 complete\')"';
     const worker1Res = runCli(
-      ['crew', 'worker', '--id', 'thug-1', '--exec', execSuccess, '--once', '--json'],
+      ['crew', 'worker', '--id', 'thug-1', '--exec', execSuccess, '--once', '--complete', '--json'],
       { ESEDRE_WORKER_ROLE: 'thug', ESEDRE_WORKER_ID: 'thug-1' }
     );
     expect(worker1Res.status).toBe(0);

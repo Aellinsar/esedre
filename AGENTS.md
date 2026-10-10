@@ -479,27 +479,55 @@ The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets acr
    - **`anchor`**: Senior pair or primary persistent agent. Can claim, release, delegate, and run verification.
    - **`thug`**: Headless worker runner for executing bounded tasks, tests, or subroutines. Thugs execute tasks, auto-commit in worktrees, and release or escalate. Thugs are strictly forbidden from delegating tasks to other workers.
 
-3. **Git Worktree Isolation & Automated Commits**:
+3. **Git Worktree Isolation, Dependency Linking & Automated Commits**:
    - Headless workers (`ese crew worker`) execute inside isolated git worktrees (`.worktrees/<workerId>`) on dedicated branches (`thug/<workerId>`), eliminating `.git/index.lock` collisions and file clobbering in the active IDE.
+   - Root `node_modules` and subproject `node_modules` (e.g. `web/node_modules`) are automatically linked into worktrees via NTFS directory junctions on Windows (zero admin rights required) and symlinks on POSIX, allowing tests, builds, and linters to run without separate install cycles.
    - Worktree commits adhere strictly to imperative commit message conventions: `[#<id>] Execute automated worker task (<workerId>)`.
 
 4. **Worker Pool Limits & Machine Throttling**:
    - Machine worker capacity is governed by `maxWorkers` in `~/.esedre/config.json` (configured via `ese configure set maxWorkers <n>`).
    - Workers query active unexpired leases on the local host machine; if active worker leases meet or exceed `maxWorkers`, additional workers idle and wait until capacity frees up.
 
-5. **Operating as Crew Lead (User Interaction & Orchestration Guidelines)**:
+5. **Operating as Crew Lead & Fast-Yield Protocol**:
    - In interactive coding sessions with the human developer, the agent operates as the **Crew Lead**. The human developer talks directly to the Lead.
-   - **Transparent Delegation**: Always inform the user clearly before launching background workers. State the ticket ID, title, worker name (e.g. `thug-1`), command being executed, and worktree isolation path (`.worktrees/thug-1`).
+   - **Lead Direct Mode vs. Autonomous Fleet Dispatch Mode**:
+     - **Lead Direct Mode (Default for chat sessions)**: When the user asks the Lead in chat to tackle a ticket, the Lead claims the lease (`.esedre/ese lease claim <id>`), writes the code, updates plans, runs tests, and completes the ticket directly in the active workspace. The Lead does NOT dispatch to an external headless worker unless the user explicitly requests background dispatch.
+     - **Autonomous Fleet Dispatch Mode**: When running background workers (`ese crew dispatch <id> --bg` or `ese crew worker`), the worker generates `.worktrees/<workerId>/.esedre/TASK.md` containing the ticket specification and implementation plan, executes the configured agent or verification command, and auto-commits worktree changes on exit code 0.
+      - **No-Plan Guard**: Agent-driven implementation (no `--exec`) refuses a ticket with no implementation plan: `dispatch` exits 1 before claiming, and `crew worker` returns `blocked_no_plan` without taking a lease. Backlog scans skip unplanned tickets. Pass `--allow-no-plan` to implement from the specification alone. Raw `--exec` commands are exempt.
+      - **Plan Mode (Anchor-Directed Planning)**: `ese crew dispatch <id> --mode plan [--bg]` (or `ese crew worker -t <id> --mode plan`) has an anchor write the implementation plan only. Defaults: worker `anchor-1`, role `anchor`; a `thug` role is rejected and a target ticket is required. No worktree, no code changes, and the ticket keeps its original status (`Planned` or `In Development`). The worker writes `.esedre/PLAN_TASK.md`, runs the agent with a planning prompt, and verifies a new plan was saved via `ese plan <id> --file`; if not, it escalates with a comment. Planning is only dispatched when the user explicitly asks for it.
+      - **Background Logs, Liveness & Stale Leases (`--bg`)**: Detached workers must never fail silently. Each worker logs all output (console plus the agent child's stdout and stderr) to `~/.esedre/logs/worker-<workerId>-<ticketKey>.log` and writes an exit marker (`[esedre-worker exit code=N]`); run records live in `~/.esedre/run/`. `dispatch --bg` prints the log path and polls the worker PID for a short liveness window (3s, `ESEDRE_BG_LIVENESS_MS`). A non-zero exit, a death without an exit marker, or an exit 0 that escalated the ticket makes dispatch exit 1, force-release the lease, return the ticket to its prior status, and post an `[Escalation]` comment with the log path and tail. `ese lease list` flags a held lease whose worker PID is gone as `STALE` (`stale: true` in JSON). On Windows the worker is launched via WMI `Win32_Process.Create` (plain `detached: true` does not escape a job object, so a harness or terminal that kills its process tree would otherwise kill the worker the moment dispatch returns), with the needed environment handed over through a one-shot env file. `ESEDRE_BG_LAUNCH=spawn` forces the plain-spawn fallback.
+   - **Fast-Yield Delegation Pattern (Responsive Terminal Protocol)**:
+     - When delegating or dispatching a task to a background worker (via `ese crew dispatch <id> --bg` or background runner), the Lead agent MUST stop calling tools immediately and yield terminal control to the human developer.
+     - Provide a clean 2-3 line handoff summary stating the ticket ID, title, worker ID, background command, and return of terminal control.
+     - Long-running builds, test suites, and subroutines belong in background worktree processes so the developer and Lead remain in responsive dialogue.
+     - Never run synchronous polling or sleep loops waiting for workers.
    - **Concise Status Reporting**: Query fleet health via MCP `esedre_get_crew_status` / `esedre_list_leases` or CLI `.esedre/ese lease list` (or `.esedre/ese crew leases`). Keep the developer updated with clean summaries of active worker tasks and remaining lease TTLs.
    - **Escalation Triage**: When a background thug fails and escalates back to `Planned`, the Lead reviews the failure reason, diagnoses the root cause, and explains the situation to the user with clear recommended solutions. Never conceal worker errors.
    - **Branch Review & Merge**: When a worker finishes a task on branch `thug/<workerId>`, the Lead reviews the diff (`git diff HEAD..thug/<workerId>`), runs verification if needed, and cleanly integrates the changes into the working branch (`git merge thug/<workerId>`) while summarizing the outcome for the user.
 
 6. **Headless Worker Launching & Monitoring Runbook**:
-   - One-shot execution: `.esedre/ese crew worker --id thug-1 --role thug --exec "<cmd>" --once --json`
+   - Autonomous AI agent dispatch: `.esedre/ese crew dispatch <ticketId> --worker thug-1 --bg [--complete]`
+   - Custom agent command: `.esedre/ese crew dispatch <ticketId> --worker thug-1 --agent-cmd "agy -p {{prompt}}" --bg`
+   - Shell command runner: `.esedre/ese crew dispatch <ticketId> --worker thug-1 --exec "<cmd>" --bg [--complete]`
+    - Anchor-directed planning: `.esedre/ese crew dispatch <ticketId> --mode plan --bg` (add `--worker <id>` to override `anchor-1`)
+    - Implement an unplanned ticket anyway: `.esedre/ese crew dispatch <ticketId> --worker thug-1 --bg --allow-no-plan`
+   - Targeted single-task execution: `.esedre/ese crew worker -t <ticketId> --id thug-1 --role thug --exec "<cmd>" --once [--complete]`
    - Polling daemon: `.esedre/ese crew worker --id thug-1 --role thug --poll 10`
    - Delegation: `.esedre/ese crew delegate <ticketId> --worker thug-1 --role thug`
    - Escalation: `.esedre/ese crew escalate <ticketId> --reason "<explanation>"`
    - Fleet monitoring: Use MCP `esedre_get_crew_status` / `esedre_list_leases` or CLI `.esedre/ese lease list --all` (or `.esedre/ese crew leases`)
+   - Dedicated subcommand help: `.esedre/ese crew dispatch --help`, `.esedre/ese crew worker --help`, `.esedre/ese lease claim --help`, etc.
    - Worktree inspection: `git diff HEAD..thug/<workerId>` and `git merge thug/<workerId>`
+
+7. **Universal Agent Configuration (Zero Vendor Lock-In)**:
+   - Antigravity CLI: `ese configure set agentCommand "agy -p {{prompt}} --dangerously-skip-permissions"`
+   - Claude Code CLI: `ese configure set agentCommand "claude -p {{prompt}} --dangerously-skip-permissions"`
+   - Custom runner script: `ese configure set agentCommand "node scripts/ai-worker.js --task {{taskFile}} --ticket {{ticketId}}"`
+   - Command tokens: `{{prompt}}` (quoted instruction pointing at the task file; prefer it so configs need no inner shell quoting), `{{taskFile}}`, `{{ticketId}}`, `{{ticketKey}}`.
+   - Scope: `agentCommand` and `engine` may live in `~/.esedre/config.json` (machine default) or `.esedre/esedre.json` (per-project override). `migrateEsedreConfig` MUST preserve both so `ese upgrade` never wipes them.
+   - Resolution order: `--agent-cmd` flag, then project `.esedre/esedre.json`, then `ESEDRE_AGENT_CMD`, then `~/.esedre/config.json`, then auto-detect `agy` or `claude`. On Windows, `agy` is also located at `%LOCALAPPDATA%\agy\bin` when absent from `PATH`.
+   - Fail-fast escalation: If no agent CLI is found and no `agentCommand` is configured, the worker automatically releases the lease and resets status to Planned with clear guidance notes.
+
+
 
 

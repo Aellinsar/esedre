@@ -106,17 +106,42 @@ describe('Git Worktree Isolation & Lifecycle (Ticket #66)', () => {
     expect(fs.existsSync(path.join(tempRepo, 'feature.ts'))).toBe(false);
   });
 
-  it('removes an isolated worktree cleanly and prunes metadata', async () => {
-    await setupWorktree(tempRepo, 'thug-3');
-    const expectedPath = getWorkerWorktreePath(tempRepo, 'thug-3');
-    expect(fs.existsSync(expectedPath)).toBe(true);
+  it('links root and subproject node_modules into worktree and unlinks them on removal', async () => {
+    // Create root node_modules
+    const rootMod = path.join(tempRepo, 'node_modules', 'fake-root-pkg');
+    fs.mkdirSync(rootMod, { recursive: true });
+    fs.writeFileSync(path.join(rootMod, 'index.js'), 'module.exports = "root";\n');
 
-    const { removed } = await removeWorktree(tempRepo, 'thug-3', { force: true, deleteBranch: true });
+    // Create subproject web/node_modules and commit web/package.json so git tracks directory
+    const webDir = path.join(tempRepo, 'web');
+    fs.mkdirSync(webDir, { recursive: true });
+    fs.writeFileSync(path.join(webDir, 'package.json'), '{"name":"web"}\n');
+    execFileSync('git', ['add', 'web/package.json'], { cwd: tempRepo, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-m', '[#3] Add web subproject'], { cwd: tempRepo, stdio: 'ignore' });
+
+    const webMod = path.join(webDir, 'node_modules', 'fake-web-pkg');
+    fs.mkdirSync(webMod, { recursive: true });
+    fs.writeFileSync(path.join(webMod, 'index.js'), 'module.exports = "web";\n');
+
+    // Setup worktree
+    const { worktreePath } = await setupWorktree(tempRepo, 'thug-modules');
+
+    // Verify root node_modules was linked
+    const worktreeRootMod = path.join(worktreePath, 'node_modules', 'fake-root-pkg', 'index.js');
+    expect(fs.existsSync(worktreeRootMod)).toBe(true);
+
+    // Verify subproject web/node_modules was linked
+    const worktreeWebMod = path.join(worktreePath, 'web', 'node_modules', 'fake-web-pkg', 'index.js');
+    expect(fs.existsSync(worktreeWebMod)).toBe(true);
+
+    // Remove worktree
+    const { removed } = await removeWorktree(tempRepo, 'thug-modules', { force: true, deleteBranch: true });
     expect(removed).toBe(true);
-    expect(fs.existsSync(expectedPath)).toBe(false);
+    expect(fs.existsSync(worktreePath)).toBe(false);
 
-    // Worktree is no longer in list
-    const worktrees = listWorktrees(tempRepo);
-    expect(worktrees.some((w) => w.path.toLowerCase() === expectedPath.toLowerCase())).toBe(false);
+    // Original modules in tempRepo are untouched
+    expect(fs.existsSync(path.join(rootMod, 'index.js'))).toBe(true);
+    expect(fs.existsSync(path.join(webMod, 'index.js'))).toBe(true);
   });
 });
+

@@ -167,6 +167,7 @@ export async function setupWorktree(
 
   if (match && fs.existsSync(worktreePath)) {
     logDebug('worktree', `Reusing existing worktree at ${worktreePath} on branch ${match.branch || targetBranch}`);
+    linkNodeModules(resolvedRoot, worktreePath);
     return {
       worktreePath,
       branch: match.branch || targetBranch,
@@ -181,6 +182,7 @@ export async function setupWorktree(
     } catch {}
     if (fs.existsSync(worktreePath)) {
       try {
+        unlinkNodeModules(worktreePath);
         fs.rmSync(worktreePath, { recursive: true, force: true });
       } catch {}
     }
@@ -222,6 +224,7 @@ export async function setupWorktree(
     });
 
     logDebug('worktree', `Created isolated worktree at ${worktreePath} on branch ${targetBranch}`);
+    linkNodeModules(resolvedRoot, worktreePath);
     return {
       worktreePath,
       branch: targetBranch,
@@ -231,6 +234,95 @@ export async function setupWorktree(
     const errMsg = err.stderr ? err.stderr.toString() : err.message;
     throw new Error(`Failed to create git worktree at '${worktreePath}': ${errMsg}`);
   }
+}
+
+/**
+ * Links root and subproject node_modules directories into the worktree so that
+ * npm test, build, and lint commands run without requiring fresh npm installs.
+ * Uses NTFS directory junctions on Windows (requires no admin privileges) and
+ * directory symlinks on Linux/macOS.
+ */
+export function linkNodeModules(repoRoot: string, worktreePath: string): void {
+  if (!fs.existsSync(repoRoot) || !fs.existsSync(worktreePath)) {
+    return;
+  }
+
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+
+  // 1. Link root node_modules
+  const rootModules = path.join(repoRoot, 'node_modules');
+  const targetRootLink = path.join(worktreePath, 'node_modules');
+
+  if (fs.existsSync(rootModules) && !fs.existsSync(targetRootLink)) {
+    try {
+      fs.symlinkSync(rootModules, targetRootLink, linkType);
+      logDebug('worktree', `Linked root node_modules into worktree: ${targetRootLink}`);
+    } catch (err: any) {
+      logDebug('worktree', `Could not link root node_modules: ${err.message}`);
+    }
+  }
+
+  // 2. Discover subproject node_modules (e.g. web/node_modules, packages/*/node_modules)
+  try {
+    const entries = fs.readdirSync(repoRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const name = entry.name;
+      if (name.startsWith('.') || name === 'node_modules' || name === 'dist' || name === 'build') {
+        continue;
+      }
+
+      const subModules = path.join(repoRoot, name, 'node_modules');
+      if (fs.existsSync(subModules)) {
+        const subWorktreeDir = path.join(worktreePath, name);
+        const subTargetLink = path.join(subWorktreeDir, 'node_modules');
+        if (fs.existsSync(subWorktreeDir) && !fs.existsSync(subTargetLink)) {
+          try {
+            fs.symlinkSync(subModules, subTargetLink, linkType);
+            logDebug('worktree', `Linked subproject node_modules in '${name}' into worktree`);
+          } catch (err: any) {
+            logDebug('worktree', `Could not link subproject node_modules in '${name}': ${err.message}`);
+          }
+        }
+      }
+    }
+  } catch (err: any) {
+    logDebug('worktree', `Error scanning subprojects for node_modules: ${err.message}`);
+  }
+}
+
+/**
+ * Removes node_modules junctions/symlinks from the worktree before git worktree remove.
+ */
+export function unlinkNodeModules(worktreePath: string): void {
+  if (!fs.existsSync(worktreePath)) {
+    return;
+  }
+
+  const removeLinkSafe = (linkPath: string) => {
+    try {
+      const stat = fs.lstatSync(linkPath);
+      if (stat.isSymbolicLink() || process.platform === 'win32') {
+        try {
+          fs.unlinkSync(linkPath);
+        } catch {
+          try { fs.rmdirSync(linkPath); } catch {}
+        }
+      }
+    } catch {}
+  };
+
+  // 1. Root node_modules in worktree
+  removeLinkSafe(path.join(worktreePath, 'node_modules'));
+
+  // 2. Subproject node_modules in worktree
+  try {
+    const entries = fs.readdirSync(worktreePath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      removeLinkSafe(path.join(worktreePath, entry.name, 'node_modules'));
+    }
+  } catch {}
 }
 
 /**
@@ -247,6 +339,8 @@ export async function removeWorktree(
   const targetBranch = `thug/${safeId}`;
 
   let removed = false;
+
+  unlinkNodeModules(worktreePath);
 
   try {
     const args = ['worktree', 'remove', worktreePath];

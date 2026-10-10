@@ -40,8 +40,9 @@ import {
 } from '../src/upgrade.js';
 import { startGatewayCluster } from '../src/server/gateway.js';
 import { startDaemon, stopDaemon, getDaemonStatus, printDaemonLogs } from '../src/server/daemon.js';
-import { handleClaim, handleRelease, handleRenew, handleLeases, handleCrew, handleWorker, handleLease } from '../src/cli/crew.js';
+import { handleClaim, handleRelease, handleRenew, handleLeases, handleCrew, handleWorker, handleLease, handleDispatch } from '../src/cli/crew.js';
 import { EsedreLeaseConflictError } from '../src/storage/index.js';
+import { applyWorkerEnvFile } from '../src/utils/workerLaunch.js';
 
 function printHelp(config?: any): void {
   const port = config?.port || DEFAULT_ESEDRE_PORT;
@@ -107,9 +108,10 @@ ${colors.bold}CONCURRENCY & TICKET LEASES:${colors.reset}
                • renew:   ese lease renew <id> [--ttl <m>]
 
 ${colors.bold}AUTONOMOUS CREW FLEET:${colors.reset}
-  ${colors.bold}crew${colors.reset}        <worker | delegate | escalate | whoami | leases>
+  ${colors.bold}crew${colors.reset}        <dispatch | worker | delegate | escalate | whoami | leases>
                Crew management commands for autonomous fleet coordination.
-               • worker:   ese crew worker [--id <id>] [--role anchor|thug] [--exec "<cmd>"] [--once]
+               • dispatch: ese crew dispatch <id> [--worker <target>] [--mode plan|implement] [--exec "<cmd>"] [--agent-cmd "<cmd>"] [--engine <name>] [--bg] [--complete] [--allow-no-plan]
+               • worker:   ese crew worker [-t <id>] [--id <id>] [--role anchor|thug] [--exec "<cmd>"] [--agent-cmd "<cmd>"] [--engine <name>] [--once] [--complete]
                • delegate: ese crew delegate <id> --worker <target>
                • escalate: ese crew escalate <id> --reason "<explanation>"
                • whoami:   ese crew whoami
@@ -267,6 +269,8 @@ async function main(): Promise<void> {
   }
 
   const rawArgs = process.argv.slice(2);
+  // Detached workers launched outside the dispatcher's process tree receive their env via a one-shot file
+  applyWorkerEnvFile(rawArgs);
   const { command, positionals, flags } = parseArgs(rawArgs);
 
   try {
@@ -286,7 +290,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (!command || flags['help'] || flags['h']) {
+  if (!command) {
+    printHelp(discovered.config);
+    return;
+  }
+
+  const hasHelpFlag = Boolean(flags['help'] || flags['h']);
+  if (hasHelpFlag && command !== 'crew' && command !== 'lease' && command !== 'dispatch' && command !== 'worker') {
     printHelp(discovered.config);
     return;
   }
@@ -1589,6 +1599,10 @@ async function main(): Promise<void> {
 
       case 'crew': {
         return handleCrew(storage, positionals, flags, isJson, discovered);
+      }
+
+      case 'dispatch': {
+        return handleDispatch(storage, positionals, flags, isJson, discovered);
       }
 
       case 'worker': {

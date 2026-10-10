@@ -27,6 +27,8 @@ export interface EsedreConfig {
   debug?: boolean;
   system?: string;
   maxWorkers?: number;
+  agentCommand?: string;
+  engine?: 'antigravity' | 'claude' | 'shell' | 'headless';
 }
 
 export interface ResolvedPorts {
@@ -609,6 +611,8 @@ export function migrateEsedreConfig(raw: any, targetVersion = CURRENT_ESEDRE_VER
     projects: typeof raw?.projects === 'object' && raw?.projects ? raw.projects : undefined,
     system: typeof raw?.system === 'string' ? raw.system : undefined,
     maxWorkers: typeof raw?.maxWorkers === 'number' ? raw.maxWorkers : undefined,
+    agentCommand: typeof raw?.agentCommand === 'string' && raw.agentCommand.trim() ? raw.agentCommand : undefined,
+    engine: ['antigravity', 'claude', 'shell', 'headless'].includes(raw?.engine) ? raw.engine : undefined,
   };
   return migrated;
 }

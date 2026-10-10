@@ -86,40 +86,98 @@ In an interactive development session with the user, **you operate as the Crew L
    - As Lead, inspect the changes (`git diff HEAD..thug/<workerId>`), verify correctness, merge into the active branch (`git merge thug/<workerId>`), and report the verified outcome to the user.
 6. **Pool Concurrency Discipline**:
    - Respect the configured `maxWorkers` limit (e.g. 3 on this machine). Never launch more concurrent workers than the local pool permits.
+7. **Lead Direct Mode vs. Autonomous Fleet Dispatch Mode**:
+   - **Interactive Lead Direct Mode (Default for chat sessions)**: When the user asks you (the Lead agent in the active chat session) to implement a feature or tackle a ticket:
+     1. Claim the ticket lease: `.esedre/ese lease claim <id>`
+     2. Write the code, update plans, and run test suites directly in this workspace.
+     3. Mark completed and release lease: `.esedre/ese lease release <id> --status Completed --notes "..."`
+     Do NOT delegate to an external headless worker unless the user explicitly requests background dispatch or fleet execution.
+   - **Autonomous Fleet Dispatch Mode (Headless Background Workers)**:
+     When running `ese crew dispatch <id> --bg` or `ese crew worker`:
+     - The worker compiles `.worktrees/<workerId>/.esedre/TASK.md` with full ticket specification and plan.
+     - An agent CLI (`agy` for Antigravity, `claude` for Claude Code) or configured `agentCommand` is a pre-requisite for automated code writing in worktrees.
+     - If no agent CLI or `agentCommand` is found, the worker fails fast, explains how to configure one, and reverts the ticket to `Planned`.
+     - Alternatively, pass `--exec "<cmd>"` for headless test/build execution.
+     - **No-plan guard**: agent-driven implementation refuses a ticket that has no implementation plan (`blocked_no_plan`, no lease taken). Plan it first with plan mode below, or pass `--allow-no-plan` to implement from the specification alone. Raw `--exec` commands are exempt.
+    - **Plan Mode (Anchor-Directed Planning)**: Only when the user explicitly asks for a ticket to be planned by a worker, run `.esedre/ese crew dispatch <id> --mode plan --bg`. It defaults to worker `anchor-1` with role `anchor` (a thug is rejected). The anchor reads the specification and the repo, then saves the plan with `.esedre/ese plan <id> --file <draft>`. There is no worktree and no code change, and the ticket keeps its status. If the agent exits without saving a new plan, the worker escalates with a comment. Follow Fast-Yield after dispatching, then review the plan with `.esedre/ese plan <id>` when the user asks.
+    - **Background Logs & Liveness (`--bg`)**: Every detached worker writes all output (including the agent's stdout and stderr) to `~/.esedre/logs/worker-<workerId>-<ticketKey>.log`, and dispatch prints that path. Dispatch waits a short liveness window (3s, `ESEDRE_BG_LIVENESS_MS`). A worker that exits non-zero, dies without an exit marker, or escalates the ticket makes dispatch exit 1, release the lease, set the ticket back to `Planned`, and post an `[Escalation]` comment with the log path and the last output. `.esedre/ese lease list` flags a lease whose worker PID is gone as `STALE`; release it with `.esedre/ese lease release <ticketKey> --force`. On Windows the worker is launched through WMI so it survives the dispatching shell or tool ending. Only report a dispatch as started when the success output was printed.
+
+### Fast-Yield Delegation Pattern (Responsive Terminal Protocol):
+In paired programming with a human developer, **the terminal belongs to the developer**. Avoid monopolizing conversation turns with long sequences of synchronous tool calls:
+1. **Delegation is an Immediate Yield Point**: Whenever delegating or dispatching a task to a background worker (via `ese crew dispatch <id> --bg` or background runner), the Lead agent MUST stop calling tools immediately and yield terminal control to the human developer.
+2. **Transparent Handoff Notice**: Provide a clear 2-3 line summary before yielding:
+   - Announce the ticket ID, title, and assigned worker (e.g. `thug-1`).
+   - Confirm execution is sandboxed in a dedicated git worktree (`.worktrees/<workerId>`).
+   - Mention the command running in the background and that terminal control is returned to the user.
+3. **User Unblocking is Priority #1**: Long-running builds, test suites, and subroutines belong in background worktree processes so the developer and Lead remain in responsive dialogue.
+4. **No Synchronous Polling**: Never run synchronous polling or sleep loops waiting for workers. Check worker status when prompted by the user or upon receiving background task notifications.
 
 ### Launching, Checking & Managing Headless Workers (Runbook):
 
-#### 1. Launch a Single-Task Headless Worker:
-Execute a specific command against an assigned or next available planned ticket and exit when done:
+#### 1. One-Shot Ticket Dispatch with Fast-Yield (Recommended):
+Atomically delegate a ticket and spawn a detached background worker that yields immediately:
 ```bash
-.esedre/ese crew worker --id thug-1 --role thug --exec "npm test" --once --json
+# Autonomous AI agent worker (uses configured agentCommand or auto-detects agy/claude):
+.esedre/ese crew dispatch <ticketId> --worker thug-1 --bg
+
+# Custom agent command:
+.esedre/ese crew dispatch <ticketId> --worker thug-1 --agent-cmd "agy -p {{prompt}}" --bg
+
+# Shell command runner (e.g. test or build verification):
+.esedre/ese crew dispatch <ticketId> --worker thug-1 --exec "npm test" --bg
+```
+To automatically mark the ticket `Completed` if the command exits with code 0 (default leaves ticket `In Development` with verification notes):
+```bash
+.esedre/ese crew dispatch <ticketId> --worker thug-1 --bg --complete
 ```
 
-#### 2. Launch a Continuous Background Worker Daemon:
+#### 2. Universal Agent Configuration (Zero Vendor Lock-In):
+Configure any AI coding agent CLI, wrapper, or script once for the machine in `~/.esedre/config.json`, or per project in `.esedre/esedre.json` (project value wins). Tokens: `{{prompt}}` (quoted instruction pointing at the task file, preferred), `{{taskFile}}`, `{{ticketId}}`, `{{ticketKey}}`:
+```bash
+# Antigravity CLI:
+.esedre/ese configure set agentCommand "agy -p {{prompt}} --dangerously-skip-permissions"
+
+# Claude Code CLI:
+.esedre/ese configure set agentCommand "claude -p {{prompt}} --dangerously-skip-permissions"
+
+# Custom agent script / runner:
+.esedre/ese configure set agentCommand "node scripts/ai-worker.js --task {{taskFile}} --ticket {{ticketId}}"
+```
+
+#### 3. Launch a Targeted Single-Task Worker:
+Execute a specific command against a targeted ticket and exit when done:
+```bash
+.esedre/ese crew worker -t <ticketId> --id thug-1 --role thug --exec "npm test" --once
+```
+
+#### 4. Automatic Worktree Dependency Linking:
+When a worker sets up a git worktree (`.worktrees/<workerId>`), root `node_modules` and subproject `node_modules` (e.g. `web/node_modules`) are automatically linked via NTFS directory junctions on Windows (requiring no admin privileges) and symlinks on POSIX. Tests, builds, and linters run out-of-the-box without requiring separate `npm install` cycles inside worktrees.
+
+#### 5. Launch a Continuous Background Worker Daemon:
 Launch a polling worker in the background that continuously claims matching tickets, runs commands, and renews heartbeats:
 ```bash
 .esedre/ese crew worker --id thug-1 --role thug --poll 10
 ```
 
-#### 3. Preview Worker Ticket Selection (Dry Run):
+#### 6. Preview Worker Ticket Selection (Dry Run):
 Check which ticket a worker would claim without acquiring leases or running commands:
 ```bash
 .esedre/ese crew worker --id thug-1 --dry-run --once --json
 ```
 
-#### 4. Delegate a Ticket from Lead to Worker:
-Assign and claim a ticket directly for a specific worker:
+#### 7. Delegate a Ticket from Lead to Worker:
+Assign and claim a ticket directly for a specific worker without executing immediately:
 ```bash
 .esedre/ese crew delegate <ticketId> --worker thug-1 --role thug
 ```
 
-#### 5. Escalate a Blocked or Failed Task:
+#### 8. Escalate a Blocked or Failed Task:
 Release the active lease, reset ticket status to Planned, and post an escalation reason for the Lead:
 ```bash
 .esedre/ese crew escalate <ticketId> --reason "Unit tests failed with syntax error in auth module"
 ```
 
-#### 6. Inspect Active Leases & Fleet Status:
+#### 8. Inspect Active Leases & Fleet Status:
 ```bash
 # Check all active leases across projects
 .esedre/ese lease list --all
@@ -132,7 +190,19 @@ Release the active lease, reset ticket status to Planned, and post an escalation
 # Use tool: esedre_get_crew_status or esedre_list_leases
 ```
 
-#### 7. Review and Merge Worktree Branch:
+#### 9. Dedicated Subcommand Help Screens:
+Get detailed usage and flag references for any crew or lease subcommand:
+```bash
+.esedre/ese crew dispatch --help
+.esedre/ese crew worker --help
+.esedre/ese crew delegate --help
+.esedre/ese crew escalate --help
+.esedre/ese lease claim --help
+.esedre/ese lease release --help
+.esedre/ese lease list --help
+```
+
+#### 10. Review and Merge Worktree Branch:
 ```bash
 # Inspect changes made by worker
 git diff HEAD..thug/thug-1
