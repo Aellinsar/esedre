@@ -10,6 +10,11 @@ import {
   CreateMilestoneInput,
   UpdateMilestoneInput,
   TicketLinkRelation,
+  TicketLease,
+  ClaimLeaseInput,
+  RenewLeaseInput,
+  ReleaseLeaseInput,
+  ClaimLeaseResult,
 } from './types.js';
 import { StorageAdapter, CreateTicketInput, UpdateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './storage/adapter.js';
 import { EsedreConfig, isProjectAuthorized, EsedreAuthorizationError } from './config.js';
@@ -355,5 +360,71 @@ export class SecurityFilter implements StorageAdapter {
       }
     }
     return this.target.getAttachmentPath ? this.target.getAttachmentPath(id, filename) : null;
+  }
+
+  public async claimTicket(input: ClaimLeaseInput): Promise<ClaimLeaseResult> {
+    if (input.project && !isProjectAuthorized(input.project, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(input.project);
+    }
+    const ticket = await this.getTicket(
+      input.project && /^\d+$/.test(String(input.ticketId).trim())
+        ? `${input.project}-${input.ticketId}`
+        : input.ticketId
+    );
+    if (!ticket) {
+      throw new Error(`Ticket #${input.ticketId} not found`);
+    }
+    return this.target.claimTicket(input);
+  }
+
+  public async renewLease(input: RenewLeaseInput): Promise<TicketLease> {
+    if (input.project && !isProjectAuthorized(input.project, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(input.project);
+    }
+    const ticket = await this.getTicket(
+      input.project && /^\d+$/.test(String(input.ticketId).trim())
+        ? `${input.project}-${input.ticketId}`
+        : input.ticketId
+    );
+    if (!ticket) {
+      throw new Error(`Ticket #${input.ticketId} not found`);
+    }
+    return this.target.renewLease(input);
+  }
+
+  public async releaseTicket(
+    input: ReleaseLeaseInput
+  ): Promise<{ released: boolean; ticketKey: string; previousLease?: TicketLease }> {
+    if (input.project && !isProjectAuthorized(input.project, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(input.project);
+    }
+    const ticket = await this.getTicket(
+      input.project && /^\d+$/.test(String(input.ticketId).trim())
+        ? `${input.project}-${input.ticketId}`
+        : input.ticketId
+    );
+    if (!ticket) {
+      throw new Error(`Ticket #${input.ticketId} not found`);
+    }
+    return this.target.releaseTicket(input);
+  }
+
+  public async getTicketLease(id: number | string, projectCode?: string): Promise<TicketLease | null> {
+    if (projectCode && !isProjectAuthorized(projectCode, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(projectCode);
+    }
+    const ticket = await this.getTicket(
+      projectCode && /^\d+$/.test(String(id).trim()) ? `${projectCode}-${id}` : id
+    );
+    if (!ticket) return null;
+    return this.target.getTicketLease(id, projectCode);
+  }
+
+  public async listLeases(projectCode?: string): Promise<TicketLease[]> {
+    if (projectCode && projectCode !== 'all' && !isProjectAuthorized(projectCode, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(projectCode);
+    }
+    const allLeases = await this.target.listLeases(projectCode);
+    return allLeases.filter((l) => isProjectAuthorized(l.project, this.config.allowedProjects));
   }
 }

@@ -279,6 +279,23 @@ export interface TicketMeta {
   sha1?: string;
   links?: TicketLink[];
   isBlocked?: boolean;
+  lease?: TicketLease | null;
+}
+
+export interface TicketLease {
+  ticketId: number;
+  ticketKey: string;
+  project: string;
+  holder: string;
+  agentType?: string;
+  hostname?: string;
+  sessionId?: string;
+  branch?: string;
+  worktree?: string;
+  claimedAt: string;
+  renewedAt: string;
+  expiresAt: string;
+  ttlMinutes: number;
 }
 
 export interface TicketComment {
@@ -349,6 +366,7 @@ export interface PlannedFeature {
   sha1?: string;
   links?: EnrichedTicketLink[];
   isBlocked?: boolean;
+  lease?: TicketLease | null;
 }
 
 export const KNOWN_FEATURE_FLAGS: readonly string[] = [] as const;

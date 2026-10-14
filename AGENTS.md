@@ -1,6 +1,6 @@
 # Agent Guidelines & Operating Instructions: Esedre
 
-> **Environment Notice**: `esedre` is managed within **Google Antigravity**. Antigravity discovers and loads skills from `.agents/skills/` and instructions from this `AGENTS.md`.
+> **Environment Notice**: `esedre` is managed within **Google Antigravity**. Antigravity discovers and loads skills from `.agents/skills/` and instructions from this `AGENTS.md`. Keep this file under the **24,000-byte (24 KB)** agent rule limit by placing deep-dive subsystem references in `.agents/skills/`.
 
 ---
 
@@ -15,405 +15,173 @@
 
 ## 2. Per-Project Sequential Numbering & Case-Remembering Convention
 
+> **Detailed Reference**: See [esedre_storage_engine](.agents/skills/esedre_storage_engine/SKILL.md) and [esedre_cli_development](.agents/skills/esedre_cli_development/SKILL.md).
+
 1. **Per-Project Numbering Space (Starts at #1)**:
-   - Ticket numbers are sequential per project (e.g. `Profe-1..105`, `Esedre-1..8`, `Alce-1..`).
-   - Every newly created project begins its tickets at ID `#1`.
-
+   - Ticket numbers are sequential per project (e.g. `Profe-1..105`, `Esedre-1..69`, `Alce-1..`). Every newly created project begins its tickets at ID `#1`.
 2. **Addressing & Formatting Convention**:
-   - **Cross-Project & All-Projects View**: Formatted with the project code prefix: `<ProjectCode>-<id>` (e.g. `Prof-35`, `Esedre-1`, `Alce-1`).
-   - **Project-Scoped View**: Inside a single project view or CLI run with `--project <Code>`, formatted as `#<id>` (e.g. `#35`, `#1`).
-   - **CLI & MCP Tool Lookups**: The CLI (`ese get`, `ese plan`, `ese update`, `ese comment`, `ese create`) and MCP tools accept both prefixed keys (`ese get Prof-35`, `ese get Esedre-1`) and numeric IDs (`ese get 1 --project Esedre`, or `ese get 1` when scoped to the active workspace project).
-
+   - **Cross-Project & All-Projects View**: `<ProjectCode>-<id>` (e.g. `Prof-35`, `Esedre-1`).
+   - **Project-Scoped View**: `#<id>` (e.g. `#35`, `#1`).
+   - **CLI & MCP Lookups**: Accept both prefixed keys (`ese get Esedre-1`) and numeric IDs (`ese get 1 --project Esedre` or `ese get 1` when scoped to the active project).
 3. **Case-Remembering Casing & Case-Insensitive Matching Invariant**:
-   - **Case-Remembering on Registration & Storage**: Project codes are up to 8 alphanumeric characters (`^[a-zA-Z0-9]{1,8}$`). The original casing provided at project registration (e.g. `Personal`, `Esedre`, `Prof`) is canonical. Storage directories (e.g. `projects/Personal/`) and metadata manifests (`project.json`, `projects.json`, `meta.json`) permanently preserve this canonical casing. Re-registering or configuring a project preserves the existing remembered casing instead of overwriting it with different casing. Ticket metadata (`meta.project`) always stamps the canonical remembered casing.
-   - **Case-Insensitive on Lookups, Matching & Security**: All ticket lookups, project queries, CLI arguments, MCP tool calls, filters, and Agent Project Allow-List checks (`allowedProjects`) are strictly case-insensitive. Lookups such as `ese get personal-1`, `ese get PERSONAL-1`, and `ese get Personal-1` resolve identically to ticket `#1` in `Personal`.
-   - **Linux & Cross-Platform Filesystem Normalization**: When resolving project directories on disk, the storage engine inspects existing entries in `projects/` case-insensitively and reuses the existing directory name. This prevents creating split duplicate directories (e.g. `projects/Personal/` vs `projects/personal/`) on case-sensitive filesystems like Linux ext4/XFS and Docker containers.
+   - **Registration & Storage**: Project codes are 1-8 alphanumeric characters (`^[a-zA-Z0-9]{1,8}$`). The original casing provided at registration (e.g. `Personal`, `Esedre`, `Prof`) is canonical and preserved in `projects/<Code>/`, `project.json`, `projects.json`, and `meta.project`.
+   - **Lookups & Security**: All lookups, CLI flags, MCP calls, filters, and `allowedProjects` checks are strictly case-insensitive (`personal-1`, `PERSONAL-1`, and `Personal-1` resolve identically).
+   - **Cross-Platform Filesystem Normalization**: Storage resolution inspects existing entries in `projects/` case-insensitively and reuses the existing directory name to prevent duplicate directories on Linux ext4/XFS and Docker.
 
 ---
 
-## 3. Multi-Topology Storage Resolution
+## 3. Multi-Topology Storage Resolution & Ingress Hierarchy
 
-The storage engine (`FilesystemStorageAdapter`) dynamically resolves tickets across 6 supported topology patterns:
+> **Detailed Reference**: See [esedre_storage_engine](.agents/skills/esedre_storage_engine/SKILL.md) and [esedre](.agents/skills/esedre/SKILL.md).
 
-1. **Single Hub Topology**:
-   - `dataDir: "../esedre-data"` points to a dedicated ticket repository structured as `projects/<ProjectCode>/tickets/<id>/` and `project.json`.
-2. **In-Repo Standalone Topology**:
-   - Tickets reside locally within the project repository under `.esedre/tickets/<id>/`.
-3. **Multi-Hub Topology**:
-   - `dataDir: ["../team-hub", "../shared-hub"]` scans and aggregates multiple hub repositories.
-4. **Disparate Multi-Repo Federation Topology**:
-   - `projects: { "Core": "../core-engine", "Web": "../frontend-app" }` maps independent project repositories into a unified view.
-5. **Hybrid Topology**:
-   - Combines `dataDir` hubs and `projects` federated paths, enabling personal ticket hubs and shared repositories to be managed side-by-side in one local runner.
-6. **Monorepo / In-Workspace Hub Topology**:
-   - When `dataDir` is omitted, the storage adapter automatically auto-discovers a `projects/` directory containing projects directly at `workspaceRoot` (or `./data`, `./.esedre`), enabling monorepos and ticket hubs to function out-of-the-box with zero configuration.
-7. **Zero-Latency Snapshot Projection & Authoritative Ingress Hierarchy**:
-   - Each project repository running Esedre maintains an authoritative read-only projection at `.esedre/snapshot.json`.
-   - Agents interacting with tickets MUST strictly adhere to this positive access hierarchy:
-     1. **Primary Read-Only Inspection**: Always check `.esedre/snapshot.json` in the workspace root first. It provides an immediate, zero-latency projection of all active and completed tickets, summaries, implementation plans, and revision hashes without network calls.
-     2. **Dynamic Lookups & Mutations (MCP)**: Use Esedre MCP tools (`esedre_list_tickets`, `esedre_get_ticket`, `esedre_get_plan`, `esedre_save_plan`, `esedre_create_ticket`, `esedre_update_ticket`, `esedre_link_ticket`, `esedre_unlink_ticket`, `esedre_list_milestones`, `esedre_get_milestone`, `esedre_create_milestone`, `esedre_update_milestone`, `esedre_add_comment`) when MCP is active in the session.
-     3. **CLI Ingress**: Use `.esedre/ese` or global `ese` (`ese get`, `ese plan`, `ese update`, `ese comment`, `ese create`, `ese link`, `ese unlink`, `ese milestone`, `ese snapshot`, `ese refresh`) for terminal workflows.
-     4. **Storage Boundary**: Registered data hubs (such as `esedre-data`) represent backing storage for the engine. Agent ticket discovery and management strictly flows through the snapshot projection, MCP tools, or the `ese` CLI.
+`FilesystemStorageAdapter` resolves tickets across 6 supported topologies:
+1. **Single Hub**: `dataDir: "../esedre-data"` (`projects/<ProjectCode>/tickets/<id>/` and `project.json`).
+2. **In-Repo Standalone**: `.esedre/tickets/<id>/` inside the project repository.
+3. **Multi-Hub**: `dataDir: ["../team-hub", "../shared-hub"]`.
+4. **Disparate Multi-Repo Federation**: `projects: { "Core": "../core-engine", "Web": "../frontend-app" }`.
+5. **Hybrid**: Combines `dataDir` hubs and `projects` federated paths.
+6. **Monorepo / In-Workspace Hub**: Auto-discovers `projects/` at `workspaceRoot`, `./data`, or `./.esedre` when `dataDir` is omitted.
+
+**Authoritative Ingress Hierarchy (Zero-Latency Snapshot First)**:
+1. **Primary Read-Only Inspection**: Always check `.esedre/snapshot.json` in the workspace root first for zero-latency access to all tickets, summaries, plans, and revision hashes.
+2. **Dynamic Lookups & Mutations (MCP)**: Use Esedre MCP tools (`esedre_list_tickets`, `esedre_get_ticket`, `esedre_get_plan`, `esedre_save_plan`, `esedre_create_ticket`, `esedre_update_ticket`, `esedre_claim_ticket`, `esedre_renew_lease`, `esedre_release_ticket`, `esedre_list_leases`, `esedre_link_ticket`, `esedre_unlink_ticket`, `esedre_list_milestones`, `esedre_get_milestone`, `esedre_create_milestone`, `esedre_update_milestone`, `esedre_add_comment`) when MCP is active.
+3. **CLI Ingress**: Use `.esedre/ese` or global `ese` (`get`, `list`, `plan`, `update`, `comment`, `create`, `lease`, `link`, `unlink`, `milestone`, `snapshot`, `refresh`).
+4. **Storage Boundary**: Backing hubs (`esedre-data`) are managed strictly through the snapshot projection, MCP tools, or `ese` CLI.
 
 ---
 
 ## 4. STRICT BAN ON YAML FOR CONFIGURATION & DATA (ZERO EXCEPTIONS)
 
-- **ABSOLUTE BAN ON YAML FOR DATA & SETTINGS**: All configuration files, settings, project descriptors, manifests, tickets, metadata, plans, and comments MUST strictly use standard JSON or Markdown format (`esedre.json`, `projects.json`, `meta.json`, `comments.json`, `detail.md`).
-- **Config Discovery**: The configuration file is strictly named `esedre.json` (never `esedre.yml` or `esedre.yaml`).
-- **Cloudflare Tunnel Invariant**: Only the lower-level `tools/tunnel/config.yml` for the `cloudflared` binary is exempt, matching Cloudflare's mandatory binary format.
+- **ABSOLUTE BAN ON YAML FOR DATA & SETTINGS**: All configuration files, settings, project descriptors, manifests, tickets, metadata, plans, and comments MUST strictly use JSON or Markdown (`esedre.json`, `projects.json`, `meta.json`, `comments.json`, `detail.md`).
+- **Config Discovery**: Strictly named `esedre.json` (never `esedre.yml` or `esedre.yaml`).
+- **Cloudflare Tunnel Exception**: Only `tools/tunnel/config.yml` for the `cloudflared` binary is exempt.
 
 ---
 
 ## 5. Git Execution Rules
 
-1. **Use `--no-pager` for Git Commands**
-   - Always run Git commands (such as `git diff`, `git log`, etc.) with `--no-pager` (or `-c core.pager=cat`) to prevent terminal pagers (`less`) from blocking/hanging in non-interactive tool shells.
+> **Detailed Reference**: See [git_branching_and_release_workflow](.agents/skills/git_branching_and_release_workflow/SKILL.md).
 
-2. **Explicit Authorization Required for Commit and Push (Zero Exceptions)**
+1. **Use `--no-pager` for Git Commands**: Always pass `--no-pager` (or `-c core.pager=cat`) to `git diff`, `git log`, etc.
+2. **Explicit Authorization Required for Commit and Push (Zero Exceptions)**:
    - **NEVER** perform `git add`, `git commit`, or `git push` without direct, explicit instructions from the user in that specific turn.
-   - Automatically staging, committing, or pushing code is strictly prohibited.
-
-3. **Zero Turn-to-Turn Carryover for Commit/Push**
-   - An explicit instruction to commit or push in one turn **DOES NOT CARRY OVER** to subsequent turns or tasks. Each commit/push action requires a separate, explicit command.
-
-4. **Git Branching Strategy (`release/upcoming`), Child Branches & PR Standards**
-   - **Central Integration Trunk (`release/upcoming`)**:
-     - `release/upcoming` is the primary active integration and staging branch across development cycles.
-     - All new ticket, feature, and fix branches MUST branch directly off `release/upcoming` (never directly off `main`).
-   - **Dedicated Ticket Child Branches**:
-     - Whenever starting work on or tackling a ticket, agents and developers MUST create and switch to a dedicated child branch off `release/upcoming` (e.g. `ticket/<ProjectCode>-<id>-<slug>`, `feature/<ticketId>-<slug>`, or `fix/<ticketId>-<slug>`) before making code modifications or commits. Never commit or work directly on `main` or directly on `release/upcoming`.
-   - **Ticket Completion & Merge into `release/upcoming`**:
-     - Once a ticket's implementation is verified (`npm test`, `npm run build`, `npm run lint`) and explicitly approved by the user, the child branch merges cleanly back into `release/upcoming`.
-     - Multiple completed tickets and features accumulate on `release/upcoming` throughout the development milestone.
-   - **Main Branch Lockdown & Release PR Requirement (`release/upcoming` -> `main`)**:
-     - Production releases are promoted from `release/upcoming` into `main` exclusively via pull requests. Direct merges into `main` or direct pushes to `origin/main` are strictly forbidden.
-   - **Pull Request Titles & Formatting (Clean High-Level Human Descriptions)**:
-     - Always write clean, high-level, human-readable PR titles summarizing the release version, primary features, and referenced ticket numbers (e.g. `v0.4.0: Support File and Detail in Ticket Updates (#49)`).
-     - Conventional commit prefixes (such as `feat(...)`, `fix(...)`, `chore(...)`) are strictly prohibited in PR titles. Keep PR titles descriptive and professional for easy review.
-   - **Post-Release Alignment (`main` -> `release/upcoming`)**:
-     - Immediately following the merge of a release PR into `main`, merge `main` back into `release/upcoming` (or pull/rebase) so that active development stays cleanly aligned with the latest production baseline. Consult [.agents/skills/git_branching_and_release_workflow/SKILL.md](.agents/skills/git_branching_and_release_workflow/SKILL.md).
-
-5. **Clean Human Commit Message Standards (`[#<ticket>] <Action Summary>`)**
-   - **Strict Ban on Conventional Commit Prefixes**: Conventional commit prefixes (such as `feat:`, `feat(...)`, `fix:`, `fix(...)`, `chore:`, `chore(...)`, `style:`, `refactor:`, etc.) are STRICTLY PROHIBITED in commit messages.
-   - **Ticket Anchor Format**: All commits associated with a ticket or issue MUST anchor with the ticket ID in square brackets, followed by a concise, imperative action summary starting with a capitalized verb:
-     - `[#<id>] <Imperative Action Summary>` (e.g. `[#49] Support file and detail specification updates in CLI and MCP`)
-     - For cross-project commits: `[#<ProjectCode>-<id>] <Imperative Action Summary>` (e.g. `[#Esedre-49] Support file and detail specification updates in CLI and MCP`)
-   - **Non-Ticket Commits**: For general maintenance, documentation, or infrastructure not tied to an active ticket, use a clean domain anchor in square brackets:
-     - `[Docs] <Imperative Summary>` (e.g. `[Docs] Codify release/upcoming branching and commit naming standards`)
-     - `[Infra] <Imperative Summary>` (e.g. `[Infra] Configure dev tunnel hosts and allowed hosts`)
-     - `[Release] <Imperative Summary>` (e.g. `[Release] Bump version to v1.2.0 and update changelog`)
-   - **Imperative Voice & Capitalization**: Always use the imperative present tense (`Support`, `Add`, `Fix`, `Refactor`, `Update`, `Optimize`), never past tense (`Supported`, `Added`, `Fixed`).
-   - **Zero Em Dashes**: Never use em dashes anywhere in commit titles or descriptions.
-
-6. **Mandatory Scope Clarification in Multi-Project Workspaces**
-   - In a multi-project workspace, if there is ANY ambiguity regarding which repositories, projects, or modified files are intended to be committed or pushed, you MUST ask the user for explicit clarification before staging, committing, or pushing.
-   - Never assume all modified repositories or workspaces should be committed or pushed together. Erroneous commits or pushes across projects are strictly prohibited.
-
-7. **Mandatory Documentation Currency Pre-Flight Check (Zero Stale Docs)**
-   - Whenever the user mentions commit, push, or package publishing, you are STRICTLY REQUIRED to halt and double-check all Esedre documentation: `README.md`, `AGENTS.md`, and the agent skills in `.agents/skills/`.
-   - **Expected Behavior (Halt & Warn, Never Silent Auto-Changes)**:
-     - If ANY documentation is stale, out-of-date, or missing newly added commands, flags, schema fields, or architectural invariants, you MUST **HALT** and **WARN** the user of the stale documentation, explicitly presenting the suggested fixes.
-     - You are STRICTLY FORBIDDEN from automatically changing files or silently bundling unreviewed doc edits into the commit to hide the issue.
-     - Wait for explicit user review and approval of the proposed documentation updates before proceeding to stage, commit, push, or publish.
+   - Zero turn-to-turn carryover for commit or push authorization.
+3. **Git Branching Strategy (`release/upcoming`) & Ticket Child Branches**:
+   - `release/upcoming` is the central integration and staging branch.
+   - Always create and switch to a dedicated child branch off `release/upcoming` (`ticket/<ProjectCode>-<id>-<slug>`, `feature/<ticketId>-<slug>`, or `fix/<ticketId>-<slug>`) before making code modifications or commits. Never work or commit directly on `main` or `release/upcoming`.
+   - Once verified (`npm test`, `npm run build`, `npm run lint`) and approved by the user, merge the child branch back into `release/upcoming`.
+   - Production releases promote from `release/upcoming` into `main` exclusively via Pull Requests with clean human titles (e.g. `v0.4.0: Support File and Detail in Ticket Updates (#49)`), followed by merging `main` back into `release/upcoming`.
+4. **Clean Human Commit Message Standards (`[#<ticket>] <Action Summary>`)**:
+   - **Strict Ban on Conventional Commit Prefixes**: `feat:`, `fix:`, `chore:`, `refactor:`, etc. are strictly prohibited in commit messages and PR titles.
+   - **Ticket Anchor Format**: `[#<id>] <Imperative Action Summary>` (e.g. `[#49] Support file and detail specification updates in CLI and MCP`) or `[#<ProjectCode>-<id>] <Imperative Action Summary>`.
+   - **Non-Ticket Commits**: Use `[Docs]`, `[Infra]`, or `[Release]` followed by an imperative summary.
+   - **Style**: Always use imperative present tense (`Support`, `Add`, `Fix`, `Refactor`, `Update`) and zero em dashes.
+5. **Mandatory Scope Clarification in Multi-Project Workspaces**:
+   - If there is any ambiguity regarding which repositories or files are intended to be committed or pushed across `esedre`, `esedre-data`, or `esedre-web`, ask the user for explicit clarification first.
+6. **Mandatory Documentation Currency Pre-Flight Check (Zero Stale Docs)**:
+   - Whenever the user mentions commit, push, or package publishing, halt and verify `README.md`, `AGENTS.md`, and `.agents/skills/`. If any documentation is stale or missing new commands/flags/invariants, **HALT** and **WARN** the user with suggested fixes before staging or committing.
 
 ---
 
 ## 6. Multi-Project Agent Isolation & Two-Tier Configuration
 
-1. **Two-Tier Configuration Hierarchy (Global vs Workspace)**:
-   - **Central Global Config (`~/.esedre/config.json`)**: Defines the central standalone portfolio configuration, including registered data hubs (`dataDir`), linked external repositories (`projects`), and default port (5674). Managed via `ese configure`.
-   - **Workspace Local Config (`.esedre/esedre.json`)**: Declares the active repository's local identity (`projectCode`) and authorized access scope (`allowedProjects`). Initialized via `ese init`.
-   - **Upward Resolution & Merging**: The CLI and MCP server crawl upward from `cwd` for `.esedre/esedre.json`. Local workspace settings take precedence, while infrastructure defaults (`dataDir`, `projects`, `port`) automatically inherit from `~/.esedre/config.json` when omitted locally. Outside any workspace, the central global configuration is used directly.
-   - **Smart `dataDir` Hoisting & Inheritance**: When `dataDir` is omitted in `.esedre/esedre.json`, the configuration loader verifies whether the central `dataDir` in `~/.esedre/config.json` contains the workspace's target project before inheriting it (`hubContainsProject`). This hoists machine-specific data hub paths out of project repositories while keeping in-repo standalone projects (Topology 2) isolated. Explicit local overrides in `.esedre/esedre.json` are always respected.
+> **Detailed Reference**: See [esedre_security_and_allowlist](.agents/skills/esedre_security_and_allowlist/SKILL.md).
 
-2. **Command Inventory: `ese init`, `ese configure`, `ese upgrade`, `ese rename-project`, and `ese project set`**:
-   - `ese init [path]`: Brings a project repository online (creates `.esedre/esedre.json`, wrappers, initial snapshot) or bootstraps a data hub repository (`ese init --hub`). Also supports workspaceless or data hub-targeted project creation via `ese init --project <Code> [--name <Name>] [--hub <hub>]`. When a single `dataDir` is configured, `--hub` is automatically resolved; when multiple hubs are configured, `--hub` disambiguates the target hub by directory basename or path without overwriting existing workspace configurations. Normal repository initialization does not stamp `dataDir` into `.esedre/esedre.json` unless the hub is a subdirectory within the project repository (e.g. monorepo subfolder or in-workspace hub) or explicitly passed via `--data-dir`.
-   - `ese configure`: Inspects and mutates the central configuration in `~/.esedre/config.json` (`ese configure add <path>`, `ese configure remove <target>`, `ese configure set <k> <v>`).
-   - `ese upgrade [<path>] [--all|-a] [--force|-f]`: Upgrades workspace configuration schema, in-repo wrappers, and agent skills. Pass `--all` (`-a`) to automatically discover, upgrade wrappers, and refresh snapshots across all registered projects in `~/.esedre/config.json`.
-   - `ese rename-project <oldCode> <newCode> [--name "<name>"]`: Renames a project code across directory storage paths, manifests, and tickets, with validation against registered codes.
-   - `ese project set <code> [--name "<name>"]`: Updates project metadata such as display name.
-
-3. **Multi-Project Agent Isolation (Zero Cross-Project Leaks)**:
-   - Each agent or tool execution is strictly informed and scoped only to the projects declared in its workspace's `allowedProjects`. Neither the CLI tool nor the MCP server may expose, list, query, create, update, or mutate tickets, plans, or comments belonging to projects outside `allowedProjects`.
-    - Unauthorized requests MUST throw `EsedreAuthorizationError` immediately:
-      - **MCP Protocol**: Caught and returned as standard JSON-RPC 2.0 error code `-32603` with message `Access Denied: Project '<code>' is outside this workspace's authorized scope.`
-      - **CLI Tool**: Exits cleanly with status code `1` and prints `Access Denied: ...`.
-      - **REST API**: Returns standard HTTP status code `403 Forbidden` with `{ "error": "Access Denied: ..." }`.
-    - Wildcard `"*"` in `allowedProjects` permits all registered projects (used in multi-project umbrella workspaces or administrative environments).
-
-4. **Approved Terminology: "Agent Project Allow-List" (Strictly NO "Firewall")**:
-   - The term "Firewall" is **NOT** approved terminology anywhere in documentation, descriptions, CLI output, commit messages, or code comments.
-   - Strictly use: **"Agent Project Allow-List, providing isolation of projects planning that you don't want an agent to access"** (or concise forms like "Agent Project Allow-List" and "Multi-Project Agent Isolation").
+1. **Two-Tier Configuration Hierarchy**:
+   - **Central Global Config (`~/.esedre/config.json`)**: Portfolio hubs (`dataDir`), linked repositories (`projects`), and default port (`5674`), managed via `ese configure`.
+   - **Workspace Local Config (`.esedre/esedre.json`)**: Local `projectCode` and `allowedProjects`, initialized via `ese init`.
+   - **Smart `dataDir` Hoisting**: When `dataDir` is omitted locally, the loader checks whether `~/.esedre/config.json`'s `dataDir` contains the workspace's project (`hubContainsProject`) before inheriting it, keeping machine paths out of repo configs while preserving standalone in-repo projects.
+2. **Configuration & Upgrade Commands**:
+   - `ese init [path]`: Initializes a workspace, data hub (`--hub`), or hub project (`--project <Code> [--name <Name>] [--hub <hub>]`).
+   - `ese configure`: Manages `~/.esedre/config.json` (`add`, `remove`, `set`).
+   - `ese upgrade [<path>] [--all|-a] [--force|-f]`: Upgrades workspace config schema, wrappers, MCP config, and `.agents/skills/esedre/SKILL.md` (with warnings if `AGENTS.md` or `GEMINI.md` exceeds 24,000 bytes).
+   - `ese rename-project <oldCode> <newCode> [--name "<name>"]` and `ese project set <code> [--name "<name>"]`.
+3. **Multi-Project Agent Isolation (`allowedProjects`)**:
+   - Agents are strictly scoped to projects in `.esedre/esedre.json`'s `allowedProjects` (or `"*"` for umbrella workspaces).
+   - Unauthorized requests throw `EsedreAuthorizationError` immediately (MCP `-32603`, CLI exit `1`, REST `403 Forbidden`).
+4. **Approved Terminology**: Strictly use **"Agent Project Allow-List"** or **"Multi-Project Agent Isolation"**. Never use the word "Firewall".
 
 ---
 
 ## 7. Build, Testing & Quality Standards
 
-1. **Mandatory Build & Lint Verification (ZERO EXCEPTIONS)**:
-   - **SUPER DAMN REQUIRED**: You are STRICTLY AND ABSOLUTELY REQUIRED to run `npm test` and `npm run build` ALWAYS, ANY TIME you modify code or configuration.
-   - Run `npm run build:cli` to produce `dist/esedre.mjs` and `dist/web/embed.js`.
-   - Run `npm run build:ui` to compile the standalone React 19 web application into `dist/web/`.
-   - Run `npm run build` for full verification (linting + CLI build + UI build). Confirm zero compilation, syntax, type, or unreferenced symbol errors.
+> **Detailed Reference**: See [esedre_testing_and_verification](.agents/skills/esedre_testing_and_verification/SKILL.md).
 
-2. **Mandatory Vitest Test Suite & Headless Verification**:
-   - Run `npm test` (`npx vitest run`) on every code modification.
-   - All tests in `tests/` must pass cleanly (covering config discovery, storage adapter, multi-topology storage, agent project allow-list isolation, MCP protocol, and CLI execution).
-   - Proactively use headless testing scripts and unit tests in `tests/` for logic verification.
-
-3. **Assertion Integrity & Zero Silent Test Weakening**:
-   - **Zero Silent Test Weakening**: Never weaken, delete, comment out, or relax unit test assertions. Diagnose the root cause and fix the implementation in the source code.
-   - Proactively add and maintain unit tests for text and configuration parsing, multi-topology resolution, optimistic concurrency, and storage boundaries.
-
-4. **Mandatory Unit Tests for Black-Boxable Logic**:
-   - Write Vitest unit tests for all properly black-boxable domain logic, storage adapters, configuration crawlers, schema validators, path resolvers, and MCP/CLI argument handlers.
-
-5. **Mandatory Root Cause Analysis Invariant**:
-   - You MUST perform deep architectural root-cause diagnosis before modifying any code.
-   - Never apply superficial band-aids, trial-and-error string tweaks, or downstream regex patches.
-   - When unit tests fail, NEVER weaken or modify test assertions to force a pass; diagnose why the implementation failed and fix the root cause in the source code.
-
-6. **Strict Ban on Autonomous Browser / UI Testing ("I'll Do UI Testing Unless I Say Otherwise")**:
-   - **STRICTLY GET OUT OF THE UI UNLESS DIRECTED**: NEVER launch browser subagents, Chrome DevTools MCP sessions, or open/navigate browser URLs for UI testing/verification unless the user explicitly and directly commands you to do so in that specific turn. The developer will conduct UI verification manually unless they instruct otherwise.
-   - Do NOT perform autonomous visual checks, browser recordings, or UI inspection on your own initiative.
-
-7. **Local Dev & Cloudflare Tunnel Workflows**:
-   - `npm run dev`: Runs local Vite development server on port 5674.
-   - `npm run net`: Cloudflare tunnel targeting port 5674 with dynamic tunnel host resolution (via local gitignored `tools/tunnel/config.yml` or `ESEDRE_TUNNEL_HOST`) and IP whitelist protection.
-   - `npm run net:all`: Public open tunnel mode for external access.
-   - **Vite `server.allowedHosts`**: Configured in `vite.config.ts` dynamically from local `tools/tunnel/config.yml` or `process.env.ESEDRE_ALLOWED_HOSTS` alongside `localhost` and `127.0.0.1` to prevent Vite 6/8 host header rejection (`403 Forbidden`).
-   - **Tunnel Configuration Template**: `tools/tunnel/config.yml` is gitignored to protect private tunnel credentials and endpoints. `tools/tunnel/config.yml.example` provides the committed reference template.
-   - **Global `--config` Flag Order**: In `cloudflared`, `--config` must precede the subcommand: `cloudflared --config tools/tunnel/config.yml tunnel run ...`.
-   - **Remote vs Local Ingress Configuration**: Tunnels created or managed in the Cloudflare Zero Trust dashboard receive ingress configuration remotely, overriding local `config.yml`. When routing new hostnames (`cloudflared tunnel route dns`), remote ingress configuration must be updated via Cloudflare API (`PUT /accounts/:id/cfd_tunnel/:id/configurations`) or the Zero Trust dashboard.
-   - **Multi-Layer Zero-Crawl & Anti-Indexing Invariant**: All dev tunnel responses are strictly protected against search engine and AI spider cataloging via edge-level Cloudflare rules ('Dev Tunnels - Noindex Header'), local Vite `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex`, virtual `GET /robots.txt` (`Disallow: /`), virtual 404s for sitemaps, and dev HTML meta tag injection.
-
-
-8. **Smart Release & Package Publishing Workflow (`npm run pub`)**:
-   - **Publishing Command**: Always use `npm run pub` (or `npm run pub -- <args>`) instead of bare `npm publish`.
-   - **Upfront Auth Pre-Check**: `scripts/publish.js` runs a fast `npm whoami` check (~100ms) before invoking any builds or tests.
-   - **Upfront Published Version Collision Guard**: `scripts/publish.js` queries `npm view <package>@<version> version` upfront (~150ms). If the package version in `package.json` is already published on the registry, it halts immediately with code 1 before running builds or tests, preventing `E403` collision errors.
-   - **Auto-Login**: If unauthenticated, it automatically launches an interactive `npm login` prompt in local terminal sessions instead of waiting through minutes of compilation only to fail with a registry 404/403.
-   - **Lifecycle Chain**: Once authenticated, it triggers `prepublishOnly` (`npm run lint`, `npm run test`, `npm run build`) and publishes with `--access public`.
-   - **Strict Agent Invariant (Dry Run Only & Version Collision Check)**: Autonomous LLM coding agents are STRICTLY FORBIDDEN from executing live package publication (`npm run pub` or `npm publish`). Agents may ONLY run dry run verification (`npm run pub -- --dry-run`). Live package publishing to the npm registry is exclusively executed manually by the human developer. Before suggesting a publish command to the user or running release verification, agents MUST check published registry versions (`npm view <package> versions --json`) to verify that the version in `package.json` has been properly bumped to prevent collision (`E403`).
-
-9. **Trailing Newline at EOF**:
-   - All code, JSON, Markdown, and config files must end with a single trailing newline (`\n`).
-
-10. **First-Class Antigravity Tool Usage Over Scripting (No Ad-Hoc Scripts for Simple Edits)**:
-   - You MUST strictly prioritize and use proper first-class Antigravity tools (`replace_file_content`, `multi_replace_file_content`, `write_to_file`, `view_file`, `grep_search`) whenever available and reasonable for code and file modifications.
-   - NEVER execute ad-hoc Node, Python, or PowerShell scripts/one-liners (e.g. `node -e "fs.writeFileSync(...)"` or temporary scratch scripts) for simple edits, 1-line changes, or file replacements.
-   - Scripting is strictly reserved for tasks where it is genuinely beneficial, such as bulk migrations, repo-wide codemods, or complex data transformations.
+1. **Mandatory Build & Test Verification (Zero Exceptions)**:
+   - **SUPER DAMN REQUIRED**: Always run `npm test` and `npm run build` (`npm run lint` + `npm run build:ui` + `npm run build:cli`) any time you modify code or configuration. Confirm zero TypeScript, lint, or test errors.
+2. **Assertion Integrity & Root Cause Analysis**:
+   - **Zero Silent Test Weakening**: Never weaken, delete, or relax unit test assertions to force a pass.
+   - **Root Cause Analysis**: Diagnose bugs at their architectural source; never apply superficial band-aids or regex hacks.
+   - Write Vitest unit tests in `tests/` for all black-boxable domain, storage, config, CLI, and MCP logic.
+3. **Strict Ban on Autonomous Browser / UI Testing**:
+   - **STRICTLY GET OUT OF THE UI UNLESS DIRECTED**: Never launch browser subagents, Chrome DevTools MCP sessions, or open browser URLs unless the user explicitly commands you to do so in that specific turn.
+4. **Local Dev & Cloudflare Tunnel Workflows**:
+   - `npm run dev` (local Vite on port 5674), `npm run net` (IP-whitelisted Cloudflare tunnel), `npm run net:all` (open tunnel).
+   - `tools/tunnel/config.yml` is gitignored (`tools/tunnel/config.yml.example` is the template). In `cloudflared`, `--config` must precede `tunnel run`. All dev tunnel responses enforce `X-Robots-Tag: noindex, nofollow` and `robots.txt` `Disallow: /`.
+5. **Smart Release & Package Publishing (`npm run pub`)**:
+   - Always use `npm run pub` (which checks `npm whoami` and published registry versions before building).
+   - **Strict Agent Invariant**: Agents are **STRICTLY FORBIDDEN** from running live `npm run pub` or `npm publish`; agents may ONLY run `npm run pub -- --dry-run` and must check `npm view esedre versions --json` first to prevent version collisions (`E403`).
+   - Keep `version` synchronized across `package.json`, `package-lock.json`, and `src/types.ts` (`CURRENT_ESEDRE_VERSION`).
+6. **File Editing & Formatting Hygiene**:
+   - Strictly use first-class tools (`replace_file_content`, `write_to_file`, `view_file`) instead of ad-hoc one-liner scripts for normal edits.
+   - Never use `view_file` on protected `.git/*` paths; run single, unchained shell commands so prefix allowlists work cleanly.
+   - Every file must end with a single trailing newline (`\n`).
 
 ---
 
-## 8. Daemon Lifecycle, Process Detachment & Gateway Topology
+## 8. Daemon Lifecycle, Schema, Linking, UI & Wrapper Invariants
 
-1. **Gateway Port Topology**:
-   - **Unified Gateway**: Port 5674 (default) routes public traffic:
-     - `/app` $\rightarrow$ internal Web UI server (port 5675)
-     - `/api` $\rightarrow$ internal REST API server (port 5676)
-     - `/` $\rightarrow$ transparent rewrite to `/app/`
-     - Query parameters: `project=all` (portfolio overview) or `project=<Code>` (scoped view).
+> **Detailed Reference**:
+> - Daemon, Gateway & Embedded Theme Contract: [esedre_daemon_and_gateway](.agents/skills/esedre_daemon_and_gateway/SKILL.md)
+> - Storage Schema, Milestones, Linking & Leases: [esedre_storage_engine](.agents/skills/esedre_storage_engine/SKILL.md)
+> - CLI Flags, Commands & Windows Wrappers: [esedre_cli_development](.agents/skills/esedre_cli_development/SKILL.md)
+> - MCP Server & JSON-RPC Tools: [esedre_mcp_development](.agents/skills/esedre_mcp_development/SKILL.md)
 
-2. **Server Lifecycle Commands (`ese start` / `ese stop` / `ese status` / `ese logs`)**:
-   - Clean top-level commands without verbose subcommands:
-     - `ese start`: Starts the background server and web UI daemon (default port 5674).
-     - `ese start --foreground` (or `-f`): Runs server in foreground (blocks terminal, Ctrl+C to stop).
-     - `ese stop`: Shuts down the running background server daemon.
-     - `ese status`: Checks health, PID, uptime, and diagnostics.
-     - `ese logs`: Tails recent server output logs.
-   - **Gateway Portfolio Storage Decoupling**: The background server and gateway cluster (`ese start`) instantiate unconstrained portfolio storage. This guarantees the developer Web UI has complete visibility across all registered data hubs and projects, regardless of the folder from which the server was launched.
-   - **Dynamic Filesystem & Configuration Reloading**: The storage engine polls configuration and project manifests with a 3-second TTL (`ensureFreshConfig`), ensuring external data hubs and projects update in real time without server daemon restarts.
-   - **Windows Readiness Watchdog**: To eliminate cold-start race condition aborts on Windows, `pingDaemon` uses a 10,000ms watchdog timeout with 500ms ping timeouts and 150ms polling intervals.
-   - **Background Spawning Pattern**: Background daemons are spawned with `child_process.spawn(..., { detached: true, stdio: ['ignore', outFd, errFd] })` and detached with `child.unref()`.
-   - **Windows File Descriptor Cleanup Pattern**: Immediately after `child.unref()`, the parent launcher process must explicitly close parent file handles (`fs.closeSync(outFd)`, `fs.closeSync(errFd)`). Omitting this holds Windows file locks on `.esedre/daemon.log`, preventing clean restarts or log truncation.
-   - **Dual Liveness Check**: Daemon status detection and shutdown commands must verify HTTP endpoint liveness (`GET /api/ping`) alongside PID liveness (`process.kill(pid, 0)`) to protect against PID recycling false positives.
-   - **State Persistence**: Daemon state resides strictly in `~/.esedre/run/daemon-<port>.json` (falling back to `.esedre/daemon.json`).
-
----
-
-## 9. Universal "Type" & "Priority" Standardization & Schema Invariants
-
-1. **Strict "Type" Field Invariant**:
-   - All layers (storage manifests `meta.json`, CLI options `--type` / `-t`, Web UI filters, and REST/MCP payloads) strictly standardize on **`type`** (`"Feature" | "Platform" | "Tools" | "Idea" | "Bug"`).
-   - The pre-v2 legacy field `category` is permanently deprecated. Never introduce `category` into new ticket templates, schemas, or tests.
-
-2. **Ticket "Priority" Field & Backwards Compatibility**:
-   - Priority is an optional field supporting `"Critical" | "High" | "Medium" | "Low"` (or unset/null/undefined for backwards compatibility).
-   - CLI flags: `-P` / `--priority <priority>` for filtering or assignment. To clear priority, pass `-P none` or `--priority none` (in code/MCP, pass `null` or `'none'`).
-   - Legacy tickets without a priority field are valid and render cleanly without priority badges.
-
-3. **Dedicated Milestones & Umbrella Feature Flags**:
-   - Milestones are first-class dedicated entities stored in `projects/<Code>/milestones.json` (or `.esedre/milestones.json` in standalone repo mode), completely distinct from tickets.
-   - Milestone schema: `{ id: number, project: string, title: string, description?: string, status: 'Planned' | 'Active' | 'Completed' | 'Closed', featureFlag?: string, targetDate?: string, createdAt: string, updatedAt: string, completedAt?: string }`.
-   - **Umbrella Feature Flag Inheritance**: When a milestone declares an optional `featureFlag`, all member tickets linked to that milestone inherit the flag automatically (`meta.inheritedFeatureFlag = milestone.featureFlag`). If a member ticket does not specify its own `featureFlag`, it defaults to the milestone's umbrella flag. Setting `milestone: 'none'` unlinks the ticket and clears inherited flags.
-   - Dedicated CLI commands: `ese milestone [list|get|create|update|delete]`.
-   - Dedicated MCP tools: `esedre_list_milestones`, `esedre_get_milestone`, `esedre_create_milestone`, `esedre_update_milestone`.
-
-4. **CLI Shorthand Flags**:
-   - `-t` / `--type`: Ticket type filter or assignment.
-   - `-P` / `--priority`: Ticket priority filter or assignment (`Critical`, `High`, `Medium`, `Low`, or `none` to clear).
-   - `-m` / `--milestone`: Milestone filter or assignment (`-m none` to unlink).
-   - `-p` / `--project`: Project code selector.
-   - `-s` / `--status`: Ticket status filter or assignment.
-   - `-q` / `--search`: Substring search query.
+1. **Daemon & Gateway (`ese start | stop | status | logs`)**:
+   - Unified gateway on port `5674` routes `/app` to Web UI (`5675`) and `/api` to REST API (`5676`) with unconstrained portfolio storage and a 3s config reload TTL.
+   - On Windows, parent processes must call `fs.closeSync(outFd)` and `fs.closeSync(errFd)` immediately after `child.unref()`, and liveness checks must verify both `GET /api/ping` and PID liveness.
+2. **Schema, Milestones & Cross-Project Linking**:
+   - Always use `type` (`Feature`, `Platform`, `Tools`, `Idea`, `Bug`); legacy `category` is deprecated. Optional `priority` supports `Critical`, `High`, `Medium`, `Low` (or `none` to clear).
+   - Milestones (`milestones.json`) support optional umbrella `featureFlag` inheritance (`meta.inheritedFeatureFlag`).
+   - Bi-directional ticket links (`relates-to`, `blocks`/`blocked-by`, `parent-of`/`child-of`, `duplicates`/`duplicated-by`) enforce cycle detection, project `isBlocked: true` when blocked by uncompleted tickets, and redact restricted cross-project targets.
+3. **Compound IDs, Hydration & Embedded Theme Contract**:
+   - Portfolio views use compound keys `${projectCode}-${ticketNumber}` and DOM anchors `id="feature-card-${projectCode}-${number}"`. Initial hydration fetches consolidated state via `/api/planning/all` (no N+1 client waterfalls).
+   - `<PlannedWorkView />` includes a zero-effort CSS fallback bridge (`ESEDRE_THEME_FALLBACK_CSS`) and inherits any of the 12 core CSS custom properties (`--bg-surface`, `--text-primary`, `--accent-primary`, etc.) from host apps.
+4. **Windows CMD & PowerShell Wrappers**:
+   - `ese.cmd` / `esedre.cmd` must dispatch via `call :run %*` and `goto :eof` without `:done` labels. `ese.ps1` / `esedre.ps1` must enforce UTF-8 console encodings at startup.
+5. **Ticket Leases (`ese lease`)**:
+   - Ephemeral ticket leases (`projects/<Code>/tickets/<id>/lease.json`) provide TTL-backed mutual exclusion across concurrent agent sessions, subagents, CLI workflows, and remote machines without overwriting durable `meta.assignee`.
+   - CLI: `ese lease [claim|release|renew|list]` (and top-level aliases `ese claim|release|renew|leases`). MCP: `esedre_claim_ticket`, `esedre_renew_lease`, `esedre_release_ticket`, `esedre_list_leases`.
 
 ---
 
-## 10. Cross-Project Ticket Linking & Dependency Graph Architecture
+## 9. Terminology, Grounding & Planning Invariants
 
-1. **Semantic Relations & Inverse Mapping**:
-   - Tickets support bi-directional linked relationships across the same project or across different projects.
-   - Standard relations:
-     - `relates-to` <-> `relates-to` (symmetric)
-     - `blocks` <-> `blocked-by` (inverse asymmetric)
-     - `parent-of` <-> `child-of` (inverse hierarchy)
-     - `duplicates` <-> `duplicated-by` (inverse deduplication)
-
-2. **Bi-Directional Synchronization & Consistency**:
-   - Adding a link on Ticket A automatically registers the reciprocal inverse link on Ticket B when both are in storage scope.
-   - Removing a link on either ticket automatically clears both sides.
-
-3. **Dependency & Blocker Awareness**:
-   - When any link with relation `blocked-by` points to a target ticket with status !== 'Completed', the ticket is dynamically projected with `isBlocked: true`.
-   - The CLI formatter decorates blocked tickets with `[BLOCKED]` warning badges.
-   - LLM agents query unblocked ready work via `ese list --blocked` or `esedre_list_tickets` with `isBlocked: false`.
-
-4. **Cycle Detection Invariant**:
-   - Cycle detection inspects `blocks` and `parent-of` relationship trees before persisting links.
-   - Attempting to establish a circular dependency throws an error (`Cannot link ... would create a cycle`).
-
-5. **Agent Project Allow-List Redaction**:
-   - If an authorized ticket links to a target in a project outside the active workspace's `allowedProjects`, the link record is preserved, but target metadata is redacted to `targetTitle: '[Restricted Project]'` and target status/type are stripped.
+1. **Strict "LLM" over "AI" & Ban on "LLM Companion"**:
+   - Always use **LLM** (never "AI"). Frame Esedre for **both** human developers and autonomous LLM agents.
+   - The phrase **"LLM Companion"** (and "companion LLM/agent") is **STRICTLY BANNED**; use **"LLM Agent"** or **"LLM Coding Partner"**.
+2. **STRICT PROHIBITION ON EM DASHES (ZERO EXCEPTIONS)**:
+   - **ABSOLUTE BAN ON EM DASHES (U+2014)**: Never use em dashes anywhere in documentation, code, comments, CLI output, commit messages, or metadata. Use hyphens `-`, colons `:`, or parentheses `()`.
+3. **Long-Term Grounding & Pre-Edit Backup Invariant**:
+   - User-maintained guidelines (`AGENTS.md`, `CLAUDE.md`) are the authoritative source of truth; `.esedre/snapshot.json` projects mission and stack grounding for instant post-compaction recovery.
+   - Any automated repair/mutation utility (`ese doctor`, `ese fix`) must create an atomic timestamped backup before modifying files on disk.
+4. **Planning Mode & Workspace-Relative Paths**:
+   - When in Planning Mode or asked "Ideas?" / "What do you think?", never modify code until the user gives explicit approval.
+   - Never hardcode machine-specific absolute paths (`C:\Users\...` or `file:///...`) in repository documentation, comments, or commit messages.
 
 ---
 
-## 11. Multi-Project Ticket ID & Performance Architecture
+## 10. Esedre Dogfooding & Bootstrapping Mandate
 
-1. **Compound ID Uniqueness**:
-   - In cross-project or portfolio mode (`project=all`), numeric ticket IDs collide across repositories (e.g. `Profe-1` vs `Esedre-1`). All storage lookup maps, URL anchors, and React keys must use the compound key `${projectCode}-${ticketNumber}`.
-   - **DOM Anchor Invariant**: Ticket cards and scroll targets must strictly use `id="feature-card-${projectCode}-${number}"`, never bare `id="feature-card-${number}"`, preventing DOM query collisions and broken jump navigation.
+<!-- ESEDRE_DOGFOODING_START -->
+1. **Self-Bootstrapping Engine Mandate**:
+   - You are working directly inside the source engine repository of Esedre. All roadmap management, task tracking, plan authoring, lease claims, and verification records for this repository MUST strictly dogfood Esedre itself.
+   - **Crucially, PREFER MCP tools (`esedre_*`) over CLI execution whenever MCP is available in the session**, using the in-repo CLI wrapper (`.esedre/ese`) purely as a secondary fallback.
+2. **In-Tree Build Freshness Invariant**:
+   - In this repository, the CLI wrapper (`.esedre/ese`) executes compiled artifacts in `dist/esedre.mjs`.
+   - When dogfooding or testing in-tree CLI changes, always compile via `npm run build:cli` (or `npm run build`) first so the toolchain exercises active source modifications rather than stale bundled artifacts.
+3. **Immediate Root-Cause Escalation & In-Source Repair**:
+   - Whenever you encounter any friction, bug, formatting limitation, concurrency quirk, missing CLI flag/option/tool, or output anomaly in Esedre, prominently and explicitly surface it to the developer, diagnose the architectural root cause, and propose a source fix or mint an official roadmap ticket.
+   - If an issue is raised and unacknowledged, persistently follow up in subsequent turns until confirmed. Never let an internal defect or friction point slip by unaddressed.
+<!-- ESEDRE_DOGFOODING_END -->
 
-2. **Prohibition of N+1 Hydration Waterfalls**:
-   - Initial UI load must fetch consolidated state in a single HTTP round-trip via `/api/planning/all`.
-   - Sequential N+1 client fetches across `getMetas()`, `getTicketDetails()`, `getAnswers()`, `getComments()`, and `getPlanHistory()` on initial mount are strictly forbidden.
-
----
-
-## 12. Standalone Mode vs Embedded View & 0-Effort Drop-in Theme Contract
-
-1. **Standalone Mode vs Embedded View**:
-   - **Standalone Mode**: Normal, primary operation of Esedre accessed via its dedicated web UI (port 5674 / `/app`). The unified server is ALWAYS run whenever Esedre is utilized (`ese start`).
-   - **Embedded View**: Optional embedding of the `<PlannedWorkView />` component inside a host application (e.g. your host web application) via host dev server reverse proxy (`/esedre`).
-
-2. **Zero-Effort Drop-in Fallback Bridge**:
-   - `<PlannedWorkView />` embeds an internal CSS fallback bridge (`.esedre-host-bridge` / `.esedre-theme-root` with `ESEDRE_THEME_FALLBACK_CSS`).
-   - If an embedding host application provides zero CSS variables, the planner automatically renders high-contrast, beautiful light or dark themes matching the user's OS preference (`prefers-color-scheme`) or `.dark` / `[data-theme]` classes.
-
-3. **Custom Theme Token Inheritance**:
-   - When the host application defines any of the 12 core design tokens, `PlannedWorkView` seamlessly inherits them without clashing:
-     - Surface: `--bg-surface`, `--bg-surface-elevated`, `--bg-input`
-     - Borders: `--border-subtle`, `--border-strong`, `--border-accent`
-     - Text: `--text-primary`, `--text-secondary`, `--text-muted`
-     - Accent: `--accent-primary`, `--accent-bg-subtle`, `--accent-border-subtle`
-
-4. **Tunnel & HMR Non-Interference**:
-   - Reverse proxies and gateway routes must never intercept or block WebSocket HMR channels (`/ws`, port 443 / `clientPort` tunnel traffic).
-
----
-
-## 13. Terminology Standard: Strict "LLM" over "AI" & Ban on "LLM Companion"
-
-1. **Strict Preference for "LLM" over "AI"**:
-   - In documentation, code comments, schemas, CLI descriptions, commit messages, and agent instructions, strictly use the term **LLM** (e.g. "autonomous LLM coding agents", "LLM coding partner", "LLM-driven workflows") rather than the generic term "AI".
-   
-2. **Dual Human & LLM Coordination**:
-   - Always frame Esedre as a tool engineered for **both** developers/engineers and autonomous LLM agents working together in pair-programming workflows, never as a tool exclusively for models.
-
-3. **Strict Ban on "LLM Companion" (Approved: "LLM Agent" or "LLM Coding Partner")**:
-   - The phrase "LLM Companion" (and variants such as "companion LLM", "companion LLMs", "companion agent", "AI companion") is STRICTLY BANNED in documentation, descriptions, CLI text, commit messages, and code comments.
-   - Approved terms are strictly: **"LLM Agent"** or **"LLM Coding Partner"** (or plural: "LLM Agents", "LLM Coding Partners", "autonomous LLM coding agents").
-
----
-
-## 14. STRICT PROHIBITION ON EM DASHES (ZERO EXCEPTIONS)
-
-- **ABSOLUTE BAN ON EM DASHES (U+2014 / em dash)**: Never use em dashes anywhere in documentation, code, comments, CLI output, commit messages, or metadata. Use standard hyphens `-`, colons `:`, parentheses `()`, or rewrite sentences naturally without dashes.
-
----
-
-## 15. Core Architectural Pillar: Long-Term Grounding for LLM Agent Context
-
-1. **Primary Value Proposition & Biggest Core Feature**:
-   - The single biggest core feature of Esedre is providing **long-term grounding to LLM agent context**.
-   - LLM coding agents naturally face context window limits, context compaction, and session amnesia across multi-turn workflows. External issue trackers live in remote cloud silos that agents cannot access reliably, locally, or deterministically.
-
-2. **Git-Backed Authoritative Memory**:
-   - By structuring tickets, architectural breakdowns, decision records, and verification comments in plain JSON and Markdown directly alongside source code, Esedre functions as persistent, version-controlled ground truth for LLM agents.
-   - When an LLM agent begins a new turn, recovers from a context compaction, or collaborates across developer handoffs, the roadmap anchors the model to concrete technical specifications, constraints, and upcoming milestones.
-
-3. **Continuous Real-Time Alignment via MCP & CLI**:
-   - Through the Model Context Protocol (MCP) server and CLI commands, LLM agents continuously query project priorities (`esedre_list_tickets`), inspect specifications (`esedre_get_ticket`), and update plans (`esedre_save_plan`) with optimistic concurrency checks (`sha1`), eliminating hallucinated project direction and preventing drift.
-
-4. **Per-Project Grounding Context & Conflict-Free Guidelines Invariant**:
-   - **Per-Project Grounding Parameters**: Projects configure high-level architectural mission statements, technology stack constraints (languages, runtime targets, framework versions), and grounding rules in `project.json` (or `.esedre/project.json`).
-   - **Authoritative Source of Truth**: User-maintained agent guidelines (such as `AGENTS.md`, `CLAUDE.md`, or `.cursorrules`) are strictly the primary source of truth. Esedre grounding context references and anchors to them rather than duplicating rules that can become stale.
-   - **Zero-Latency Snapshot Projection**: The `ese snapshot` projection engine embeds project mission and technology stack parameters directly into `.esedre/snapshot.json`. LLM agents query this lean snapshot instantly upon session start or after context compactions.
-
-5. **Mandatory Pre-Edit Backup Invariant for Automated Mutations (Zero Exceptions)**:
-   - Any automated tool, CLI diagnostic repair, or LLM-driven fix operation (such as `ese doctor`, `ese fix`, or smart repair routines) that modifies, rewrites, or repairs configuration files, manifests, tickets, plans, or source code MUST create an atomic timestamped backup (`.bak` or `.esedre/backups/<timestamp>/`) before modifying any file on disk.
-
----
-
-## 16. Planning Mode, Change Authorization & Problem Solving Philosophy
-
-1. **Explicit Approval Required Before Code Changes**:
-   - When in Planning Mode or presenting an implementation plan or design proposal, you are strictly forbidden from modifying source code, running build modifying tasks, or executing changes until the user explicitly responds with unambiguous confirmation.
-
-2. **"Ideas?" / Brainstorming is NEVER Approval to Implement**:
-   - When the user asks "Ideas?", "What do you think?", or asks for diagnosis/suggestions, treat it strictly as diagnostic planning/brainstorming and wait for unambiguous confirmation before touching any code.
-
-3. **Strict Workspace-Relative Path Invariant**:
-   - NEVER hardcode machine-specific absolute file paths (e.g. `C:\Users\...` or `file:///C:/Users/...`) in documentation, comments, scripts, or commit notes. Always use clean workspace-relative paths (e.g. `src/storage/...` or `tests/...`).
-
-4. **Problem Solving Philosophy: Root Cause Resolution & Paving the Desire Paths**:
-   - Fix underlying issues at their architectural source in parser, database, storage, or state logic; avoid superficial band-aids or downstream string patches.
-   - **Pave the Desire Paths**: When the LLM agent naturally gravitates toward a pattern, officially support and structure it rather than fighting it.
-   - Preserve all existing comments, docstrings, and type annotations that are unrelated to your immediate changes.
-
----
-
-## 17. Package Distribution, Versioning & Release Workflow
-
-1. **Dual Version Synchronization & Registry Pre-Check**:
-   - Package version numbers must strictly stay synchronized across `package.json` (`"version"`), `package-lock.json`, and `src/types.ts` (`CURRENT_ESEDRE_VERSION`).
-   - Tests dynamically import `CURRENT_ESEDRE_VERSION` to ensure version checks remain evergreen across releases.
-   - **Mandatory Registry Version Check Before Suggesting Publish**: Agents MUST check published registry versions (`npm view esedre versions --json` or `npm view esedre@<version> version`) before suggesting or verifying a release. Never suggest running `npm run pub` with a version that is already published on npm. If the version exists on the registry, bump `version` in `package.json`, `package-lock.json`, `src/types.ts`, and update `CHANGELOG.md` first.
-
-2. **Standard Native npm Publishing**:
-   - Publishing relies on standard `npm publish` with `prepublishOnly` executing `npm run lint && npm run test && npm run build`.
-   - The `"bin"` map in `package.json` must use normalized paths without leading `./` (e.g. `"dist/esedre.mjs"` instead of `"./dist/esedre.mjs"`) to satisfy npm package validation without warnings.
-
-3. **Future CI Automation via npm Trusted Publishing (OIDC)**:
-   - Automated publishing from GitHub Actions uses OIDC Trusted Publishing (`permissions: id-token: write`, `npm publish --provenance`) to generate verifiable package provenance with zero stored secret tokens.
-
-4. **Pre-Publish Documentation Currency Check**:
-   - The mandatory pre-flight check defined in Section 5.6 strictly applies before publishing any package release. Never initiate or assist with a package release if documentation is stale. Halt and present suggested fixes for user review.
-
----
-
-## 18. Windows Shell & Batch Wrapper Invariants
-
-1. **Windows CMD Batch Wrapper (`ese.cmd` / `esedre.cmd`)**:
-   - The wrapper dispatches through a `:run` subroutine via `call :run %*` and terminates with `exit /b %ERRORLEVEL%`.
-   - Resolution branches inside `:run` exit immediately via `goto :eof`, eliminating user-defined `:done` labels entirely so `cmd.exe` never attempts to resolve a missing label across nested batch contexts.
-   - When in-repo or local `node_modules` builds exist (`dist/esedre.mjs`), invoke Node directly to eliminate nested batch hops.
-
-2. **PowerShell Wrapper (`ese.ps1` / `esedre.ps1`)**:
-   - Enforce UTF-8 stream encodings at script start:
-     ```powershell
-     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-     [Console]::InputEncoding  = [System.Text.Encoding]::UTF8
-     $OutputEncoding = [System.Text.Encoding]::UTF8
-     ```
-   - Prevents multi-byte non-ASCII Unicode characters (such as en-dashes or quotes) from rendering as mojibake on default Windows OEM code pages (e.g. CP 437).

@@ -1,4 +1,4 @@
-import { EsedreTicket, TicketPriority, Milestone } from '../types.js';
+import { EsedreTicket, TicketPriority, Milestone, TicketLease } from '../types.js';
 
 const isColorSupported = !process.env.NO_COLOR && (process.stdout.isTTY || process.env.FORCE_COLOR);
 
@@ -205,6 +205,14 @@ export function formatTicketDetail(ticket: EsedreTicket): string {
   if (ticket.isBlocked) {
     lines.push(`${colors.bold}Dependency:${colors.reset}   ${colors.red}${colors.bold}Blocked by uncompleted ticket${colors.reset}`);
   }
+  if (ticket.lease) {
+    const l = ticket.lease;
+    const hostInfo = l.hostname ? ` on ${l.hostname}` : '';
+    const branchInfo = l.branch ? ` [branch: ${l.branch}]` : '';
+    lines.push(
+      `${colors.bold}Active Lease:${colors.reset} ${colors.cyan}${colors.bold}${l.holder}${colors.reset}${hostInfo}${branchInfo} ${colors.dim}(expires ${l.expiresAt})${colors.reset}`
+    );
+  }
 
   if (detail?.summary) {
     lines.push('');
@@ -358,3 +366,27 @@ export function formatMilestoneListTable(milestones: Milestone[], tickets?: Esed
   return [header, divider, ...formattedRows].join('\n');
 }
 
+export function formatLeaseListTable(leases: TicketLease[]): string {
+  if (leases.length === 0) {
+    return `${colors.dim}No active ticket leases.${colors.reset}`;
+  }
+
+  const lines: string[] = [];
+  const header = `${pad('TICKET', 12)} ${pad('HOLDER', 22)} ${pad('HOST / AGENT', 22)} ${pad('BRANCH', 24)} ${pad('EXPIRES AT', 24)}`;
+  lines.push(`${colors.bold}${colors.cyan}${header}${colors.reset}`);
+  lines.push(`${colors.dim}${'-'.repeat(108)}${colors.reset}`);
+
+  for (const l of leases) {
+    const hostAgent = [l.hostname, l.agentType].filter(Boolean).join(' / ') || '-';
+    const branch = l.branch || '-';
+    lines.push(
+      `${colors.bold}${pad(l.ticketKey, 12)}${colors.reset} ` +
+      `${colors.green}${pad(l.holder.slice(0, 20), 22)}${colors.reset} ` +
+      `${pad(hostAgent.slice(0, 20), 22)} ` +
+      `${colors.cyan}${pad(branch.slice(0, 22), 24)}${colors.reset} ` +
+      `${colors.dim}${pad(l.expiresAt, 24)}${colors.reset}`
+    );
+  }
+
+  return lines.join('\n');
+}

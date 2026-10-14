@@ -31,7 +31,15 @@ import {
   TicketLink,
   EnrichedTicketLink,
   INVERSE_RELATIONS,
+  TicketLease,
+  ClaimLeaseInput,
+  RenewLeaseInput,
+  ReleaseLeaseInput,
+  ClaimLeaseResult,
+  EsedreLeaseConflictError,
+  DEFAULT_LEASE_TTL_MINUTES,
 } from '../types.js';
+import { resolveWorkerIdentity } from '../utils/identity.js';
 import { StorageAdapter, CreateTicketInput, UpdateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './adapter.js';
 import { EsedreConfig, findEsedreConfig, expandHome, validateProjectCode, validateProjectName } from '../config.js';
 import { computeTicketHash, verifyTicketHash } from '../snapshot.js';
@@ -1448,6 +1456,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       'comments.json',
       'answers.json',
       'inline-comments.json',
+      'lease.json',
     ];
 
     const currentStats: Record<string, { mtimeMs: number; size: number }> = {};
@@ -1477,14 +1486,31 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         }
         if (match) {
           let ticket = cached.ticket;
-          if (ticket.meta.links && ticket.meta.links.length > 0) {
-            ticket = {
-              ...ticket,
-              meta: { ...ticket.meta, links: ticket.meta.links.map((l) => ({ ...l })) },
-            };
-            this.enrichTicketLinks(ticket);
+          if (ticket.lease) {
+            const expMs = Date.parse(ticket.lease.expiresAt);
+            if (!isNaN(expMs) && expMs <= Date.now()) {
+              try { fs.unlinkSync(path.join(ticketDir, 'lease.json')); } catch {}
+              this.ticketMemoryCache.delete(resolvedTicketDir);
+            } else {
+              if (ticket.meta.links && ticket.meta.links.length > 0) {
+                ticket = {
+                  ...ticket,
+                  meta: { ...ticket.meta, links: ticket.meta.links.map((l) => ({ ...l })) },
+                };
+                this.enrichTicketLinks(ticket);
+              }
+              return ticket;
+            }
+          } else {
+            if (ticket.meta.links && ticket.meta.links.length > 0) {
+              ticket = {
+                ...ticket,
+                meta: { ...ticket.meta, links: ticket.meta.links.map((l) => ({ ...l })) },
+              };
+              this.enrichTicketLinks(ticket);
+            }
+            return ticket;
           }
-          return ticket;
         }
       }
     }
@@ -1570,6 +1596,31 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         } catch {}
       }
 
+      let lease: TicketLease | null = null;
+      const leasePath = path.join(ticketDir, 'lease.json');
+      if (currentStats['lease.json']) {
+        try {
+          const parsedLease: TicketLease = JSON.parse(fs.readFileSync(leasePath, 'utf-8'));
+          const expMs = Date.parse(parsedLease.expiresAt);
+          if (!isNaN(expMs) && expMs <= Date.now()) {
+            try {
+              fs.unlinkSync(leasePath);
+              delete currentStats['lease.json'];
+            } catch {}
+          } else {
+            parsedLease.project = effectiveLoc.project.code;
+            parsedLease.ticketId = meta.id;
+            parsedLease.ticketKey = `${effectiveLoc.project.code}-${meta.id}`;
+            lease = parsedLease;
+          }
+        } catch {}
+      }
+      if (lease) {
+        meta.lease = lease;
+      } else {
+        delete meta.lease;
+      }
+
       const ticketObj: EsedreTicket = {
         meta,
         detail,
@@ -1577,6 +1628,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         comments,
         answers,
         inlineComments,
+        lease,
         projectDescriptor: effectiveLoc.project,
       };
       normalizeTicketFields(ticketObj);
@@ -1731,6 +1783,19 @@ export class FilesystemStorageAdapter implements StorageAdapter {
             return tk === target || idStr === target;
           });
           if (!hasLink) {
+            continue;
+          }
+        }
+
+        if (filter?.leased !== undefined) {
+          const hasActiveLease = Boolean(ticketObj.lease);
+          if (hasActiveLease !== Boolean(filter.leased)) {
+            continue;
+          }
+        }
+        if (filter?.leasedBy) {
+          const holderFilter = filter.leasedBy.trim().toLowerCase();
+          if (!ticketObj.lease || ticketObj.lease.holder.toLowerCase() !== holderFilter) {
             continue;
           }
         }
@@ -2085,7 +2150,15 @@ ${input.summary || 'Summary to be defined.'}
       }
     }
 
+    delete updatedMeta.lease;
     writeSafeFile(metaPath, JSON.stringify(updatedMeta, null, 2) + '\n');
+
+    if (updates.status === 'Completed' || updates.status === 'Rejected') {
+      const leasePath = path.join(locInfo.ticketDir, 'lease.json');
+      if (fs.existsSync(leasePath)) {
+        try { fs.unlinkSync(leasePath); } catch {}
+      }
+    }
 
     const newType = updates.type || updates.category;
     if (newType) { updatedMeta.type = newType; updatedMeta.category = newType; }
@@ -2679,5 +2752,190 @@ ${input.summary || 'Summary to be defined.'}
 
     const updatedSource = (await this.getTicket(sourceInfo.key))!;
     return { source: updatedSource, target: updatedTarget };
+  }
+
+  private readValidLeaseFromDir(ticketDir: string, projectCode: string, ticketId: number): TicketLease | null {
+    const leasePath = path.join(ticketDir, 'lease.json');
+    if (!fs.existsSync(leasePath)) return null;
+    try {
+      const parsed: TicketLease = JSON.parse(fs.readFileSync(leasePath, 'utf-8'));
+      const expMs = Date.parse(parsed.expiresAt);
+      if (!isNaN(expMs) && expMs <= Date.now()) {
+        try { fs.unlinkSync(leasePath); } catch {}
+        this.invalidateTicketCache(ticketDir);
+        return null;
+      }
+      parsed.project = projectCode;
+      parsed.ticketId = ticketId;
+      parsed.ticketKey = `${projectCode}-${ticketId}`;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  public async claimTicket(input: ClaimLeaseInput): Promise<ClaimLeaseResult> {
+    const resolved = this.resolveTicketIdentifier(input.ticketId, input.project || this.config.projectCode);
+    if (!resolved) {
+      throw new Error(`Ticket #${input.ticketId} could not be located.`);
+    }
+
+    const identity = resolveWorkerIdentity({
+      holder: input.holder,
+      agentType: input.agentType,
+      hostname: input.hostname,
+      sessionId: input.sessionId,
+      branch: input.branch,
+      worktree: input.worktree || this.workspaceRoot,
+      configDefaultAuthor: this.config.defaultAuthor,
+    });
+
+    const ttlMinutes =
+      typeof input.ttlMinutes === 'number' && input.ttlMinutes > 0
+        ? Math.min(Math.max(1, Math.round(input.ttlMinutes)), 24 * 60)
+        : DEFAULT_LEASE_TTL_MINUTES;
+
+    const existingLease = this.readValidLeaseFromDir(resolved.ticketDir, resolved.project, resolved.id);
+    let renewed = false;
+    let overridden = false;
+
+    if (existingLease) {
+      const isSameHolder = existingLease.holder.toLowerCase() === identity.holder.toLowerCase();
+      if (!isSameHolder && !input.force) {
+        throw new EsedreLeaseConflictError(resolved.key, existingLease);
+      }
+      if (isSameHolder) {
+        renewed = true;
+      } else {
+        overridden = true;
+      }
+    }
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const expiresIso = new Date(now.getTime() + ttlMinutes * 60 * 1000).toISOString();
+
+    const lease: TicketLease = {
+      ticketId: resolved.id,
+      ticketKey: resolved.key,
+      project: resolved.project,
+      holder: normalizeDashesAndMojibake(identity.holder),
+      ...(identity.agentType ? { agentType: normalizeDashesAndMojibake(identity.agentType) } : {}),
+      ...(identity.hostname ? { hostname: normalizeDashesAndMojibake(identity.hostname) } : {}),
+      ...(identity.sessionId ? { sessionId: normalizeDashesAndMojibake(identity.sessionId) } : {}),
+      ...(identity.branch ? { branch: normalizeDashesAndMojibake(identity.branch) } : {}),
+      ...(identity.worktree ? { worktree: identity.worktree } : {}),
+      claimedAt: renewed && existingLease ? existingLease.claimedAt : nowIso,
+      renewedAt: nowIso,
+      expiresAt: expiresIso,
+      ttlMinutes,
+    };
+
+    const leasePath = path.join(resolved.ticketDir, 'lease.json');
+    writeSafeFile(leasePath, JSON.stringify(lease, null, 2) + '\n');
+    this.invalidateTicketCache(resolved.ticketDir);
+
+    let ticket = (await this.getTicket(resolved.key))!;
+    const targetStatus = input.statusOnClaim ?? (ticket.meta.status === 'Planned' ? 'In Development' : undefined);
+    if (targetStatus && ticket.meta.status !== targetStatus) {
+      ticket = await this.updateTicket(resolved.key, {
+        status: targetStatus,
+        isActivePlanning: targetStatus === 'In Development' ? true : ticket.meta.isActivePlanning,
+      });
+    }
+
+    return {
+      lease,
+      ticket,
+      renewed,
+      ...(overridden ? { overridden: true } : {}),
+    };
+  }
+
+  public async renewLease(input: RenewLeaseInput): Promise<TicketLease> {
+    const resolved = this.resolveTicketIdentifier(input.ticketId, input.project || this.config.projectCode);
+    if (!resolved) {
+      throw new Error(`Ticket #${input.ticketId} could not be located.`);
+    }
+
+    const existingLease = this.readValidLeaseFromDir(resolved.ticketDir, resolved.project, resolved.id);
+    if (!existingLease) {
+      throw new Error(`Ticket ${resolved.key} does not have an active lease to renew.`);
+    }
+
+    if (input.holder && !input.force) {
+      const requestedHolder = input.holder.trim().toLowerCase();
+      if (existingLease.holder.toLowerCase() !== requestedHolder) {
+        throw new EsedreLeaseConflictError(resolved.key, existingLease);
+      }
+    }
+
+    const ttlMinutes =
+      typeof input.ttlMinutes === 'number' && input.ttlMinutes > 0
+        ? Math.min(Math.max(1, Math.round(input.ttlMinutes)), 24 * 60)
+        : existingLease.ttlMinutes || DEFAULT_LEASE_TTL_MINUTES;
+
+    const now = new Date();
+    const updatedLease: TicketLease = {
+      ...existingLease,
+      ...(input.holder ? { holder: normalizeDashesAndMojibake(input.holder.trim()) } : {}),
+      renewedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + ttlMinutes * 60 * 1000).toISOString(),
+      ttlMinutes,
+    };
+
+    const leasePath = path.join(resolved.ticketDir, 'lease.json');
+    writeSafeFile(leasePath, JSON.stringify(updatedLease, null, 2) + '\n');
+    this.invalidateTicketCache(resolved.ticketDir);
+    return updatedLease;
+  }
+
+  public async releaseTicket(
+    input: ReleaseLeaseInput
+  ): Promise<{ released: boolean; ticketKey: string; previousLease?: TicketLease }> {
+    const resolved = this.resolveTicketIdentifier(input.ticketId, input.project || this.config.projectCode);
+    if (!resolved) {
+      throw new Error(`Ticket #${input.ticketId} could not be located.`);
+    }
+
+    const existingLease = this.readValidLeaseFromDir(resolved.ticketDir, resolved.project, resolved.id);
+    if (!existingLease) {
+      return { released: false, ticketKey: resolved.key };
+    }
+
+    if (input.holder && !input.force) {
+      const requestedHolder = input.holder.trim().toLowerCase();
+      if (existingLease.holder.toLowerCase() !== requestedHolder) {
+        throw new EsedreLeaseConflictError(resolved.key, existingLease);
+      }
+    }
+
+    const leasePath = path.join(resolved.ticketDir, 'lease.json');
+    if (fs.existsSync(leasePath)) {
+      try { fs.unlinkSync(leasePath); } catch {}
+    }
+    this.invalidateTicketCache(resolved.ticketDir);
+
+    return {
+      released: true,
+      ticketKey: resolved.key,
+      previousLease: existingLease,
+    };
+  }
+
+  public async getTicketLease(id: number | string, projectCode?: string): Promise<TicketLease | null> {
+    const resolved = this.resolveTicketIdentifier(id, projectCode || this.config.projectCode);
+    if (!resolved) return null;
+    return this.readValidLeaseFromDir(resolved.ticketDir, resolved.project, resolved.id);
+  }
+
+  public async listLeases(projectCode?: string): Promise<TicketLease[]> {
+    const tickets = await this.listTickets({
+      project: projectCode === 'all' ? undefined : projectCode,
+      leased: true,
+    });
+    return tickets
+      .map((t) => t.lease)
+      .filter((l): l is TicketLease => Boolean(l));
   }
 }

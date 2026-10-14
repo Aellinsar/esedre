@@ -5,9 +5,11 @@ import path from 'node:path';
 import { FilesystemStorageAdapter } from '../src/storage/filesystem.js';
 import { StorageAdapter } from '../src/storage/adapter.js';
 import { SecurityFilter } from '../src/securityFilter.js';
-import { formatTicketListTable, formatTicketDetail, formatMilestoneListTable, colors, normalizeDashesAndMojibake, normalizePriority } from '../src/utils/formatter.js';
+import { formatTicketListTable, formatTicketDetail, formatMilestoneListTable, formatLeaseListTable, colors, normalizeDashesAndMojibake, normalizePriority } from '../src/utils/formatter.js';
 import { EsedreMcpServer } from '../src/mcp/server.js';
-import { TicketType, TicketCategory, TicketStatus, TicketPriority, Milestone, MilestoneStatus, ProjectDescriptor, EsedreConflictError, TicketLinkRelation } from '../src/types.js';
+import { TicketType, TicketCategory, TicketStatus, TicketPriority, Milestone, MilestoneStatus, ProjectDescriptor, EsedreConflictError, EsedreLeaseConflictError, TicketLinkRelation } from '../src/types.js';
+import { resolveWorkerIdentity } from '../src/utils/identity.js';
+import { initLogger } from '../src/utils/logger.js';
 import {
   findEsedreConfig,
   EsedreAuthorizationError,
@@ -85,6 +87,18 @@ ${colors.bold}ROADMAP COMMANDS (Pair Programming & LLM Agents):${colors.reset}
 
   ${colors.bold}unlink${colors.reset}      <sourceId> <targetId> [--json]
                Remove a link between two tickets and its reciprocal link.
+
+  ${colors.bold}lease${colors.reset}       [claim <id> | release <id> | renew <id> | list] [--by <holder>] [--ttl <mins>] [--branch <b>] [--force] [--json]
+               Coordinate multi-agent / multi-machine ticket ownership via TTL-backed advisory leases.
+
+  ${colors.bold}lease${colors.reset}       [claim <id> | release <id> | renew <id> | list] [--by <holder>] [--ttl <mins>] [--branch <b>] [--force] [--json]
+               Coordinate multi-agent / multi-machine ticket ownership via TTL-backed advisory leases.
+
+  ${colors.bold}lease${colors.reset}       [claim <id> | release <id> | renew <id> | list] [--by <holder>] [--ttl <mins>] [--branch <b>] [--force] [--json]
+               Coordinate multi-agent / multi-machine ticket ownership via TTL-backed advisory leases.
+
+  ${colors.bold}lease${colors.reset}       [claim <id> | release <id> | renew <id> | list] [--by <holder>] [--ttl <mins>] [--branch <b>] [--force] [--json]
+               Coordinate multi-agent / multi-machine ticket ownership via TTL-backed advisory leases.
 
   ${colors.bold}snapshot, refresh${colors.reset} [--project <code>] [--json]
                Generate lean read-only projection snapshot (.esedre/snapshot.json) for zero-latency agent context.
@@ -249,6 +263,7 @@ async function main(): Promise<void> {
 
   const rawArgs = process.argv.slice(2);
   const { command, positionals, flags } = parseArgs(rawArgs);
+  initLogger({ debug: Boolean(flags['debug']) });
 
   try {
     writeGlobalVersion();
@@ -544,9 +559,14 @@ async function main(): Promise<void> {
           console.log(`  • In-repo wrappers: .esedre/esedre.cmd, .esedre/ese.cmd, .esedre/esedre, .esedre/ese`);
           console.log(`  • .gitignore: ${res.gitignoreUpdated ? 'Added .esedre/snapshot.json' : 'Already configured'}`);
           console.log(`  • Snapshot: Generated .esedre/snapshot.json (${snapshotTickets} tickets projected)`);
-          console.log(`  • MCP: ${res.mcpConfigured ? 'Configured in .agents/mcp_config.json' : 'Skipped'}`);
+          console.log(`  • MCP: ${res.mcpConfigured ? 'Configured in .agents/mcp_config.json and .agents/mcp.json' : 'Skipped'}`);
           console.log(`  • Skill: ${res.skillConfigured ? 'Updated .agents/skills/esedre/SKILL.md' : `Retained (${res.skillStatus})`}`);
           console.log(`  • Central Config: Linked into ~/.esedre/config.json`);
+          if (res.ruleSizeWarnings && res.ruleSizeWarnings.length > 0) {
+            for (const rw of res.ruleSizeWarnings) {
+              console.log(`  • ${colors.yellow}⚠️  Rule Size Warning: ${rw.message}${colors.reset}`);
+            }
+          }
 
           if (res.viteProxyStatus === 'CONFIGURED') {
             console.log(`  • ${colors.green}Vite Proxy: Added /esedre proxy to ${res.viteConfigFile} targeting http://127.0.0.1:${effectivePort}${colors.reset}`);
@@ -737,6 +757,11 @@ async function main(): Promise<void> {
               } else if (w.upgrade.skillStatus === 'CUSTOMIZED') {
                 console.log(`    - Preserved customized .agents/skills/esedre/SKILL.md`);
               }
+              if (w.upgrade.ruleSizeWarnings && w.upgrade.ruleSizeWarnings.length > 0) {
+                for (const rw of w.upgrade.ruleSizeWarnings) {
+                  console.log(`    - ${colors.yellow}⚠️  ${rw.message}${colors.reset}`);
+                }
+              }
             }
           }
           return;
@@ -775,6 +800,11 @@ async function main(): Promise<void> {
             console.log(`  • ${colors.green}Updated .agents/skills/esedre/SKILL.md to latest template${colors.reset}`);
           } else if (res.skillStatus === 'CUSTOMIZED') {
             console.log(`  • ${colors.yellow}Notice: .agents/skills/esedre/SKILL.md is customized; preserved user modifications (use --force to overwrite).${colors.reset}`);
+          }
+          if (res.ruleSizeWarnings && res.ruleSizeWarnings.length > 0) {
+            for (const rw of res.ruleSizeWarnings) {
+              console.log(`  • ${colors.yellow}⚠️  ${rw.message}${colors.reset}`);
+            }
           }
         }
         return;
@@ -1028,8 +1058,10 @@ async function main(): Promise<void> {
         const milestone = (flags['milestone'] as string) || (flags['m'] as string) || undefined;
         const isBlocked = flags['blocked'] ? true : undefined;
         const linkedTo = (flags['linked-to'] as string) || (flags['linkedTo'] as string) || undefined;
+        const leased = flags['leased'] !== undefined ? Boolean(flags['leased']) : undefined;
+        const leasedBy = (flags['leased-by'] as string) || (flags['leasedBy'] as string) || undefined;
 
-        const tickets = await storage.listTickets({ project, status, type, category, priority, milestone, search, isBlocked, linkedTo });
+        const tickets = await storage.listTickets({ project, status, type, category, priority, milestone, search, isBlocked, linkedTo, leased, leasedBy });
         if (isJson) {
           console.log(JSON.stringify(tickets.map((t) => ({
             id: t.meta.id,
@@ -1047,6 +1079,7 @@ async function main(): Promise<void> {
             sha1: t.sha1 || t.meta.sha1,
             isBlocked: t.isBlocked,
             links: t.links,
+            lease: t.lease || null,
           })), null, 2));
         } else {
           if (tickets.length === 0) {
@@ -1545,6 +1578,129 @@ async function main(): Promise<void> {
         return;
       }
 
+      case 'claim':
+      case 'release':
+      case 'renew':
+      case 'leases':
+      case 'lease': {
+        const isTopLevelAlias = command === 'claim' || command === 'release' || command === 'renew' || command === 'leases';
+        const subAction = isTopLevelAlias
+          ? (command === 'leases' ? 'list' : command)
+          : (positionals[0]?.toLowerCase() || 'list');
+        const targetArg = isTopLevelAlias ? positionals[0] : positionals[1];
+        const project = (flags['project'] as string) || discovered.config?.projectCode;
+        const holder = (flags['by'] as string) || (flags['holder'] as string) || (flags['author'] as string) || undefined;
+        const agentType = (flags['agent'] as string) || (flags['agent-type'] as string) || undefined;
+        const sessionId = (flags['session'] as string) || (flags['session-id'] as string) || undefined;
+        const branch = (flags['branch'] as string) || undefined;
+        const ttlRaw = flags['ttl'] !== undefined ? Number(flags['ttl']) : undefined;
+        const isForce = Boolean(flags['force'] || flags['f']);
+
+        if (subAction === 'list' || subAction === 'ls') {
+          const filterProject = (flags['all'] || flags['a'] || flags['project'] === 'all') ? 'all' : project;
+          const leases = await storage.listLeases(filterProject);
+          if (isJson) {
+            console.log(JSON.stringify({ total: leases.length, leases }, null, 2));
+          } else {
+            console.log(formatLeaseListTable(leases));
+            if (leases.length > 0) {
+              console.log(`\n${colors.dim}Total: ${leases.length} active lease(s)${colors.reset}`);
+            }
+          }
+          return;
+        }
+
+        if (subAction === 'claim') {
+          if (!targetArg) {
+            console.error(`${colors.red}Error: Ticket ID is required (e.g. ese lease claim 69 --by "agent-1")${colors.reset}`);
+            process.exit(1);
+          }
+          const identity = resolveWorkerIdentity({
+            holder,
+            agentType,
+            sessionId,
+            branch,
+            worktree: discovered.workspaceRoot,
+            configDefaultAuthor: discovered.config?.defaultAuthor,
+          });
+          const res = await storage.claimTicket({
+            ticketId: targetArg,
+            holder: identity.holder,
+            agentType: identity.agentType,
+            hostname: identity.hostname,
+            sessionId: identity.sessionId,
+            branch: identity.branch,
+            worktree: identity.worktree,
+            ttlMinutes: ttlRaw,
+            force: isForce,
+            project,
+          });
+          if (isJson) {
+            console.log(JSON.stringify(res, null, 2));
+          } else {
+            const actionLabel = res.overridden ? 'Overrode & claimed' : res.renewed ? 'Renewed lease on' : 'Claimed lease on';
+            console.log(
+              `${colors.green}✔ ${actionLabel} Ticket ${res.lease.ticketKey}${colors.reset} for ${colors.bold}${res.lease.holder}${colors.reset}${
+                res.lease.hostname ? ` on ${res.lease.hostname}` : ''
+              } (TTL: ${res.lease.ttlMinutes}m, expires ${res.lease.expiresAt})`
+            );
+          }
+          return;
+        }
+
+        if (subAction === 'renew' || subAction === 'heartbeat') {
+          if (!targetArg) {
+            console.error(`${colors.red}Error: Ticket ID is required (e.g. ese lease renew 69)${colors.reset}`);
+            process.exit(1);
+          }
+          const lease = await storage.renewLease({
+            ticketId: targetArg,
+            holder,
+            ttlMinutes: ttlRaw,
+            force: isForce,
+            project,
+          });
+          if (isJson) {
+            console.log(JSON.stringify({ success: true, lease }, null, 2));
+          } else {
+            console.log(
+              `${colors.green}✔ Renewed lease on Ticket ${lease.ticketKey}${colors.reset} for ${colors.bold}${lease.holder}${colors.reset} (expires ${lease.expiresAt})`
+            );
+          }
+          return;
+        }
+
+        if (subAction === 'release' || subAction === 'unlock') {
+          if (!targetArg) {
+            console.error(`${colors.red}Error: Ticket ID is required (e.g. ese lease release 69)${colors.reset}`);
+            process.exit(1);
+          }
+          const res = await storage.releaseTicket({
+            ticketId: targetArg,
+            holder,
+            force: isForce,
+            project,
+          });
+          if (isJson) {
+            console.log(JSON.stringify(res, null, 2));
+          } else {
+            if (res.released) {
+              console.log(
+                `${colors.green}✔ Released lease on Ticket ${res.ticketKey}${colors.reset}${
+                  res.previousLease ? ` (previously held by ${res.previousLease.holder})` : ''
+                }`
+              );
+            } else {
+              console.log(`${colors.dim}Ticket ${res.ticketKey} had no active lease.${colors.reset}`);
+            }
+          }
+          return;
+        }
+
+        console.error(`${colors.red}Error: Unknown lease action "${subAction}". Valid actions: claim, renew, release, list${colors.reset}`);
+        process.exit(1);
+      }
+
       default: {
         console.error(`${colors.red}Error: Unknown command "${command}"${colors.reset}`);
         printHelp();
@@ -1555,6 +1711,14 @@ async function main(): Promise<void> {
     if (err instanceof EsedreConflictError || err.name === 'EsedreConflictError') {
       console.error(`${colors.red}Conflict Error: ${err.message}${colors.reset}`);
       console.error(`${colors.dim}Use --force to override if you are certain.${colors.reset}`);
+      process.exit(1);
+    }
+    if (err instanceof EsedreLeaseConflictError || err.name === 'EsedreLeaseConflictError') {
+      if (isJson) {
+        console.error(JSON.stringify({ error: err.message, ticketKey: err.ticketKey, activeLease: err.activeLease }, null, 2));
+      } else {
+        console.error(`${colors.red}${err.message}${colors.reset}`);
+      }
       process.exit(1);
     }
     if (err instanceof EsedreAuthorizationError || err.name === 'EsedreAuthorizationError') {

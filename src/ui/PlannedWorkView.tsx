@@ -3139,6 +3139,21 @@ export function PlannedWorkView({
                                   </span>
                                 )}
 
+                                {/* 4b. Active Lease Badge */}
+                                {(() => {
+                                  const activeLease = metasMap[feat.ticketId]?.lease || feat.lease;
+                                  if (!activeLease) return null;
+                                  return (
+                                    <span
+                                      className="max-w-[140px] truncate px-2 text-center inline-flex items-center justify-center gap-1 text-[10px] font-mono font-semibold py-0.5 rounded-full border border-sky-500/40 bg-sky-500/10 text-sky-800 dark:text-sky-300 cursor-default"
+                                      title={`Active Lease: ${activeLease.holder}${activeLease.hostname ? ` on ${activeLease.hostname}` : ''}${activeLease.branch ? ` (${activeLease.branch})` : ''} - expires ${new Date(activeLease.expiresAt).toLocaleTimeString()}`}
+                                    >
+                                      <span className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-pulse shrink-0" />
+                                      <span className="truncate">{activeLease.holder}</span>
+                                    </span>
+                                  );
+                                })()}
+
                                 {/* 5. Status State Pill (Rightmost in Row 1, 112px) */}
                                 {isOwner ? (
                                   <button

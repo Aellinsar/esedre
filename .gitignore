@@ -12,3 +12,5 @@ tools/tunnel/token.txt
 tools/tunnel/config.yml
 !tools/tunnel/config.yml.example
 .bridge-dest
+.worktrees/
+

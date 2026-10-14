@@ -53,6 +53,10 @@ export interface PlanningServiceProvider {
   deleteMilestone?(id: string | number, project?: string): Promise<boolean>;
   linkTicket?(sourceId: string | number, relation: TicketLinkRelation, targetId: string | number, author?: string): Promise<{ success: boolean; source?: any; target?: any; error?: string }>;
   unlinkTicket?(sourceId: string | number, targetId: string | number): Promise<{ success: boolean; source?: any; target?: any; error?: string }>;
+  listLeases?(project?: string): Promise<any[]>;
+  claimLease?(ticketId: string | number, options?: { holder?: string; ttlMinutes?: number; force?: boolean; project?: string }): Promise<any>;
+  renewLease?(ticketId: string | number, options?: { holder?: string; ttlMinutes?: number; force?: boolean; project?: string }): Promise<any>;
+  releaseLease?(ticketId: string | number, options?: { holder?: string; force?: boolean; project?: string }): Promise<any>;
   getProjects?(): Promise<ProjectDescriptor[]>;
   getAll?(): Promise<any>;
 }
@@ -275,6 +279,33 @@ export class EsedreHttpPlanningProvider implements PlanningServiceProvider {
     return await this.request('/planning/unlink', {
       method: 'POST',
       body: JSON.stringify({ sourceId, targetId }),
+    });
+  }
+
+  async listLeases(project?: string): Promise<any[]> {
+    const q = project ? `?project=${encodeURIComponent(project)}` : '';
+    const data = await this.request<{ leases: any[] }>(`/planning/leases${q}`);
+    return data?.leases || [];
+  }
+
+  async claimLease(ticketId: string | number, options?: { holder?: string; ttlMinutes?: number; force?: boolean; project?: string }): Promise<any> {
+    return await this.request('/planning/leases/claim', {
+      method: 'POST',
+      body: JSON.stringify({ ticketId, ...options }),
+    });
+  }
+
+  async renewLease(ticketId: string | number, options?: { holder?: string; ttlMinutes?: number; force?: boolean; project?: string }): Promise<any> {
+    return await this.request('/planning/leases/renew', {
+      method: 'POST',
+      body: JSON.stringify({ ticketId, ...options }),
+    });
+  }
+
+  async releaseLease(ticketId: string | number, options?: { holder?: string; force?: boolean; project?: string }): Promise<any> {
+    return await this.request('/planning/leases/release', {
+      method: 'POST',
+      body: JSON.stringify({ ticketId, ...options }),
     });
   }
 }
