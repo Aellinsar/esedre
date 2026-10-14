@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { EsedreTicket, TicketType, TicketCategory, TicketStatus, TicketPriority, Milestone, MilestoneStatus, CURRENT_ESEDRE_VERSION, TicketLink } from './types.js';
+import { EsedreTicket, TicketType, TicketCategory, TicketStatus, TicketPriority, Milestone, MilestoneStatus, CURRENT_ESEDRE_VERSION, TicketLink, TicketLease } from './types.js';
 import { StorageAdapter } from './storage/adapter.js';
 
 export interface TicketSnapshotEntry {
@@ -21,6 +21,7 @@ export interface TicketSnapshotEntry {
   inheritedFeatureFlag?: string;
   links?: TicketLink[];
   isBlocked?: boolean;
+  lease?: TicketLease | null;
   hasPlan: boolean;
   planMarkdown?: string;
 
@@ -54,6 +55,7 @@ export interface ProjectSnapshot {
   totalTickets: number;
   tickets: TicketSnapshotEntry[];
   milestones?: MilestoneSnapshotEntry[];
+  activeLeases?: TicketLease[];
 }
 
 export function computeTicketHash(ticket: {
@@ -156,6 +158,7 @@ export async function generateProjectSnapshot(
       inheritedFeatureFlag: ticketObj.meta.inheritedFeatureFlag,
       links: ticketObj.meta.links || [],
       isBlocked: ticketObj.isBlocked || false,
+      ...(ticketObj.lease ? { lease: ticketObj.lease } : {}),
       hasPlan: Boolean(plan && plan.trim().length > 0),
       planMarkdown: plan && plan.trim().length > 0 ? plan : undefined,
       createdAt,
@@ -195,6 +198,10 @@ export async function generateProjectSnapshot(
     });
   } catch {}
 
+  const activeLeases = entries
+    .map((e) => e.lease)
+    .filter((l): l is TicketLease => Boolean(l));
+
   const snapshot: ProjectSnapshot = {
     version: CURRENT_ESEDRE_VERSION,
     projectCode,
@@ -202,6 +209,7 @@ export async function generateProjectSnapshot(
     totalTickets: entries.length,
     tickets: entries,
     ...(milestoneSnapshots && milestoneSnapshots.length > 0 ? { milestones: milestoneSnapshots } : {}),
+    ...(activeLeases.length > 0 ? { activeLeases } : {}),
   };
 
   const esedreDir = path.join(outputDir, '.esedre');

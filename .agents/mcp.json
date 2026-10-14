@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "esedre": {
+      "command": "cmd.exe",
+      "args": [
+        "/c",
+        ".esedre\\esedre.cmd",
+        "mcp"
+      ]
+    }
+  }
+}
