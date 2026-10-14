@@ -68,7 +68,7 @@ export function parsePlannedWorkMarkdown(
         }
 
         const breakdown: string[] = [];
-        const breakdownMatch = body.match(/### Feature Breakdown\s*\n([\s\S]*?)(?=\n#|\n---|\n$)/i);
+        const breakdownMatch = body.match(/### (?:Feature|Task|Fix|Implementation) Breakdown\s*\n([\s\S]*?)(?=\n#|\n---|\n$)/i);
         if (breakdownMatch) {
           const breakdownLines = breakdownMatch[1].split('\n');
           let currentItem = '';
@@ -88,15 +88,15 @@ export function parsePlannedWorkMarkdown(
 
         const techDetails: string[] = [];
         const openQuestions: string[] = [];
-        const techMatch = body.match(/### Technical Detail & Open Questions\s*\n([\s\S]*?)(?=\n#|\n---|\n$)/i);
+        const techMatch = body.match(/### Technical Details?\s*&\s*Open Questions?\s*\n([\s\S]*?)(?=\n#|\n---|\n$)/i);
         if (techMatch) {
           const lines = techMatch[1].split('\n');
           for (const line of lines) {
             const lineTrimmed = line.trim();
-            if (lineTrimmed.startsWith('- **Technical Detail**:')) {
-              techDetails.push(lineTrimmed.replace(/^- \*\*Technical Detail\*\*:\s*/, ''));
-            } else if (lineTrimmed.startsWith('- **Open Questions**:')) {
-              openQuestions.push(lineTrimmed.replace(/^- \*\*Open Questions\*\*:\s*/, ''));
+            if (/^[-*•]\s*\*\*Open Questions?\*\*:/i.test(lineTrimmed)) {
+              openQuestions.push(lineTrimmed.replace(/^[-*•]\s*\*\*Open Questions?\*\*:\s*/i, ''));
+            } else if (/^[-*•]\s*\*\*Technical Details?\*\*:/i.test(lineTrimmed)) {
+              techDetails.push(lineTrimmed.replace(/^[-*•]\s*\*\*Technical Details?\*\*:\s*/i, ''));
             } else if (lineTrimmed.startsWith('- ')) {
               techDetails.push(lineTrimmed.replace(/^- /, ''));
             }
@@ -161,7 +161,7 @@ export function parsePlannedWorkMarkdown(
       const rationaleMatch = detailRaw.match(/(?:##|###)\s*(?:Summary|Rationale)\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
 
       const breakdown: string[] = [];
-      const bdMatch = detailRaw.match(/(?:##|###)\s*Feature Breakdown\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
+      const bdMatch = detailRaw.match(/(?:##|###)\s*(?:Feature|Task|Fix|Implementation)\s+Breakdown\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
       if (bdMatch) {
         const lines = bdMatch[1].split('\n');
         let currentItem = '';
@@ -185,29 +185,66 @@ export function parsePlannedWorkMarkdown(
 
       const techDetails: string[] = [];
       const openQuestions: string[] = [];
-      const techMatch = detailRaw.match(/(?:##|###)\s*Technical Detail & Open Questions\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
+      const techMatch = detailRaw.match(/(?:##|###)\s*Technical Details?\s*&\s*Open Questions?\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
       if (techMatch) {
         const lines = techMatch[1].split('\n');
         for (const line of lines) {
           const lineTrimmed = line.trim();
-          if (lineTrimmed.startsWith('- **Technical Detail**:')) {
-            techDetails.push(lineTrimmed.replace(/^[-*•]\s*\*\*Technical Detail\*\*:\s*/, ''));
-          } else if (
-            lineTrimmed.startsWith('- **Open Question**:') ||
-            lineTrimmed.startsWith('* **Open Question**:') ||
-            lineTrimmed.startsWith('- **Open Questions**:') ||
-            lineTrimmed.startsWith('* **Open Questions**:')
-          ) {
-            openQuestions.push(lineTrimmed.replace(/^[-*•]\s*\*\*Open Questions?\*\*:\s*/, ''));
+          if (/^[-*•]\s*\*\*Open Questions?\*\*:/i.test(lineTrimmed)) {
+            const q = lineTrimmed.replace(/^[-*•]\s*\*\*Open Questions?\*\*:\s*/i, '').trim();
+            if (q && !/^(?:None|None recorded at initialization|N\/A)\.?$/i.test(q)) {
+              openQuestions.push(q);
+            }
+          } else if (/^[-*•]\s*\*\*Technical Details?\*\*:/i.test(lineTrimmed)) {
+            const td = lineTrimmed.replace(/^[-*•]\s*\*\*Technical Details?\*\*:\s*/i, '').trim();
+            if (td && !/^Architecture specifications to be documented\.?$/i.test(td)) {
+              techDetails.push(td);
+            }
           } else if (lineTrimmed.startsWith('- ') || lineTrimmed.startsWith('* ') || lineTrimmed.startsWith('• ')) {
-            techDetails.push(lineTrimmed.replace(/^[-*•]\s*/, ''));
+            const td = lineTrimmed.replace(/^[-*•]\s*/, '').trim();
+            if (td && !/^Architecture specifications to be documented\.?$/i.test(td)) {
+              techDetails.push(td);
+            }
+          }
+        }
+      }
+
+      const standaloneTechMatch = detailRaw.match(/(?:##|###)\s*(?:Technical Details?(?!\s*&\s*Open Questions?)(?:\s*&\s*Architecture)?|Architecture)\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
+      if (standaloneTechMatch) {
+        const lines = standaloneTechMatch[1].split('\n');
+        for (const line of lines) {
+          const lineTrimmed = line.trim();
+          if (/^[-*•]\s*\*\*Open Questions?\*\*:/i.test(lineTrimmed)) {
+            const q = lineTrimmed.replace(/^[-*•]\s*\*\*Open Questions?\*\*:\s*/i, '').trim();
+            if (q && !/^(?:None|None recorded at initialization|N\/A)\.?$/i.test(q)) {
+              openQuestions.push(q);
+            }
+          } else if (lineTrimmed.startsWith('- ') || lineTrimmed.startsWith('* ') || lineTrimmed.startsWith('• ')) {
+            const td = lineTrimmed.replace(/^[-*•]\s*/, '').replace(/^\*\*Technical Details?\*\*:\s*/i, '').trim();
+            if (td && !/^Architecture specifications to be documented\.?$/i.test(td)) {
+              techDetails.push(td);
+            }
+          }
+        }
+      }
+
+      const standaloneOqMatch = detailRaw.match(/(?:##|###)\s*(?:Open Questions?(?:\s*&\s*Decisions)?|Decisions)\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
+      if (standaloneOqMatch) {
+        const lines = standaloneOqMatch[1].split('\n');
+        for (const line of lines) {
+          const lineTrimmed = line.trim();
+          if (lineTrimmed.startsWith('- ') || lineTrimmed.startsWith('* ') || lineTrimmed.startsWith('• ')) {
+            const q = lineTrimmed.replace(/^[-*•]\s*/, '').replace(/^\*\*Open Questions?\*\*:\s*/i, '').trim();
+            if (q && !/^(?:None|None recorded at initialization|N\/A)\.?$/i.test(q)) {
+              openQuestions.push(q);
+            }
           }
         }
       }
 
       const effectiveRationale = rationaleMatch
         ? rationaleMatch[1].trim()
-        : (!bdMatch && !techMatch && detailRaw)
+        : (!bdMatch && !techMatch && !standaloneTechMatch && !standaloneOqMatch && detailRaw)
         ? detailRaw.trim()
         : undefined;
 

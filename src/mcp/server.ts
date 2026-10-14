@@ -470,7 +470,9 @@ export class EsedreMcpServer {
           properties: {
             ticketId: { type: ['number', 'string'], description: 'Ticket ID or prefixed key (e.g. 69 or "Esedre-69")' },
             holder: { type: 'string', description: 'Agent or developer identity claiming the ticket (e.g. "agy-subagent-1" or "desktop-worker")' },
+            workerId: { type: 'string', description: 'Alias for holder: agent or worker identity claiming the ticket' },
             agentType: { type: 'string', description: 'Optional agent runtime identifier (e.g. "antigravity", "claude-code", "codex")' },
+            system: { type: 'string', description: 'Alias for agentType: system or runtime identifier' },
             sessionId: { type: 'string', description: 'Optional conversation or session identifier' },
             branch: { type: 'string', description: 'Optional Git branch associated with the lease' },
             ttlMinutes: { type: 'number', description: 'Lease time-to-live in minutes (default: 60)' },
@@ -488,6 +490,8 @@ export class EsedreMcpServer {
           properties: {
             ticketId: { type: ['number', 'string'], description: 'Ticket ID or prefixed key' },
             holder: { type: 'string', description: 'Holder identity verifying lease ownership' },
+            workerId: { type: 'string', description: 'Alias for holder: worker identity verifying lease ownership' },
+            system: { type: 'string', description: 'Optional system or agent runtime identifier' },
             ttlMinutes: { type: 'number', description: 'New TTL in minutes from now (default: 60)' },
             force: { type: 'boolean', description: 'Force renewal even if held by another identity' },
             project: { type: 'string', description: 'Optional project code' },
@@ -503,6 +507,10 @@ export class EsedreMcpServer {
           properties: {
             ticketId: { type: ['number', 'string'], description: 'Ticket ID or prefixed key' },
             holder: { type: 'string', description: 'Holder identity verifying lease ownership' },
+            workerId: { type: 'string', description: 'Alias for holder: worker identity verifying lease ownership' },
+            system: { type: 'string', description: 'Optional system or agent runtime identifier' },
+            finalStatus: { type: 'string', enum: ['Planned', 'In Development', 'Completed', 'Rejected'], description: 'Optional status to transition the ticket to upon release' },
+            notes: { type: 'string', description: 'Optional verification or handoff comment to append upon release' },
             force: { type: 'boolean', description: 'Force release even if held by another identity' },
             project: { type: 'string', description: 'Optional project code' },
           },
@@ -730,8 +738,8 @@ export class EsedreMcpServer {
 
       case 'claim_ticket': {
         const identity = resolveWorkerIdentity({
-          holder: args.holder,
-          agentType: args.agentType || 'mcp-agent',
+          holder: args.holder || args.workerId,
+          agentType: args.agentType || args.system || 'mcp-agent',
           sessionId: args.sessionId,
           branch: args.branch,
         });
@@ -765,7 +773,7 @@ export class EsedreMcpServer {
       case 'renew_lease': {
         const lease = await this.storage.renewLease({
           ticketId: this.parseTicketId(args.ticketId),
-          holder: args.holder,
+          holder: args.holder || args.workerId,
           ttlMinutes: args.ttlMinutes,
           force: Boolean(args.force),
           project: args.project,
@@ -777,12 +785,23 @@ export class EsedreMcpServer {
       }
 
       case 'release_ticket': {
+        const holder = args.holder || args.workerId;
+        const parsedId = this.parseTicketId(args.ticketId);
         const res = await this.storage.releaseTicket({
-          ticketId: this.parseTicketId(args.ticketId),
-          holder: args.holder,
+          ticketId: parsedId,
+          holder,
           force: Boolean(args.force),
           project: args.project,
         });
+        if (args.finalStatus) {
+          await this.storage.updateTicket(res.ticketKey || parsedId, { status: args.finalStatus as TicketStatus });
+        }
+        if (args.notes) {
+          await this.storage.addComment(res.ticketKey || parsedId, {
+            author: holder || res.previousLease?.holder || 'mcp-agent',
+            text: args.notes,
+          });
+        }
         return {
           success: true,
           ...res,

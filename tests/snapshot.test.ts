@@ -471,7 +471,94 @@ describe('.esedre/snapshot.json Comprehensive Test Suite', () => {
       const onDisk = JSON.parse(fs.readFileSync(snapshotFile, 'utf-8'));
       expect(onDisk.version).toBe(CURRENT_ESEDRE_VERSION);
       expect(onDisk.totalTickets).toBe(1);
+      expect(onDisk.lastTicketId).toBe(1);
       expect(onDisk.tickets[0].title).toBe('Pre Upgrade Ticket');
+    });
+
+    it('emits lastTicketId accurately when historical ticket IDs have gaps (Ticket #77)', async () => {
+      const t1 = await adapter.createTicket({ title: 'First Ticket', projectCode: 'Core' });
+      const t2 = await adapter.createTicket({ title: 'Second Ticket', projectCode: 'Core' });
+      const t3 = await adapter.createTicket({ title: 'Third Ticket', projectCode: 'Core' });
+      expect(t3.meta.id).toBe(3);
+
+      // Remove middle ticket directory to simulate a historical gap (2 tickets total, highest ID = 3)
+      fs.rmSync(
+        path.join(tempDir, 'src', 'data', 'planning', 'tickets', String(t2.meta.id)),
+        { recursive: true, force: true }
+      );
+      adapter = new FilesystemStorageAdapter(tempDir);
+
+      const snapshot = await generateProjectSnapshot(adapter, 'Core', tempDir);
+      expect(snapshot.totalTickets).toBe(2);
+      expect(snapshot.lastTicketId).toBe(t3.meta.id);
+      expect(snapshot.tickets.map((t) => t.id)).toEqual([t1.meta.id, t3.meta.id]);
+    });
+
+    it('supports variadic ticket IDs in ese get and deduplicates lease block in ese --help (Tickets #75 & #76)', async () => {
+      await adapter.createTicket({ title: 'Variadic Alpha', projectCode: 'Core' });
+      await adapter.createTicket({ title: 'Variadic Beta', projectCode: 'Core' });
+
+      fs.mkdirSync(path.join(tempDir, '.esedre'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tempDir, '.esedre', 'esedre.json'),
+        JSON.stringify({ version: CURRENT_ESEDRE_VERSION, projectCode: 'Core' }),
+        'utf-8'
+      );
+
+      const getMultiOut = execFileSync(
+        process.execPath,
+        [cliPath, 'get', '1', '2', '--json'],
+        {
+          cwd: tempDir,
+          encoding: 'utf-8',
+          env: {
+            ...process.env,
+            ESEDRE_GLOBAL_DIR: path.join(tempDir, 'global-store'),
+          },
+        }
+      );
+      const parsedMulti = JSON.parse(getMultiOut);
+      expect(Array.isArray(parsedMulti)).toBe(true);
+      expect(parsedMulti).toHaveLength(2);
+      expect(parsedMulti[0].meta.title).toBe('Variadic Alpha');
+      expect(parsedMulti[1].meta.title).toBe('Variadic Beta');
+
+      const helpOut = execFileSync(process.execPath, [cliPath, '--help'], {
+        cwd: tempDir,
+        encoding: 'utf-8',
+      });
+      const leaseMatches = helpOut.match(/Coordinate multi-agent \/ multi-machine ticket ownership/g) || [];
+      expect(leaseMatches).toHaveLength(1);
+    });
+
+    it('registers global Antigravity MCP config in ~/.gemini/config/mcp_config.json with resilient fallback (Ticket #73)', async () => {
+      const { setupGlobalAntigravityMcpConfig } = await import('../src/upgrade.js');
+      const fakeGeminiDir = path.join(tempDir, '.gemini');
+      fs.mkdirSync(path.join(fakeGeminiDir, 'config'), { recursive: true });
+      // Seed an existing MCP server and a broken relative esedre entry
+      const mcpConfigPath = path.join(fakeGeminiDir, 'config', 'mcp_config.json');
+      fs.writeFileSync(
+        mcpConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            otherServer: { command: 'node', args: ['other.js'] },
+            esedre: { command: 'cmd.exe', args: ['/c', '.esedre\\esedre.cmd', 'mcp'] },
+          },
+        }),
+        'utf-8'
+      );
+
+      const ok = setupGlobalAntigravityMcpConfig({ geminiDir: fakeGeminiDir });
+      expect(ok).toBe(true);
+
+      const updated = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf-8'));
+      expect(updated.mcpServers.otherServer).toEqual({ command: 'node', args: ['other.js'] });
+      expect(updated.mcpServers.esedre).toBeDefined();
+      const argsJoined = (updated.mcpServers.esedre.args || []).join(' ');
+      expect(argsJoined).toContain('mcp');
+      if (process.platform === 'win32') {
+        expect(argsJoined.toLowerCase()).toContain('if exist');
+      }
     });
   });
 });

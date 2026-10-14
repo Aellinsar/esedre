@@ -53,6 +53,7 @@ export interface ProjectSnapshot {
   projectCode: string;
   generatedAt: string;
   totalTickets: number;
+  lastTicketId: number;
   tickets: TicketSnapshotEntry[];
   milestones?: MilestoneSnapshotEntry[];
   activeLeases?: TicketLease[];
@@ -202,11 +203,14 @@ export async function generateProjectSnapshot(
     .map((e) => e.lease)
     .filter((l): l is TicketLease => Boolean(l));
 
+  const lastTicketId = entries.reduce((max, e) => Math.max(max, e.id), 0);
+
   const snapshot: ProjectSnapshot = {
     version: CURRENT_ESEDRE_VERSION,
     projectCode,
     generatedAt: new Date().toISOString(),
     totalTickets: entries.length,
+    lastTicketId,
     tickets: entries,
     ...(milestoneSnapshots && milestoneSnapshots.length > 0 ? { milestones: milestoneSnapshots } : {}),
     ...(activeLeases.length > 0 ? { activeLeases } : {}),

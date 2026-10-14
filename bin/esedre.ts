@@ -66,8 +66,8 @@ ${colors.bold}ROADMAP COMMANDS (Pair Programming & LLM Agents):${colors.reset}
                • Status values: 'Planned', 'In Development', 'Completed', 'Rejected'
                • Type values:   'Feature', 'Platform', 'Tools', 'Idea', 'Bug'
 
-  ${colors.bold}get${colors.reset}         <id> [--json]
-               Inspect full ticket specification, feature breakdown, and comments.
+  ${colors.bold}get${colors.reset}         <id...> [--json]
+               Inspect full ticket specification, feature breakdown, and comments for one or more tickets.
 
   ${colors.bold}plan${colors.reset}        <id> [--file <path> | --set "<markdown>"] [--last-hash <sha1>] [--json]
                View or update implementation plan with optimistic concurrency control.
@@ -88,16 +88,7 @@ ${colors.bold}ROADMAP COMMANDS (Pair Programming & LLM Agents):${colors.reset}
   ${colors.bold}unlink${colors.reset}      <sourceId> <targetId> [--json]
                Remove a link between two tickets and its reciprocal link.
 
-  ${colors.bold}lease${colors.reset}       [claim <id> | release <id> | renew <id> | list] [--by <holder>] [--ttl <mins>] [--branch <b>] [--force] [--json]
-               Coordinate multi-agent / multi-machine ticket ownership via TTL-backed advisory leases.
-
-  ${colors.bold}lease${colors.reset}       [claim <id> | release <id> | renew <id> | list] [--by <holder>] [--ttl <mins>] [--branch <b>] [--force] [--json]
-               Coordinate multi-agent / multi-machine ticket ownership via TTL-backed advisory leases.
-
-  ${colors.bold}lease${colors.reset}       [claim <id> | release <id> | renew <id> | list] [--by <holder>] [--ttl <mins>] [--branch <b>] [--force] [--json]
-               Coordinate multi-agent / multi-machine ticket ownership via TTL-backed advisory leases.
-
-  ${colors.bold}lease${colors.reset}       [claim <id> | release <id> | renew <id> | list] [--by <holder>] [--ttl <mins>] [--branch <b>] [--force] [--json]
+  ${colors.bold}lease${colors.reset}       [claim <id> | release <id> | renew <id> | list] [--by|--worker-id <holder>] [--ttl <mins>] [--branch <b>] [--status <stat>] [--notes "..."] [--force] [--json]
                Coordinate multi-agent / multi-machine ticket ownership via TTL-backed advisory leases.
 
   ${colors.bold}snapshot, refresh${colors.reset} [--project <code>] [--json]
@@ -1102,23 +1093,30 @@ async function main(): Promise<void> {
       }
 
       case 'get': {
-        const idStr = positionals[0];
-        if (!idStr) {
+        if (positionals.length === 0) {
           console.error(`${colors.red}Error: Ticket ID is required (e.g. ese get 1 or ese get Profe-1)${colors.reset}`);
           process.exit(1);
         }
         const projectFlag = flags['project'] as string;
-        const lookupKey = projectFlag && /^\d+$/.test(idStr) ? `${projectFlag}-${idStr}` : idStr;
-        const ticket = await storage.getTicket(lookupKey);
-        if (!ticket) {
-          console.error(`${colors.red}Error: Ticket #${lookupKey} not found.${colors.reset}`);
-          process.exit(1);
+        const tickets = [];
+        for (const idStr of positionals) {
+          const lookupKey = projectFlag && /^\d+$/.test(idStr) ? `${projectFlag}-${idStr}` : idStr;
+          const ticket = await storage.getTicket(lookupKey);
+          if (!ticket) {
+            console.error(`${colors.red}Error: Ticket #${lookupKey} not found.${colors.reset}`);
+            process.exit(1);
+          }
+          tickets.push(ticket);
         }
 
         if (isJson) {
-          console.log(JSON.stringify(ticket, null, 2));
+          console.log(JSON.stringify(tickets.length === 1 ? tickets[0] : tickets, null, 2));
         } else {
-          console.log(formatTicketDetail(ticket));
+          console.log(
+            tickets
+              .map((t) => formatTicketDetail(t))
+              .join(`\n${colors.dim}${'─'.repeat(60)}${colors.reset}\n\n`)
+          );
         }
         return;
       }
@@ -1589,8 +1587,18 @@ async function main(): Promise<void> {
           : (positionals[0]?.toLowerCase() || 'list');
         const targetArg = isTopLevelAlias ? positionals[0] : positionals[1];
         const project = (flags['project'] as string) || discovered.config?.projectCode;
-        const holder = (flags['by'] as string) || (flags['holder'] as string) || (flags['author'] as string) || undefined;
-        const agentType = (flags['agent'] as string) || (flags['agent-type'] as string) || undefined;
+        const holder =
+          (flags['by'] as string) ||
+          (flags['holder'] as string) ||
+          (flags['worker-id'] as string) ||
+          (flags['workerId'] as string) ||
+          (flags['author'] as string) ||
+          undefined;
+        const agentType =
+          (flags['agent'] as string) ||
+          (flags['agent-type'] as string) ||
+          (flags['system'] as string) ||
+          undefined;
         const sessionId = (flags['session'] as string) || (flags['session-id'] as string) || undefined;
         const branch = (flags['branch'] as string) || undefined;
         const ttlRaw = flags['ttl'] !== undefined ? Number(flags['ttl']) : undefined;
@@ -1675,12 +1683,23 @@ async function main(): Promise<void> {
             console.error(`${colors.red}Error: Ticket ID is required (e.g. ese lease release 69)${colors.reset}`);
             process.exit(1);
           }
+          const finalStatus = (flags['status'] as TicketStatus) || undefined;
+          const notes = (flags['notes'] as string) || undefined;
           const res = await storage.releaseTicket({
             ticketId: targetArg,
             holder,
             force: isForce,
             project,
           });
+          if (finalStatus) {
+            await storage.updateTicket(res.ticketKey || targetArg, { status: finalStatus });
+          }
+          if (notes) {
+            await storage.addComment(res.ticketKey || targetArg, {
+              author: holder || res.previousLease?.holder || discovered.config?.defaultAuthor || 'Agent',
+              text: notes,
+            });
+          }
           if (isJson) {
             console.log(JSON.stringify(res, null, 2));
           } else {
@@ -1688,7 +1707,7 @@ async function main(): Promise<void> {
               console.log(
                 `${colors.green}✔ Released lease on Ticket ${res.ticketKey}${colors.reset}${
                   res.previousLease ? ` (previously held by ${res.previousLease.holder})` : ''
-                }`
+                }${finalStatus ? ` -> ${finalStatus}` : ''}`
               );
             } else {
               console.log(`${colors.dim}Ticket ${res.ticketKey} had no active lease.${colors.reset}`);

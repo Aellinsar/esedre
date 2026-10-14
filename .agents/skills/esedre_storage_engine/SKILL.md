@@ -67,7 +67,8 @@ Methods accept both numeric IDs (`96`) and compound project keys (`Profe-96`, `E
         ├── milestones.json               # Project milestones & umbrella feature flags
         └── tickets/
             ├── 1/
-            │   ├── meta.json             # Core metadata (id, title, type, priority, milestone, lease, sha1)
+            │   ├── meta.json             # Core metadata (id, title, type, priority, milestone, sha1)
+            │   ├── lease.json            # Ephemeral TTL-backed advisory ticket lease
             │   ├── detail.md             # Markdown specification and breakdown
             │   ├── comments.json         # Historical developer and agent comments
             │   ├── implementation_plan.md# Active implementation plan
@@ -78,10 +79,12 @@ Methods accept both numeric IDs (`96`) and compound project keys (`Profe-96`, `E
             └── ...
 ```
 
-## 4. Safe File Writing (`writeSafeFile`)
+## 4. Safe File Writing & `detail.md` Metadata Reconciliation
 
 - All mutations use `writeSafeFile`, ensuring trailing newlines (`\n`) are preserved.
 - Creates parent directories recursively if they do not already exist.
+- **Metadata Header Reconciliation (`reconcileDetailMetadataHeaders`)**: Whenever a ticket's metadata (`title`, `type`, `status`, `priority`, `milestone`, `complexity`, `estimatedEffort`) is updated via `updateTicket`, `saveDetail`, `claimTicket`, or `releaseTicket`, `FilesystemStorageAdapter` reconciles and deduplicates top-of-file metadata header lines (both unbulleted `**Key**:` and bulleted `- **Key**:`) in `detail.md` so `detail.raw` never drifts from `meta.json`.
+- **Canonical `detail.md` Section Parsing**: `parseDetailMarkdown` recognizes `### Feature Breakdown`, `### Task Breakdown`, `### Fix Breakdown`, and `### Implementation Breakdown` as first-class breakdown headings (preserving indented sub-bullets under numbered items), and accurately routes `- **Technical Detail**:`, `- **Architecture**:`, and `- **Root Cause**:` bullets to `technicalDetails[]` while keeping `openQuestions[]` scoped to open question bullets.
 
 ## 5. Ticket Metadata Schema (`meta.json`)
 
@@ -158,11 +161,11 @@ Tickets with uncompleted `blocked-by` links have `isBlocked: true` projected dyn
 
 ## 10. Ticket Leases & Mutual Exclusion (`ese lease`)
 
-1. **Ephemeral Lease Metadata (`meta.lease`)**:
-   - Stored in `meta.json` orthogonally to durable `meta.assignee`:
-     `{ system: string, workerId: string, role?: 'anchor' | 'thug', engine?: string, worktree?: string, branch?: string, acquiredAt: string, expiresAt: string, ttlMinutes: number, pid?: number }`.
+1. **Ephemeral Lease File (`lease.json` & `ticket.lease`)**:
+   - Stored in `projects/<Code>/tickets/<id>/lease.json` orthogonally to durable `meta.assignee`:
+     `{ holder: string, system?: string, claimedAt: string, expiresAt: string, ttlMinutes: number, branch?: string, pid?: number }`.
 2. **Storage Adapter Lease Methods**:
-   - `claimTicket(id, input)`: Acquires a lease on a ticket (`In Development`). Throws `EsedreLeaseConflictError` if an unexpired lease is held by a different `system:workerId` unless `force: true` is passed. Expired leases (`expiresAt <= now`) are automatically reclaimed.
+   - `claimTicket(id, input)`: Acquires a lease on a ticket (`In Development`, default 60m TTL). Throws `EsedreLeaseConflictError` if an unexpired lease is held by a different `holder` unless `force: true` is passed. Expired leases (`expiresAt <= now`) are automatically reclaimed.
    - `renewLease(id, input)`: Extends `expiresAt` for the active lease holder.
-   - `releaseTicket(id, input)`: Clears `meta.lease`, optionally transitions `status` (`Completed` or `Planned`), and optionally appends completion notes to ticket comments.
-   - `listActiveLeases(project?)`: Returns all unexpired leases across authorized projects with remaining seconds (`remainingSeconds`).
+   - `releaseTicket(id, input)`: Removes `lease.json`, optionally transitions `status` (`Completed` or `Planned`), and optionally appends completion notes to ticket comments.
+   - `listActiveLeases(project?)`: Returns all unexpired leases across authorized projects.
