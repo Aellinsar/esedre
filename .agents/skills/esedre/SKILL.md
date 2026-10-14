@@ -5,7 +5,7 @@ description: Tooling and workflow reference for interacting with the Esedre deve
 
 # Esedre Planning & Roadmap Workflow
 
-Esedre is the developer ticketing and LLM coding partner coordination platform. The engine codebase resides in the standalone repository `aellinsar/esedre` (`../esedre`), and operates on decoupled ticket repositories (such as `aellinsar/esedre-data` configured in `~/.esedre/config.json` or `.esedre/esedre.json`). Interact with tickets via in-repo shell wrappers in `.esedre/` (`.esedre/ese`), or the global `ese` CLI.
+Esedre is the developer ticketing and LLM coding partner coordination platform. The engine codebase resides in the standalone repository `aellinsar/esedre` (`../esedre`), and operates on decoupled ticket repositories (such as `aellinsar/esedre-data` configured in `~/.esedre/config.json` or `.esedre/esedre.json`). Interact with tickets via in-repo shell wrappers in `.esedre/` (`.esedre/ese` on POSIX/macOS/Linux/Git Bash, or `.\.esedre\ese.cmd` on Windows PowerShell/CMD), or the global `ese` CLI.
 
 ## 0. Authoritative Ingress Hierarchy & Zero-Latency Context (`.esedre/snapshot.json`)
 
@@ -16,7 +16,8 @@ All ticket discovery, inspection, and state management strictly follow this posi
 2. **Step 2 (Dynamic Queries & State Mutations) - Esedre MCP Tools**:
    Use first-class MCP tools when active in the session (`esedre_list_tickets`, `esedre_get_ticket`, `esedre_get_plan`, `esedre_save_plan`, `esedre_update_ticket`, `esedre_claim_ticket`, `esedre_renew_lease`, `esedre_release_ticket`, `esedre_list_leases`, `esedre_add_comment`).
 3. **Step 3 (Terminal & Script Fallback) - In-Repo CLI Wrapper**:
-   Use `.esedre/ese` (`.esedre/ese get`, `.esedre/ese plan`, `.esedre/ese update`, `.esedre/ese lease`, `.esedre/ese snapshot`).
+   - **POSIX (macOS, Linux, Git Bash, WSL)**: `.esedre/ese <command>` (e.g. `.esedre/ese get`, `.esedre/ese plan`, `.esedre/ese update`, `.esedre/ese lease`, `.esedre/ese snapshot`).
+   - **Windows (PowerShell / CMD)**: `.\.esedre\ese.cmd <command>` or `.\.esedre\ese.ps1 <command>` (do not invoke the extensionless POSIX script `.esedre/ese` directly in PowerShell or `cmd.exe`, as Windows will fail or prompt to select an application to open the file).
 4. **Storage Boundary**:
    Backing ticket hubs (such as `esedre-data`) represent data storage managed by the engine. All agent interactions with roadmap tickets flow through the snapshot projection, MCP tools, or CLI wrappers.
 
@@ -32,9 +33,9 @@ When Esedre MCP is active in your agent session (`.agents/mcp.json` or `.agents/
 | `esedre_save_plan` | Save implementation plan markdown with OCC | `ticketId`, `planMarkdown`, `lastHash` |
 | `esedre_create_ticket` | Mint a new ticket with auto sequential ID | `title` (max 48 chars), `type`, `project`, `priority`, `milestone`, `effort`, `summary`, `detail` |
 | `esedre_update_ticket` | Update ticket attributes with OCC | `ticketId`, `status`, `type`, `priority`, `milestone`, `title`, `detail`, `detailMarkdown`, `complexity`, `effort`, `inDevelopment`, `featureFlag`, `lastHash` |
-| `esedre_claim_ticket` | Claim an ephemeral TTL lease on a ticket (`In Development`) | `ticketId`, `system`, `workerId`, `ttlMinutes`, `branch`, `force` |
-| `esedre_renew_lease` | Extend an active ticket lease TTL | `ticketId`, `system`, `workerId`, `ttlMinutes` |
-| `esedre_release_ticket` | Release a ticket lease and optionally transition status | `ticketId`, `system`, `workerId`, `finalStatus`, `notes`, `force` |
+| `esedre_claim_ticket` | Claim an ephemeral TTL lease on a ticket (`In Development`) | `ticketId`, `holder`/`workerId`, `agentType`/`system`, `ttlMinutes`, `branch`, `force` |
+| `esedre_renew_lease` | Extend an active ticket lease TTL | `ticketId`, `holder`/`workerId`, `system`, `ttlMinutes` |
+| `esedre_release_ticket` | Release a ticket lease and optionally transition status | `ticketId`, `holder`/`workerId`, `system`, `finalStatus`, `notes`, `force` |
 | `esedre_list_leases` | List all active unexpired ticket leases | `project` |
 | `esedre_link_ticket` | Establish bi-directional ticket relationship | `sourceTicketId`, `relation` (`relates-to` \| `blocks` \| `parent-of` \| `duplicates`), `targetTicketId`, `author` |
 | `esedre_unlink_ticket` | Remove bi-directional ticket relationship | `sourceTicketId`, `targetTicketId`, `relation` |
@@ -46,7 +47,7 @@ When Esedre MCP is active in your agent session (`.agents/mcp.json` or `.agents/
 
 ## 2. Core CLI Commands (Fallback via `run_command`)
 
-Both `esedre` and `ese` work interchangeably:
+Both `esedre` and `ese` work interchangeably. On POSIX shells use `.esedre/ese <command>`; on Windows PowerShell or CMD use `.\.esedre\ese.cmd <command>` (or `.\.esedre\ese.ps1 <command>`):
 
 ### List Tickets
 ```bash
@@ -55,7 +56,7 @@ Both `esedre` and `ese` work interchangeably:
 
 ### Read Ticket Details
 ```bash
-.esedre/ese get <ticketId> [--json]
+.esedre/ese get <ticketId...> [--json]
 ```
 
 ### Read or Update Implementation Plans
@@ -81,6 +82,13 @@ Both `esedre` and `ese` work interchangeably:
 .esedre/ese update <ticketId> --detail "<markdownContent>"  # Updates specification markdown
 .esedre/ese update <ticketId> --file <detailFilePath>       # Overwrites specification from file
 ```
+
+### Ticket Specification (`detail.md`) Sections
+When authoring or updating a ticket's `detail.md` (via `--detail`, `--file`, or `esedre_update_ticket`), the snapshot compiler and UI parser recognize the following canonical `###` headings:
+- `### Summary`: Concise overview of the problem or feature.
+- `### Feature Breakdown` (or aliases `### Task Breakdown`, `### Fix Breakdown`, `### Implementation Breakdown`): Numbered or bulleted deliverables and fix steps (indented sub-bullets are preserved under their parent item). Use `### Fix Breakdown` or `### Task Breakdown` naturally for `Bug` and `Tools` tickets.
+- `### Technical Details` (or `### Technical Details & Architecture`): Bold-keyed architectural notes (e.g. `- **Architecture**: ...`, `- **Key Modules**: ...`, `- **Root Cause**: ...`, `- **Technical Detail**: ...`).
+- `### Open Questions` (or `### Open Questions & Decisions`): Unresolved design questions (`- **QuestionId**: Question text?`), which populate `openQuestions[]` in `.esedre/snapshot.json`.
 
 ### Ticket Leases (`ese lease`)
 ```bash

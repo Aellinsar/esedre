@@ -116,16 +116,16 @@ Core day-to-day workflow commands for scoping, viewing, planning, and verifying 
 | Command | Usage | Description |
 |---|---|---|
 | `list` | `ese list [-p\|--project <code\|all>] [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name>] [--blocked] [--leased] [--leased-by <holder>] [--linked-to <key>] [--json]` | List roadmap tickets with optional filters. Defaults to the active project. |
-| `get` | `ese get <id> [--json]` | View ticket specifications, feature breakdown, comments, links, active lease, and SHA-1 hash. |
+| `get` | `ese get <id...> [--json]` | View ticket specifications, feature/task/fix breakdown, comments, links, active lease, and SHA-1 hash for one or more tickets. |
 | `plan` | `ese plan <id> [--set "<markdown>"] [--file <path>] [--last-hash <h>]` | Read or update the active implementation plan markdown. |
 | `create` | `ese create --title "..." [-p\|--project <code>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name>] [--detail "<md>"] [--file <path>]` | Create a new ticket with auto-sequential ID, optional priority, optional milestone, and specification markdown. Title strictly capped at 48 chars. |
-| `update` | `ese update <id> [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority\|none>] [-m\|--milestone <name\|none>] [--title "..."] [--detail "<md>"] [--file <path>] [--last-hash <h>]` | Update ticket status, type, priority, milestone, title, or specification markdown with optimistic concurrency protection. |
+| `update` | `ese update <id> [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority\|none>] [-m\|--milestone <name\|none>] [--title "..."] [--detail "<md>"] [--file <path>] [--last-hash <h>]` | Update ticket status, type, priority, milestone, title, or specification markdown with optimistic concurrency protection and header sync. |
 | `lease` | `ese lease [claim\|renew\|release\|list] [args...]` | Claim, renew, release, or list TTL-backed advisory ticket leases (aliases: `ese claim`, `ese renew`, `ese release`, `ese leases`). |
 | `link` | `ese link <sourceId> <relation> <targetId> [--author "..."]` | Establish a bi-directional link between two tickets. Relations: `relates-to`, `blocks`, `parent-of`, `duplicates`. |
 | `unlink` | `ese unlink <sourceId> <targetId> [--relation <relation>]` | Remove a bi-directional link between two tickets. |
 | `milestone` | `ese milestone [list\|get\|create\|update\|delete] [args...]` | Manage project milestones and umbrella feature flags with deliverables tracking. |
 | `comment` | `ese comment <id> ["<text>"] [--file <path>] [--text "..."] [--author "..."]` | Append a developer or LLM agent note to ticket history. |
-| `snapshot`, `refresh` | `ese snapshot [--project <code>] [--json]` | Generate or refresh projection `.esedre/snapshot.json` for zero-latency agent context. |
+| `snapshot`, `refresh` | `ese snapshot [--project <code>] [--json]` | Generate or refresh projection `.esedre/snapshot.json` (`totalTickets`, `lastTicketId`, `activeLeases`, `tickets`) for zero-latency agent context. |
 | `projects` | `ese projects [--json]` | List registered projects within authorized scope. |
 
 ### Service Daemon Commands
@@ -150,7 +150,7 @@ Commands for repository onboarding, central machine linking, and maintenance:
 | `configure` | `ese configure [add <path> \| remove <code\|path> \| set <k> <v>]` | Inspect or mutate central configuration (`~/.esedre/config.json`). Link external project repositories or data hubs. |
 | `rename-project` | `ese rename-project <oldCode> <newCode> [--name "<name>"]` | Rename a project code across directory storage paths, manifests, and tickets. |
 | `project set` | `ese project set <code> [--name "<name>"]` | Update metadata for an existing project (e.g. display name). |
-| `upgrade` | `ese upgrade [<path>] [--all \| -a] [--force \| -f]` | Upgrade workspace configuration schema, in-repo wrappers, dual MCP configs (`.agents/mcp.json` & `.agents/mcp_config.json`), and agent skills across current or all registered workspaces, with 24 KB rule size checks. |
+| `upgrade` | `ese upgrade [<path>] [--all \| -a] [--force \| -f]` | Upgrade workspace configuration schema, in-repo wrappers, workspace and global Antigravity MCP configs (`.agents/mcp.json`, `.agents/mcp_config.json`, `~/.gemini/config/mcp_config.json`), and agent skills across current or all registered workspaces, with 24 KB rule size checks. |
 
 > **Human vs LLM Agent Workflows**: Developer Administration commands (`init`, `configure`, `upgrade`) manage system-level repository linking and central machine configuration. They are intended for human developers during initial setup. Autonomous LLM coding partners operate within the authorized workspace scope using Roadmap and Service Daemon commands (`list`, `get`, `plan`, `create`, `update`, `lease`, `comment`, `snapshot`, `start`, `status`).
 
@@ -205,7 +205,7 @@ To connect Esedre to **Google Antigravity**, **Claude Code**, **Cursor**, or any
 - `esedre_get_ticket`: Retrieve full specification, summary, comments, revision, links, active lease, blocker status, and content hash (`sha1`).
 - `esedre_get_plan` & `esedre_save_plan`: Inspect and update implementation plans with optimistic concurrency (`lastHash`).
 - `esedre_create_ticket`: Mint new roadmap tickets with project code validation (up to 8 chars), optional priority, optional milestone, and specification detail markdown.
-- `esedre_update_ticket`: Modify status, title, type, priority, milestone, complexity, or effort with optimistic concurrency (`lastHash`).
+- `esedre_update_ticket`: Modify status, title, type, priority, milestone, specification detail (`detail`/`detailMarkdown`), complexity, or effort with optimistic concurrency (`lastHash`).
 - `esedre_claim_ticket`: Acquire an exclusive TTL-backed lease on a ticket (`In Development`) with conflict protection (`-32001`).
 - `esedre_renew_lease`: Extend the expiration TTL of an active ticket lease.
 - `esedre_release_ticket`: Release an active ticket lease and optionally transition status (`Completed`, `Planned`, etc.).
@@ -253,7 +253,7 @@ Esedre introduces first-class milestone management to group related tickets towa
 Esedre provides TTL-backed advisory ticket leases (`projects/<Code>/tickets/<id>/lease.json`) so concurrent LLM coding agents, subagents, CLI scripts, or multi-machine sessions can coordinate without colliding on the same ticket:
 
 - **Ephemeral vs. Durable Ownership**: Leases track active real-time execution (`holder`, `system`, `claimedAt`, `expiresAt`, `ttlMinutes`, `branch`, `pid`) without overwriting the ticket's durable `meta.assignee`.
-- **Automatic TTL Expiration & Completion Cleanup**: Leases default to a 30-minute TTL (`--ttl <minutes>`) and are automatically evicted once expired or when a ticket transitions to `Completed` or `Rejected`.
+- **Automatic TTL Expiration & Completion Cleanup**: Leases default to a 60-minute TTL (`--ttl <minutes>`) and are automatically evicted once expired or when a ticket transitions to `Completed` or `Rejected`.
 - **Conflict Protection**: Claiming a ticket already held by another active worker throws `EsedreLeaseConflictError` (CLI exit `1`, MCP JSON-RPC `-32001`, REST HTTP `409 Conflict`) unless `--force` is passed. Re-claiming by the same holder idempotently renews the lease.
 - **CLI & MCP Parity**: Manage leases via `ese lease [claim|renew|release|list]` (or top-level aliases `ese claim`, `ese renew`, `ese release`, `ese leases`) and MCP tools (`esedre_claim_ticket`, `esedre_renew_lease`, `esedre_release_ticket`, `esedre_list_leases`).
 

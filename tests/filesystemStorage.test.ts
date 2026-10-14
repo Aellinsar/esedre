@@ -430,7 +430,160 @@ describe('FilesystemStorageAdapter', () => {
       )
     ).rejects.toThrow();
   });
+
+  it('routes bold-keyed bullets in combined and standalone Technical Details vs Open Questions accurately (Ticket #70)', async () => {
+    // 1. Combined "### Technical Detail & Open Questions" with only Technical Detail bullets (Sleep-191 repro)
+    const t1 = await adapter.createTicket({
+      title: 'Combined Tech Detail Only',
+      category: 'Bug',
+      projectCode: 'Core',
+      detailMarkdown: [
+        '### Summary',
+        'Fix combined section bullet routing.',
+        '',
+        '### Technical Detail & Open Questions',
+        '- **Technical Detail**: First architectural detail.',
+        '- **Root Cause**: Parser previously routed all combined bullets to openQuestions.',
+        '- **Open Questions**: None',
+      ].join('\n'),
+    });
+
+    expect(t1.detail?.technicalDetails).toEqual([
+      'First architectural detail.',
+      '**Root Cause**: Parser previously routed all combined bullets to openQuestions.',
+    ]);
+    expect(t1.detail?.openQuestions).toEqual([]);
+
+    // 2. Combined "### Technical Details & Open Questions" with both technical details and an actual open question
+    const t2 = await adapter.createTicket({
+      title: 'Combined With Open Question',
+      category: 'Feature',
+      projectCode: 'Core',
+      detailMarkdown: [
+        '### Summary',
+        'Combined section with an actual open question.',
+        '',
+        '### Technical Details & Open Questions',
+        '- **Architecture**: Event-driven pipeline.',
+        '- **Open Question**: Should we batch events every 100ms?',
+      ].join('\n'),
+    });
+
+    expect(t2.detail?.technicalDetails).toEqual(['**Architecture**: Event-driven pipeline.']);
+    expect(t2.detail?.openQuestions).toEqual(['Should we batch events every 100ms?']);
+
+    // 3. Standalone "### Technical Details & Architecture" and "### Open Questions & Decisions" (Sleep-190 repro)
+    const t3 = await adapter.createTicket({
+      title: 'Standalone Headings With Suffixes',
+      category: 'Feature',
+      projectCode: 'Core',
+      detailMarkdown: [
+        '### Summary',
+        'Standalone sections with & Architecture and & Decisions suffixes.',
+        '',
+        '### Technical Details & Architecture',
+        '- **Root Cause**: Strict newline regex missed & Architecture suffix.',
+        '- **Key Modules**: `src/storage/filesystem.ts`, `src/ui/planParser.ts`',
+        '',
+        '### Open Questions & Decisions',
+        '- None recorded at initialization.',
+      ].join('\n'),
+    });
+
+    expect(t3.detail?.technicalDetails).toEqual([
+      '**Root Cause**: Strict newline regex missed & Architecture suffix.',
+      '**Key Modules**: `src/storage/filesystem.ts`, `src/ui/planParser.ts`',
+    ]);
+    expect(t3.detail?.openQuestions).toEqual([]);
+  });
+
+  it('recognizes Task Breakdown, Fix Breakdown, and Implementation Breakdown aliases and groups indented sub-bullets (Ticket #71)', async () => {
+    const bugTicket = await adapter.createTicket({
+      title: 'Bug With Fix Breakdown',
+      category: 'Bug',
+      projectCode: 'Core',
+      detailMarkdown: [
+        '### Summary',
+        'Verify Fix Breakdown alias and sub-bullet grouping.',
+        '',
+        '### Fix Breakdown',
+        '1. **Update Parser Regex**:',
+        '   - Support `Task Breakdown` and `Fix Breakdown` headings.',
+        '   - Preserve indented sub-bullets under parent step.',
+        '2. **Add Regression Tests**:',
+        '   - Verify snapshot compilation.',
+      ].join('\n'),
+    });
+
+    expect(bugTicket.detail?.breakdown).toHaveLength(2);
+    expect(bugTicket.detail?.breakdown[0]).toContain('**Update Parser Regex**:');
+    expect(bugTicket.detail?.breakdown[0]).toContain('- Support `Task Breakdown` and `Fix Breakdown` headings.');
+    expect(bugTicket.detail?.breakdown[1]).toContain('**Add Regression Tests**:');
+
+    // Ensure formatTicketDetailMarkdown did not append a duplicate "### Feature Breakdown" section
+    expect(bugTicket.detail?.raw).toContain('### Fix Breakdown');
+    expect(bugTicket.detail?.raw).not.toContain('### Feature Breakdown');
+
+    const taskTicket = await adapter.createTicket({
+      title: 'Tools With Task Breakdown',
+      category: 'Tools',
+      projectCode: 'Core',
+      detailMarkdown: [
+        '### Summary',
+        'Verify Task Breakdown alias.',
+        '',
+        '### Task Breakdown',
+        '1. First task item',
+        '2. Second task item',
+      ].join('\n'),
+    });
+
+    expect(taskTicket.detail?.breakdown).toEqual(['First task item', 'Second task item']);
+    expect(taskTicket.detail?.raw).toContain('### Task Breakdown');
+    expect(taskTicket.detail?.raw).not.toContain('### Feature Breakdown');
+  });
+
+  it('reconciles bulleted and unbulleted metadata headers (Status, Complexity, Effort) on partial updates without duplicating blocks (Ticket #74)', async () => {
+    const ticket = await adapter.createTicket({
+      title: 'Metadata Sync Target',
+      category: 'Tools',
+      projectCode: 'Core',
+      priority: 'Medium',
+      complexity: 'Low',
+      estimatedEffort: '1.0 - 2.0 hours',
+      detailMarkdown: [
+        '# Ticket #1: Metadata Sync Target',
+        '- **Status**: Planned',
+        '- **Priority**: Medium',
+        '- **Complexity**: Low',
+        '- **Effort**: 1.0 - 2.0 hours',
+        '',
+        '### Summary',
+        'Verify preamble metadata synchronization.',
+      ].join('\n'),
+    });
+
+    // Ensure formatTicketDetailMarkdown did not duplicate Complexity/Effort lines
+    const initialRaw = ticket.detail?.raw || '';
+    expect((initialRaw.match(/\*\*Complexity\*\*:/gi) || []).length).toBe(1);
+    expect((initialRaw.match(/\*\*(?:Estimated\s+)?Effort\*\*:/gi) || []).length).toBe(1);
+
+    // Partial update to complexity, effort, and status (without passing detailMarkdown)
+    const updated = await adapter.updateTicket(ticket.meta.id, {
+      status: 'Completed',
+      complexity: 'Low-Medium',
+      estimatedEffort: '1.5 - 3.0 hours',
+    });
+
+    expect(updated.meta.status).toBe('Completed');
+    expect(updated.meta.complexity).toBe('Low-Medium');
+    expect(updated.meta.estimatedEffort).toBe('1.5 - 3.0 hours');
+    expect(updated.detail?.complexity).toBe('Low-Medium');
+    expect(updated.detail?.estimatedEffort).toBe('1.5 - 3.0 hours');
+    expect(updated.detail?.raw).toContain('- **Status**: Completed');
+    expect(updated.detail?.raw).toContain('- **Complexity**: Low-Medium');
+    expect(updated.detail?.raw).toContain('- **Effort**: 1.5 - 3.0 hours');
+    expect(updated.detail?.raw).not.toContain('- **Complexity**: Low\n');
+    expect(updated.detail?.raw).not.toContain('1.0 - 2.0 hours');
+  });
 });
-
-
-

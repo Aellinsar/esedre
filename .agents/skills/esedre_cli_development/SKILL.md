@@ -34,12 +34,12 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 | `stop` | `esedre stop [--port <n>] [--quiet] [--json]` | Stops the running background server daemon. |
 | `status` | `esedre status [--port <n>] [--json]` | Checks health, PID, uptime, and diagnostics of the running server. |
 | `logs` | `esedre logs [--port <n>] [--lines <n>]` | Tails recent server logs. |
-| `list` | `esedre list [--project <code\|all>] [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name>] [--blocked] [--linked-to <key>] [--json]` | Lists tickets. Defaults to the active repo's `projectCode` in `esedre.json`. `--project all` lists all permitted tickets. |
-| `get` | `esedre get <id> [--json]` | Displays complete ticket metadata, summary, feature breakdown, comments, links, lease status, and blocker status. |
+| `list` | `esedre list [--project <code\|all>] [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name>] [--blocked] [--leased] [--leased-by <holder>] [--linked-to <key>] [--json]` | Lists tickets. Defaults to the active repo's `projectCode` in `esedre.json`. `--project all` lists all permitted tickets. |
+| `get` | `esedre get <id...> [--json]` | Displays complete ticket metadata, summary, feature/task/fix breakdown, comments, links, lease status, and blocker status for one or more tickets. |
 | `plan` | `esedre plan <id> [--json] [--set "<markdown>"] [--file <path>]` | Reads or updates the implementation plan markdown. |
 | `create` | `esedre create --title "..." [--project <code>] [--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name>] [--effort "..."] [--detail "<md>"] [--file <path>]` | Creates a new roadmap ticket with sequential ID, optional priority, optional milestone, and specification markdown. Defaults to active project. |
-| `update` | `esedre update <id> [-p\|--project <code>] [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority\|none>] [-m\|--milestone <name\|none>] [--title "..."] [--flag] [--last-hash <sha1>] [--force]` | Updates ticket status, type, priority, milestone, title, active planning flag, or feature flag. Accepts compound ID (e.g. `Profe-96`) or numeric with `-p`. |
-| `lease` | `esedre lease [claim\|release\|renew\|list] <id> [--worker-id <id>] [--system <name>] [--ttl <m>] [--branch <b>] [--status <status>] [--notes "..."] [--force] [--json]` | Manages ephemeral TTL-backed ticket leases for multi-agent mutual exclusion. Top-level aliases: `ese claim`, `ese release`, `ese renew`, `ese leases`. |
+| `update` | `esedre update <id> [-p\|--project <code>] [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority\|none>] [-m\|--milestone <name\|none>] [--title "..."] [--detail "<md>"] [--file <path>] [--flag] [--last-hash <sha1>] [--force]` | Updates ticket status, type, priority, milestone, title, specification markdown, active planning flag, or feature flag, keeping `detail.md` headers synced with `meta.json`. |
+| `lease` | `esedre lease [claim\|release\|renew\|list] <id> [--worker-id\|--by <id>] [--system <name>] [--ttl <m>] [--branch <b>] [--status <status>] [--notes "..."] [--force] [--json]` | Manages ephemeral TTL-backed ticket leases for multi-agent mutual exclusion. Top-level aliases: `ese claim`, `ese release`, `ese renew`, `ese leases`. |
 | `link` | `esedre link <sourceId> <relation> <targetId> [--author "..."]` | Creates a bi-directional link between two tickets. Relations: `relates-to`, `blocks`, `parent-of`, `duplicates`. |
 | `unlink` | `esedre unlink <sourceId> <targetId> [--relation <relation>]` | Removes a bi-directional link between two tickets. |
 | `milestone` | `esedre milestone [list\|get\|create\|update\|delete]` | Manages project milestones and umbrella feature flags with deliverables tracking. |
@@ -47,8 +47,8 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 | `projects` | `esedre projects [--json]` | Lists registered projects that are within the current authorized scope. |
 | `rename-project` | `esedre rename-project <oldCode> <newCode> [--name "<name>"]` | Renames a project code across directory storage paths, manifests, and tickets. |
 | `project` | `esedre project set <code> [--name "<name>"]` | Updates project metadata (such as display name). |
-| `snapshot`, `refresh` | `esedre snapshot [--project <code>]` | Re-generates or refreshes `.esedre/snapshot.json` projection for zero-latency agent context. |
-| `upgrade` | `esedre upgrade [--all \| -a] [--force \| -f] [--json]` | Upgrades workspace configuration, scripts, wrappers, and agent skills across current or all registered workspaces, warning if `AGENTS.md` or `GEMINI.md` exceeds 24,000 bytes. |
+| `snapshot`, `refresh` | `esedre snapshot [--project <code>]` | Re-generates or refreshes `.esedre/snapshot.json` projection (`totalTickets`, `lastTicketId`, `activeLeases`, `tickets`) for zero-latency agent context. |
+| `upgrade` | `esedre upgrade [--all \| -a] [--force \| -f] [--json]` | Upgrades workspace configuration, scripts, wrappers, workspace & global Antigravity MCP configs, and agent skills across current or all registered workspaces, warning if `AGENTS.md` or `GEMINI.md` exceeds 24,000 bytes. |
 | `mcp` | `esedre mcp` | Starts the Model Context Protocol stdio server. |
 
 ### Universal Shorthand Flags

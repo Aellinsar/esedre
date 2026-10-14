@@ -5,6 +5,36 @@ All notable changes to Esedre are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-10-15
+
+### Added
+- **TTL-Backed Advisory Ticket Leases (`ese lease`) (Ticket #69)**:
+  - Added ephemeral ticket lease storage (`projects/<Code>/tickets/<id>/lease.json`) providing TTL-backed mutual exclusion across concurrent LLM coding agents, subagents, CLI scripts, and multi-machine sessions without overwriting durable `meta.assignee`.
+  - Added `ese lease [claim|renew|release|list]` CLI commands (and top-level aliases `ese claim`, `ese renew`, `ese release`, `ese leases`), plus `--leased` and `--leased-by <holder>` filters on `ese list`.
+  - Added `esedre_claim_ticket`, `esedre_renew_lease`, `esedre_release_ticket`, and `esedre_list_leases` MCP tools with lease conflict detection (`EsedreLeaseConflictError` / JSON-RPC `-32001`).
+  - Added `activeLeases` summary array and per-ticket `lease` metadata to `.esedre/snapshot.json`.
+- **First-Class `Task Breakdown`, `Fix Breakdown`, and `Implementation Breakdown` Heading Aliases (Ticket #71)**:
+  - Extended `FilesystemStorageAdapter.parseDetailMarkdown` and `planParser.ts` to recognize `### Task Breakdown`, `### Fix Breakdown`, and `### Implementation Breakdown` as first-class aliases alongside `### Feature Breakdown`.
+  - Preserved indented sub-bullets under numbered breakdown items instead of prematurely terminating the breakdown list.
+  - Documented canonical `detail.md` section headings and bullet conventions in `ESEDRE_SKILL_TEMPLATE` (`.agents/skills/esedre/SKILL.md`).
+- **Windows PowerShell & CMD CLI Invocation Documentation and Lease Flag Parity (Ticket #72)**:
+  - Updated generated `.agents/skills/esedre/SKILL.md` to explicitly document `.\.esedre\ese.cmd` and `.\.esedre\ese.ps1` for Windows PowerShell/CMD environments alongside POSIX `.esedre/ese`.
+  - Standardized `--worker-id` / `--by`, `--system`, and `release --status` / `--notes` flags across CLI and MCP lease tools.
+- **Global Antigravity MCP Configuration Auto-Registration (Ticket #73)**:
+  - Extended `setupMcpConfig` (`ese init`, `ese upgrade`, `ese configure`) to automatically register and maintain the `esedre` MCP entry in `~/.gemini/config/mcp_config.json` with a resilient launcher that prefers `.esedre\esedre.cmd` when inside an initialized workspace and falls back to global `ese mcp`.
+- **Variadic Multi-Ticket Lookup in `ese get <id...>` (Ticket #75)**:
+  - Extended `ese get <id...> [--json]` to accept one or more positional ticket IDs, returning a single object for 1 ID, a JSON array when multiple IDs are requested with `--json`, or divider-separated human-readable summaries in text mode.
+- **`lastTicketId` High-Water Mark in `.esedre/snapshot.json` (Ticket #77)**:
+  - Added `lastTicketId` alongside `totalTickets` in the root of `.esedre/snapshot.json` so agents can inspect the highest allocated numeric ticket ID even when historical ticket numbers were skipped or removed.
+
+### Fixed
+- **`detail.md` Combined Technical Details & Open Questions Section Routing (Ticket #70)**:
+  - Fixed `FilesystemStorageAdapter.parseDetailMarkdown` and `planParser.ts` so `- **Technical Detail**:`, `- **Architecture**:`, and `- **Root Cause**:` bullets under `### Technical Details` or combined `### Technical Detail(s) & Open Questions` headings route to `technicalDetails[]` rather than leaking into `openQuestions[]`.
+- **In-Body `detail.md` Metadata Header Reconciliation on Partial Updates (Ticket #74)**:
+  - Centralized `reconcileDetailMetadataHeaders` in `FilesystemStorageAdapter` so partial metadata updates (`ese update --status`, `--complexity`, `--effort`, `--priority`, `--type`, `--milestone`, `--title`, and `ese lease claim/release`) keep inline metadata headers (both unbulleted `**Key**:` and bulleted `- **Key**:`) at the top of `detail.md` synchronized with `meta.json` and deduplicate redundant header lines.
+- **Duplicate `lease` Command Blocks in `ese --help` Output (Ticket #76)**:
+  - Removed 3 duplicate `lease` command help blocks from `printHelp()` in `bin/esedre.ts`.
+
 ## [1.2.0] - 2026-10-09
 
 ### Added
