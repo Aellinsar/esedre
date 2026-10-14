@@ -24,6 +24,7 @@ export interface EsedreConfig {
   port?: number;
   ports?: EsedrePortsConfig;
   projects?: Record<string, string>;
+  defaultAuthor?: string;
 }
 
 export interface ResolvedPorts {
@@ -604,6 +605,8 @@ export function migrateEsedreConfig(raw: any, targetVersion = CURRENT_ESEDRE_VER
     port: typeof raw?.port === 'number' && raw.port !== DEFAULT_ESEDRE_PORT ? raw.port : undefined,
     ports: typeof raw?.ports === 'object' && raw?.ports ? raw.ports : undefined,
     projects: typeof raw?.projects === 'object' && raw?.projects ? raw.projects : undefined,
+    defaultAuthor: typeof raw?.defaultAuthor === 'string' && raw.defaultAuthor.trim() ? raw.defaultAuthor.trim() : undefined,
   };
   return migrated;
 }
+

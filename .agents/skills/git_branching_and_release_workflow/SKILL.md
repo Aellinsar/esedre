@@ -5,7 +5,7 @@ description: Standard Git branching strategy, release/upcoming staging integrati
 
 # Git Branching & Release Workflow
 
-This repository strictly adheres to the **`release/upcoming` integration trunk** branching strategy (identical to the standard established in Sleep Lab 151).
+This repository strictly adheres to the **`release/upcoming` integration trunk** branching strategy across all ecosystem projects (`esedre` and `esedre-web`).
 
 ---
 
@@ -52,19 +52,19 @@ git checkout -b ticket/<ProjectCode>-<id>-<slug>
 ### Step 2: Implementation & Verification
 Implement the requested changes, strictly observing all codebase invariants:
 - Zero em dashes (`\u2014`) in code, comments, or documentation.
-- Run headless tests: `npm test`.
-- Run full builds and linters: `npm run build` and `npm run lint`.
-- Verify all tests pass with zero regressions.
+- Run headless tests (where configured): `npm test`.
+- Run full builds and linters: `npm run lint` and `npm run build`.
+- Verify all checks pass with zero regressions.
 
 ### Step 3: Explicit Commit Authorization & Message Standards
 - **NEVER** run `git add`, `git commit`, or `git push` without explicit, unambiguous permission from the user in that **specific turn** (must contain the word "commit" or "push").
 - Zero turn-to-turn carryover for commit permissions.
 - Pre-flight check: Verify that `README.md`, `AGENTS.md`, and relevant agent skills are completely up-to-date before committing.
-- 🚨 **Commit Naming Standards**:
+- **Commit Naming Standards**:
   1. **Strict Ban on Conventional Prefixes**: Conventional commit prefixes and scopes (such as `feat:`, `feat(...)`, `fix:`, `fix(...)`, `chore:`, `chore(...)`, `style:`, `refactor:`, etc.) are STRICTLY PROHIBITED in commit messages.
   2. **Ticket Anchor Format**: All commits associated with a ticket or issue MUST anchor with the ticket ID in square brackets, followed by a concise, imperative action summary starting with a capitalized verb:
      - `[#<id>] <Imperative Action Summary>` (e.g. `git commit -m "[#49] Support file and detail specification updates in CLI and MCP"`)
-     - For cross-project commits: `[#<ProjectCode>-<id>] <Imperative Action Summary>` (e.g. `git commit -m "[#Esedre-49] Support file and detail specification updates in CLI and MCP"`)
+     - For cross-project commits: `[#<ProjectCode>-<id>] <Imperative Action Summary>` (e.g. `git commit -m "[#Esedre-49] Support file and detail specification updates in CLI and MCP"` or `git commit -m "[#EseWeb-24] Refactor navigation overflow and mobile breakpoints"`)
   3. **Non-Ticket Maintenance Commits**: For general maintenance, documentation, or infrastructure not tied to an active ticket, use a clean domain anchor in square brackets:
      - `[Docs] <Imperative Summary>` (e.g. `git commit -m "[Docs] Codify release/upcoming branching and commit naming standards"`)
      - `[Infra] <Imperative Summary>` (e.g. `git commit -m "[Infra] Configure dev tunnel hosts and allowed hosts"`)
@@ -96,7 +96,7 @@ When a milestone or batch of tickets is ready for production release:
    - **Format**: `v<version>: <High-Level Summary> (#<ticket1>, #<ticket2>)`
    - **Example**: `v0.4.0: Support File and Detail in Ticket Updates (#49)`
    - **Example**: `v1.1.0: Multi-Project Allow-List and Milestone Enhancements (#33, #38)`
-   - 🚨 **Strict Prohibition on Conventional Prefixes in PR Titles**: Conventional commit prefixes (such as `feat(...)`, `fix(...)`, `chore(...)`) are strictly prohibited in PR titles. Keep PR titles clean, descriptive, and professional for human review.
+   - **Strict Prohibition on Conventional Prefixes in PR Titles**: Conventional commit prefixes (such as `feat(...)`, `fix(...)`, `chore(...)`) are strictly prohibited in PR titles. Keep PR titles clean, descriptive, and professional for human review.
 
 3. **Post-Release Alignment (`main` -> `release/upcoming`)**:
    - Immediately following the merge of a release PR into `main`, merge `main` back into `release/upcoming` (or pull/rebase) so that active development stays cleanly aligned with the latest production baseline:

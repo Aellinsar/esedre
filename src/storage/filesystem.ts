@@ -31,7 +31,15 @@ import {
   TicketLink,
   EnrichedTicketLink,
   INVERSE_RELATIONS,
+  TicketLease,
+  ClaimLeaseInput,
+  RenewLeaseInput,
+  ReleaseLeaseInput,
+  ClaimLeaseResult,
+  EsedreLeaseConflictError,
+  DEFAULT_LEASE_TTL_MINUTES,
 } from '../types.js';
+import { resolveWorkerIdentity } from '../utils/identity.js';
 import { StorageAdapter, CreateTicketInput, UpdateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './adapter.js';
 import { EsedreConfig, findEsedreConfig, expandHome, validateProjectCode, validateProjectName } from '../config.js';
 import { computeTicketHash, verifyTicketHash } from '../snapshot.js';
@@ -1448,6 +1456,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       'comments.json',
       'answers.json',
       'inline-comments.json',
+      'lease.json',
     ];
 
     const currentStats: Record<string, { mtimeMs: number; size: number }> = {};
@@ -1477,14 +1486,31 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         }
         if (match) {
           let ticket = cached.ticket;
-          if (ticket.meta.links && ticket.meta.links.length > 0) {
-            ticket = {
-              ...ticket,
-              meta: { ...ticket.meta, links: ticket.meta.links.map((l) => ({ ...l })) },
-            };
-            this.enrichTicketLinks(ticket);
+          if (ticket.lease) {
+            const expMs = Date.parse(ticket.lease.expiresAt);
+            if (!isNaN(expMs) && expMs <= Date.now()) {
+              try { fs.unlinkSync(path.join(ticketDir, 'lease.json')); } catch {}
+              this.ticketMemoryCache.delete(resolvedTicketDir);
+            } else {
+              if (ticket.meta.links && ticket.meta.links.length > 0) {
+                ticket = {
+                  ...ticket,
+                  meta: { ...ticket.meta, links: ticket.meta.links.map((l) => ({ ...l })) },
+                };
+                this.enrichTicketLinks(ticket);
+              }
+              return ticket;
+            }
+          } else {
+            if (ticket.meta.links && ticket.meta.links.length > 0) {
+              ticket = {
+                ...ticket,
+                meta: { ...ticket.meta, links: ticket.meta.links.map((l) => ({ ...l })) },
+              };
+              this.enrichTicketLinks(ticket);
+            }
+            return ticket;
           }
-          return ticket;
         }
       }
     }
@@ -1570,6 +1596,31 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         } catch {}
       }
 
+      let lease: TicketLease | null = null;
+      const leasePath = path.join(ticketDir, 'lease.json');
+      if (currentStats['lease.json']) {
+        try {
+          const parsedLease: TicketLease = JSON.parse(fs.readFileSync(leasePath, 'utf-8'));
+          const expMs = Date.parse(parsedLease.expiresAt);
+          if (!isNaN(expMs) && expMs <= Date.now()) {
+            try {
+              fs.unlinkSync(leasePath);
+              delete currentStats['lease.json'];
+            } catch {}
+          } else {
+            parsedLease.project = effectiveLoc.project.code;
+            parsedLease.ticketId = meta.id;
+            parsedLease.ticketKey = `${effectiveLoc.project.code}-${meta.id}`;
+            lease = parsedLease;
+          }
+        } catch {}
+      }
+      if (lease) {
+        meta.lease = lease;
+      } else {
+        delete meta.lease;
+      }
+
       const ticketObj: EsedreTicket = {
         meta,
         detail,
@@ -1577,6 +1628,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         comments,
         answers,
         inlineComments,
+        lease,
         projectDescriptor: effectiveLoc.project,
       };
       normalizeTicketFields(ticketObj);
@@ -1735,6 +1787,19 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           }
         }
 
+        if (filter?.leased !== undefined) {
+          const hasActiveLease = Boolean(ticketObj.lease);
+          if (hasActiveLease !== Boolean(filter.leased)) {
+            continue;
+          }
+        }
+        if (filter?.leasedBy) {
+          const holderFilter = filter.leasedBy.trim().toLowerCase();
+          if (!ticketObj.lease || ticketObj.lease.holder.toLowerCase() !== holderFilter) {
+            continue;
+          }
+        }
+
         tickets.push(ticketObj);
       }
 
@@ -1776,7 +1841,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     const complexityMatch = raw.match(/\*\*Complexity\*\*:\s*([^\n]+)/i);
     const complexity = complexityMatch ? complexityMatch[1].trim() : 'Medium';
 
-    const effortMatch = raw.match(/\*\*Estimated Effort\*\*:\s*([^\n]+)/i);
+    const effortMatch = raw.match(/\*\*(?:Estimated\s+)?Effort\*\*:\s*([^\n]+)/i);
     const estimatedEffort = effortMatch ? effortMatch[1].trim() : '2.0 - 4.0 hours';
 
     let summary: string | undefined;
@@ -1786,32 +1851,93 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     }
 
     const breakdown: string[] = [];
-    const breakdownMatch = raw.match(/(?:##|###)\s*Feature Breakdown\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
+    const breakdownMatch = raw.match(/(?:##|###)\s*(?:Feature|Task|Fix|Implementation)\s+Breakdown\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
     if (breakdownMatch) {
       const lines = breakdownMatch[1].split('\n');
+      let currentItem = '';
       for (const line of lines) {
-        const itemMatch = line.match(/^\s*(?:\d+\.|\*|-)\s+(.*)/);
-        if (itemMatch) breakdown.push(itemMatch[1].trim());
+        const numberedMatch = line.match(/^\s*\d+\.\s+(.*)$/);
+        if (numberedMatch) {
+          if (currentItem) breakdown.push(currentItem);
+          currentItem = numberedMatch[1].trim();
+        } else if (/^\s*[-*•]\s+/.test(line)) {
+          const bulletText = line.trim().replace(/^[-*•]\s+/, '').trim();
+          if (/^\s{2,}[-*•]\s+/.test(line) && currentItem) {
+            currentItem += '\n  - ' + bulletText;
+          } else {
+            if (currentItem) {
+              breakdown.push(currentItem);
+              currentItem = '';
+            }
+            breakdown.push(bulletText);
+          }
+        } else if (currentItem && line.trim()) {
+          currentItem += ' ' + line.trim();
+        }
       }
+      if (currentItem) breakdown.push(currentItem);
     }
 
     const technicalDetails: string[] = [];
-    const techMatch = raw.match(/###\s*(?:Technical Details?|Architecture)\s*\n+([\s\S]*?)(?=\n###|\n---|\n##|$)/i);
-    if (techMatch) {
-      const lines = techMatch[1].split('\n');
+    const openQuestions: string[] = [];
+
+    // 1. Combined heading: ### Technical Detail(s) & Open Questions
+    const combinedMatch = raw.match(/(?:##|###)\s*Technical Details?\s*&\s*Open Questions?\s*\n+([\s\S]*?)(?=\n###|\n---|\n##|\n#|$)/i);
+    if (combinedMatch) {
+      const lines = combinedMatch[1].split('\n');
       for (const line of lines) {
-        const itemMatch = line.match(/^\s*(?:\d+\.|\*|-)\s+(.*)/);
-        if (itemMatch) technicalDetails.push(itemMatch[1].trim());
+        const itemMatch = line.match(/^\s*(?:\d+\.|\*|-|•)\s+(.*)/);
+        if (!itemMatch) continue;
+        const content = itemMatch[1].trim();
+        if (!content) continue;
+        if (/^\*\*Open Questions?\*\*:\s*/i.test(content)) {
+          const q = content.replace(/^\*\*Open Questions?\*\*:\s*/i, '').trim();
+          if (q && !/^(?:None|None recorded at initialization|N\/A)\.?$/i.test(q)) {
+            openQuestions.push(q);
+          }
+        } else {
+          const td = content.replace(/^\*\*Technical Details?\*\*:\s*/i, '').trim();
+          if (td && !/^Architecture specifications to be documented\.?$/i.test(td)) {
+            technicalDetails.push(td);
+          }
+        }
       }
     }
 
-    const openQuestions: string[] = [];
-    const questionsMatch = raw.match(/###\s*(?:Open Questions?|Technical Detail & Open Questions?|Decisions)\s*\n+([\s\S]*?)(?=\n###|\n---|\n##|$)/i);
+    // 2. Standalone Technical Details / Architecture heading
+    const techMatch = raw.match(/(?:##|###)\s*(?:Technical Details?(?!\s*&\s*Open Questions?)(?:\s*&\s*Architecture)?|Architecture)\s*\n+([\s\S]*?)(?=\n###|\n---|\n##|\n#|$)/i);
+    if (techMatch) {
+      const lines = techMatch[1].split('\n');
+      for (const line of lines) {
+        const itemMatch = line.match(/^\s*(?:\d+\.|\*|-|•)\s+(.*)/);
+        if (!itemMatch) continue;
+        const content = itemMatch[1].trim();
+        if (!content) continue;
+        if (/^\*\*Open Questions?\*\*:\s*/i.test(content)) {
+          const q = content.replace(/^\*\*Open Questions?\*\*:\s*/i, '').trim();
+          if (q && !/^(?:None|None recorded at initialization|N\/A)\.?$/i.test(q)) {
+            openQuestions.push(q);
+          }
+        } else {
+          const td = content.replace(/^\*\*Technical Details?\*\*:\s*/i, '').trim();
+          if (td && !/^Architecture specifications to be documented\.?$/i.test(td)) {
+            technicalDetails.push(td);
+          }
+        }
+      }
+    }
+
+    // 3. Standalone Open Questions / Decisions heading
+    const questionsMatch = raw.match(/(?:##|###)\s*(?:Open Questions?(?:\s*&\s*Decisions)?|Decisions)\s*\n+([\s\S]*?)(?=\n###|\n---|\n##|\n#|$)/i);
     if (questionsMatch) {
       const lines = questionsMatch[1].split('\n');
       for (const line of lines) {
-        const itemMatch = line.match(/^\s*(?:\d+\.|\*|-)\s+(.*)/);
-        if (itemMatch) openQuestions.push(itemMatch[1].trim());
+        const itemMatch = line.match(/^\s*(?:\d+\.|\*|-|•)\s+(.*)/);
+        if (!itemMatch) continue;
+        const content = itemMatch[1].trim().replace(/^\*\*Open Questions?\*\*:\s*/i, '').trim();
+        if (content && !/^(?:None|None recorded at initialization|N\/A)\.?$/i.test(content)) {
+          openQuestions.push(content);
+        }
       }
     }
 
@@ -1833,48 +1959,174 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     };
   }
 
+  private reconcileDetailMetadataHeaders(
+    content: string,
+    meta: TicketMeta,
+    updates?: Partial<UpdateTicketInput>,
+    syncAll: boolean = false
+  ): string {
+    const sectionSplitMatch = content.match(/\n(?=(?:##|###)\s+)/);
+    const splitIdx =
+      sectionSplitMatch && sectionSplitMatch.index !== undefined
+        ? sectionSplitMatch.index
+        : content.length;
+    let preamble = content.slice(0, splitIdx);
+    const bodySection = content.slice(splitIdx);
+
+    const replaceAndDedupeLine = (
+      text: string,
+      lineRegex: RegExp,
+      formatReplacement: (lead: string, label: string) => string
+    ): { text: string; matched: boolean } => {
+      let seen = false;
+      const next = text.replace(lineRegex, (_full, lead = '', label = '') => {
+        if (!seen) {
+          seen = true;
+          return formatReplacement(lead, label);
+        }
+        return '__ESEDRE_DEDUPE_REMOVE__';
+      });
+      return {
+        text: next.replace(/\n?__ESEDRE_DEDUPE_REMOVE__[ \t]*\r?/g, ''),
+        matched: seen,
+      };
+    };
+
+    if (syncAll || updates?.title) {
+      preamble = preamble.replace(
+        /^#\s*(?:Ticket\s*#?\d+\s*:\s*|\d+\s*:\s*)?[^\n]+/im,
+        `# Ticket #${meta.id}: ${meta.title}`
+      );
+    }
+
+    if (syncAll || updates?.type || updates?.category) {
+      const effectiveType = meta.type || meta.category;
+      const preferTypeLabel = Boolean(updates?.type || updates?.category);
+      preamble = replaceAndDedupeLine(
+        preamble,
+        /^([ \t]*(?:[-*•]\s+)?)\*\*(Type|Category)\*\*:\s*[^\n\r]*/gim,
+        (lead, label) => `${lead}**${preferTypeLabel ? 'Type' : label}**: ${effectiveType}${lead.trim() ? '' : '  '}`
+      ).text;
+    }
+
+    if (syncAll || updates?.status) {
+      preamble = replaceAndDedupeLine(
+        preamble,
+        /^([ \t]*(?:[-*•]\s+)?)\*\*(Status)\*\*:\s*[^\n\r]*/gim,
+        (lead) => `${lead}**Status**: ${meta.status}${lead.trim() ? '' : '  '}`
+      ).text;
+    }
+
+    if (syncAll || (updates && 'priority' in updates)) {
+      if (meta.priority) {
+        const res = replaceAndDedupeLine(
+          preamble,
+          /^([ \t]*(?:[-*•]\s+)?)\*\*(Priority)\*\*:\s*[^\n\r]*/gim,
+          (lead) => `${lead}**Priority**: ${meta.priority}${lead.trim() ? '' : '  '}`
+        );
+        preamble = res.text;
+        if (!res.matched && /\*\*(?:Type|Category)\*\*:\s*[^\n]+/i.test(preamble)) {
+          preamble = preamble.replace(
+            /^([ \t]*(?:[-*•]\s+)?\*\*(?:Type|Category)\*\*:\s*[^\n\r]*)/im,
+            `$1\n**Priority**: ${meta.priority}  `
+          );
+        }
+      } else {
+        preamble = preamble.replace(/^[ \t]*(?:[-*•]\s+)?\*\*Priority\*\*:\s*[^\n\r]*\r?\n?/gim, '');
+      }
+    }
+
+    if (syncAll || (updates && 'milestone' in updates)) {
+      if (meta.milestone) {
+        const res = replaceAndDedupeLine(
+          preamble,
+          /^([ \t]*(?:[-*•]\s+)?)\*\*(Milestone)\*\*:\s*[^\n\r]*/gim,
+          (lead) => `${lead}**Milestone**: ${meta.milestone}${lead.trim() ? '' : '  '}`
+        );
+        preamble = res.text;
+        if (!res.matched && /\*\*(?:Priority|Type|Category)\*\*:\s*[^\n]+/i.test(preamble)) {
+          preamble = preamble.replace(
+            /^([ \t]*(?:[-*•]\s+)?\*\*(?:Priority|Type|Category)\*\*:\s*[^\n\r]*)/im,
+            `$1\n**Milestone**: ${meta.milestone}  `
+          );
+        }
+      } else {
+        preamble = preamble.replace(/^[ \t]*(?:[-*•]\s+)?\*\*Milestone\*\*:\s*[^\n\r]*\r?\n?/gim, '');
+      }
+    }
+
+    if (syncAll || updates?.complexity) {
+      preamble = replaceAndDedupeLine(
+        preamble,
+        /^([ \t]*(?:[-*•]\s+)?)\*\*(Complexity)\*\*:\s*[^\n\r]*/gim,
+        (lead) => `${lead}**Complexity**: ${meta.complexity}${lead.trim() ? '' : '  '}`
+      ).text;
+    }
+
+    if (syncAll || updates?.estimatedEffort) {
+      preamble = replaceAndDedupeLine(
+        preamble,
+        /^([ \t]*(?:[-*•]\s+)?)\*\*((?:Estimated\s+)?Effort)\*\*:\s*[^\n\r]*/gim,
+        (lead, label) => `${lead}**${label || 'Estimated Effort'}**: ${meta.estimatedEffort}${lead.trim() ? '' : '  '}`
+      ).text;
+    }
+
+    return preamble + bodySection;
+  }
+
   private formatTicketDetailMarkdown(
     rawDetail: string,
     meta: TicketMeta,
     fallbackSummary?: string
   ): string {
-  const trimmed = rawDetail.trim();
-  const priorityLine = meta.priority ? `**Priority**: ${meta.priority}  \n` : '';
-  const milestoneLine = meta.milestone ? `**Milestone**: ${meta.milestone}  \n` : '';
+    const trimmed = rawDetail.trim();
+    const priorityLine = meta.priority ? `**Priority**: ${meta.priority}  \n` : '';
+    const milestoneLine = meta.milestone ? `**Milestone**: ${meta.milestone}  \n` : '';
 
-  if (/^#\s+[^\n]+/m.test(trimmed)) {
-    let processed = trimmed.replace(/^#\s+[^\n]+/m, `# Ticket #${meta.id}: ${meta.title}`);
-    if (!/\*\*(?:Type|Category)\*\*:/i.test(processed)) {
-      const metaBlock = `\n**Category**: ${meta.category}  \n${priorityLine}${milestoneLine}**Complexity**: ${meta.complexity}  \n**Estimated Effort**: ${meta.estimatedEffort}  \n`;
-      processed = processed.replace(/^(# Ticket[^\n]+\n)/m, `$1${metaBlock}`);
+    if (/^#\s+[^\n]+/m.test(trimmed)) {
+      let processed = trimmed.replace(/^#\s+[^\n]+/m, `# Ticket #${meta.id}: ${meta.title}`);
+      const preambleCheck = processed.split(/\n(?=(?:##|###)\s+)/)[0];
+      const hasAnyMetaLine =
+        /\*\*(?:Type|Category|Priority|Milestone|Complexity|(?:Estimated\s+)?Effort|Status)\*\*:/i.test(
+          preambleCheck
+        );
+      if (!hasAnyMetaLine) {
+        const metaBlock = `\n**Category**: ${meta.category}  \n${priorityLine}${milestoneLine}**Complexity**: ${meta.complexity}  \n**Estimated Effort**: ${meta.estimatedEffort}  \n`;
+        processed = processed.replace(/^(# Ticket[^\n]+\n)/m, `$1${metaBlock}`);
+      } else if (!/\*\*(?:Type|Category)\*\*:/i.test(preambleCheck)) {
+        processed = processed.replace(/^(# Ticket[^\n]+\n)/m, `$1**Category**: ${meta.category}  \n`);
+      }
+      processed = this.reconcileDetailMetadataHeaders(processed, meta, undefined, true);
+      if (!/(?:##|###)\s*(?:Summary|Rationale)/i.test(processed)) {
+        const summaryBlock = `\n### Summary\n${fallbackSummary || 'Summary to be defined.'}\n`;
+        processed = processed.replace(
+          /^((?:# Ticket[^\n]+\n)(?:[ \t]*(?:[-*•]\s+)?\*\*[^\n]+\n|\s*\n)*)/m,
+          `$1${summaryBlock}`
+        );
+      }
+      return processed.endsWith('\n') ? processed : `${processed}\n`;
     }
-    if (!/(?:##|###)\s*(?:Summary|Rationale)/i.test(processed)) {
-      const summaryBlock = `\n### Summary\n${fallbackSummary || 'Summary to be defined.'}\n`;
-      processed = processed.replace(/^((?:# Ticket[^\n]+\n)(?:\*\*[^\n]+\n)*)/m, `$1${summaryBlock}`);
+
+    const hasSummary = /(?:##|###)\s*(?:Summary|Rationale)/i.test(trimmed);
+    const hasBreakdown = /(?:##|###)\s*(?:Feature|Task|Fix|Implementation)\s+Breakdown/i.test(trimmed);
+
+    let body = '';
+    if (!hasSummary) {
+      body += `### Summary\n${fallbackSummary || 'Summary to be defined.'}\n\n`;
     }
-    return processed.endsWith('\n') ? processed : `${processed}\n`;
-  }
+    if (!hasBreakdown && !trimmed.startsWith('#')) {
+      body += `### Feature Breakdown\n${trimmed}\n\n### Technical Details & Architecture\n- Architecture specifications to be documented.\n\n### Open Questions & Decisions\n- None recorded at initialization.\n`;
+    } else {
+      body += `${trimmed}\n`;
+    }
 
-  const hasSummary = /(?:##|###)\s*(?:Summary|Rationale)/i.test(trimmed);
-  const hasBreakdown = /(?:##|###)\s*Feature Breakdown/i.test(trimmed);
-
-  let body = '';
-  if (!hasSummary) {
-    body += `### Summary\n${fallbackSummary || 'Summary to be defined.'}\n\n`;
-  }
-  if (!hasBreakdown && !trimmed.startsWith('#')) {
-    body += `### Feature Breakdown\n${trimmed}\n\n### Technical Details & Architecture\n- Architecture specifications to be documented.\n\n### Open Questions & Decisions\n- None recorded at initialization.\n`;
-  } else {
-    body += `${trimmed}\n`;
-  }
-
-  return `# Ticket #${meta.id}: ${meta.title}
+    return `# Ticket #${meta.id}: ${meta.title}
 **Category**: ${meta.category}  
 ${priorityLine}${milestoneLine}**Complexity**: ${meta.complexity}  
 **Estimated Effort**: ${meta.estimatedEffort}  
 
 ${body.trim()}\n`;
-}
+  }
 
   public async createTicket(input: CreateTicketInput): Promise<EsedreTicket> {
     const locations = this.resolveProjectLocations();
@@ -2085,7 +2337,15 @@ ${input.summary || 'Summary to be defined.'}
       }
     }
 
+    delete updatedMeta.lease;
     writeSafeFile(metaPath, JSON.stringify(updatedMeta, null, 2) + '\n');
+
+    if (updates.status === 'Completed' || updates.status === 'Rejected') {
+      const leasePath = path.join(locInfo.ticketDir, 'lease.json');
+      if (fs.existsSync(leasePath)) {
+        try { fs.unlinkSync(leasePath); } catch {}
+      }
+    }
 
     const newType = updates.type || updates.category;
     if (newType) { updatedMeta.type = newType; updatedMeta.category = newType; }
@@ -2094,70 +2354,25 @@ ${input.summary || 'Summary to be defined.'}
     if (rawDetailArg !== undefined) {
       const cleanDetail = normalizeDashesAndMojibake(rawDetailArg);
       let content = this.formatTicketDetailMarkdown(cleanDetail, updatedMeta, existing.detail?.summary);
-      if (updates.type || updates.category) {
-        content = content.replace(/\*\*(?:Type|Category)\*\*:\s*[^\n]+/i, `**Type**: ${updatedMeta.type}`);
-      }
-      if (updatedMeta.priority) {
-        if (/\*\*Priority\*\*:\s*[^\n]+/i.test(content)) {
-          content = content.replace(/\*\*Priority\*\*:\s*[^\n]+/i, `**Priority**: ${updatedMeta.priority}`);
-        } else if (/\*\*(?:Type|Category)\*\*:\s*[^\n]+/i.test(content)) {
-          content = content.replace(/(\*\*(?:Type|Category)\*\*:\s*[^\n]+)/i, `$1  \n**Priority**: ${updatedMeta.priority}`);
-        }
-      } else if ('priority' in updates) {
-        content = content.replace(/\*\*Priority\*\*:\s*[^\n]+\n?/i, '');
-      }
-      if (updatedMeta.milestone) {
-        if (/\*\*Milestone\*\*:\s*[^\n]+/i.test(content)) {
-          content = content.replace(/\*\*Milestone\*\*:\s*[^\n]+/i, `**Milestone**: ${updatedMeta.milestone}`);
-        } else if (/\*\*(?:Priority|Type|Category)\*\*:\s*[^\n]+/i.test(content)) {
-          content = content.replace(/(\*\*(?:Priority|Type|Category)\*\*:\s*[^\n]+)/i, `$1  \n**Milestone**: ${updatedMeta.milestone}`);
-        }
-      } else if ('milestone' in updates) {
-        content = content.replace(/\*\*Milestone\*\*:\s*[^\n]+\n?/i, '');
-      }
-      if (updates.complexity) {
-        content = content.replace(/\*\*Complexity\*\*:\s*[^\n]+/i, `**Complexity**: ${updatedMeta.complexity}`);
-      }
-      if (updates.estimatedEffort) {
-        content = content.replace(/\*\*Estimated Effort\*\*:\s*[^\n]+/i, `**Estimated Effort**: ${updatedMeta.estimatedEffort}`);
-      }
+      content = this.reconcileDetailMetadataHeaders(content, updatedMeta, updates, true);
       writeSafeFile(path.join(locInfo.ticketDir, 'detail.md'), content);
-    } else if (existing.detail && ('priority' in updates || 'milestone' in updates || updates.title || updates.type || updates.category || updates.complexity || updates.estimatedEffort)) {
-      let content = existing.detail.raw;
-      if (updates.title) {
-        content = content.replace(/^#\s*(?:Ticket\s*#?\d+\s*:\s*|\d+\s*:\s*)?[^\n]+/im, `# Ticket #${locInfo.id}: ${updatedMeta.title}`);
-      }
-      if (updates.type || updates.category) {
-        content = content.replace(/\*\*(?:Type|Category)\*\*:\s*[^\n]+/i, `**Type**: ${updatedMeta.type}`);
-      }
-      if ('priority' in updates) {
-        if (updatedMeta.priority) {
-          if (/\*\*Priority\*\*:\s*[^\n]+/i.test(content)) {
-            content = content.replace(/\*\*Priority\*\*:\s*[^\n]+/i, `**Priority**: ${updatedMeta.priority}`);
-          } else if (/\*\*(?:Type|Category)\*\*:\s*[^\n]+/i.test(content)) {
-            content = content.replace(/(\*\*(?:Type|Category)\*\*:\s*[^\n]+)/i, `$1  \n**Priority**: ${updatedMeta.priority}`);
-          }
-        } else {
-          content = content.replace(/\*\*Priority\*\*:\s*[^\n]+\n?/i, '');
-        }
-      }
-      if ('milestone' in updates) {
-        if (updatedMeta.milestone) {
-          if (/\*\*Milestone\*\*:\s*[^\n]+/i.test(content)) {
-            content = content.replace(/\*\*Milestone\*\*:\s*[^\n]+/i, `**Milestone**: ${updatedMeta.milestone}`);
-          } else if (/\*\*(?:Priority|Type|Category)\*\*:\s*[^\n]+/i.test(content)) {
-            content = content.replace(/(\*\*(?:Priority|Type|Category)\*\*:\s*[^\n]+)/i, `$1  \n**Milestone**: ${updatedMeta.milestone}`);
-          }
-        } else {
-          content = content.replace(/\*\*Milestone\*\*:\s*[^\n]+\n?/i, '');
-        }
-      }
-      if (updates.complexity) {
-        content = content.replace(/\*\*Complexity\*\*:\s*[^\n]+/i, `**Complexity**: ${updatedMeta.complexity}`);
-      }
-      if (updates.estimatedEffort) {
-        content = content.replace(/\*\*Estimated Effort\*\*:\s*[^\n]+/i, `**Estimated Effort**: ${updatedMeta.estimatedEffort}`);
-      }
+    } else if (
+      existing.detail &&
+      ('priority' in updates ||
+        'milestone' in updates ||
+        updates.status ||
+        updates.title ||
+        updates.type ||
+        updates.category ||
+        updates.complexity ||
+        updates.estimatedEffort)
+    ) {
+      const content = this.reconcileDetailMetadataHeaders(
+        existing.detail.raw,
+        updatedMeta,
+        updates,
+        false
+      );
       writeSafeFile(path.join(locInfo.ticketDir, 'detail.md'), content);
     }
     this.invalidateTicketCache(locInfo.ticketDir);
@@ -2679,5 +2894,190 @@ ${input.summary || 'Summary to be defined.'}
 
     const updatedSource = (await this.getTicket(sourceInfo.key))!;
     return { source: updatedSource, target: updatedTarget };
+  }
+
+  private readValidLeaseFromDir(ticketDir: string, projectCode: string, ticketId: number): TicketLease | null {
+    const leasePath = path.join(ticketDir, 'lease.json');
+    if (!fs.existsSync(leasePath)) return null;
+    try {
+      const parsed: TicketLease = JSON.parse(fs.readFileSync(leasePath, 'utf-8'));
+      const expMs = Date.parse(parsed.expiresAt);
+      if (!isNaN(expMs) && expMs <= Date.now()) {
+        try { fs.unlinkSync(leasePath); } catch {}
+        this.invalidateTicketCache(ticketDir);
+        return null;
+      }
+      parsed.project = projectCode;
+      parsed.ticketId = ticketId;
+      parsed.ticketKey = `${projectCode}-${ticketId}`;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  public async claimTicket(input: ClaimLeaseInput): Promise<ClaimLeaseResult> {
+    const resolved = this.resolveTicketIdentifier(input.ticketId, input.project || this.config.projectCode);
+    if (!resolved) {
+      throw new Error(`Ticket #${input.ticketId} could not be located.`);
+    }
+
+    const identity = resolveWorkerIdentity({
+      holder: input.holder,
+      agentType: input.agentType,
+      hostname: input.hostname,
+      sessionId: input.sessionId,
+      branch: input.branch,
+      worktree: input.worktree || this.workspaceRoot,
+      configDefaultAuthor: this.config.defaultAuthor,
+    });
+
+    const ttlMinutes =
+      typeof input.ttlMinutes === 'number' && input.ttlMinutes > 0
+        ? Math.min(Math.max(1, Math.round(input.ttlMinutes)), 24 * 60)
+        : DEFAULT_LEASE_TTL_MINUTES;
+
+    const existingLease = this.readValidLeaseFromDir(resolved.ticketDir, resolved.project, resolved.id);
+    let renewed = false;
+    let overridden = false;
+
+    if (existingLease) {
+      const isSameHolder = existingLease.holder.toLowerCase() === identity.holder.toLowerCase();
+      if (!isSameHolder && !input.force) {
+        throw new EsedreLeaseConflictError(resolved.key, existingLease);
+      }
+      if (isSameHolder) {
+        renewed = true;
+      } else {
+        overridden = true;
+      }
+    }
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const expiresIso = new Date(now.getTime() + ttlMinutes * 60 * 1000).toISOString();
+
+    const lease: TicketLease = {
+      ticketId: resolved.id,
+      ticketKey: resolved.key,
+      project: resolved.project,
+      holder: normalizeDashesAndMojibake(identity.holder),
+      ...(identity.agentType ? { agentType: normalizeDashesAndMojibake(identity.agentType) } : {}),
+      ...(identity.hostname ? { hostname: normalizeDashesAndMojibake(identity.hostname) } : {}),
+      ...(identity.sessionId ? { sessionId: normalizeDashesAndMojibake(identity.sessionId) } : {}),
+      ...(identity.branch ? { branch: normalizeDashesAndMojibake(identity.branch) } : {}),
+      ...(identity.worktree ? { worktree: identity.worktree } : {}),
+      claimedAt: renewed && existingLease ? existingLease.claimedAt : nowIso,
+      renewedAt: nowIso,
+      expiresAt: expiresIso,
+      ttlMinutes,
+    };
+
+    const leasePath = path.join(resolved.ticketDir, 'lease.json');
+    writeSafeFile(leasePath, JSON.stringify(lease, null, 2) + '\n');
+    this.invalidateTicketCache(resolved.ticketDir);
+
+    let ticket = (await this.getTicket(resolved.key))!;
+    const targetStatus = input.statusOnClaim ?? (ticket.meta.status === 'Planned' ? 'In Development' : undefined);
+    if (targetStatus && ticket.meta.status !== targetStatus) {
+      ticket = await this.updateTicket(resolved.key, {
+        status: targetStatus,
+        isActivePlanning: targetStatus === 'In Development' ? true : ticket.meta.isActivePlanning,
+      });
+    }
+
+    return {
+      lease,
+      ticket,
+      renewed,
+      ...(overridden ? { overridden: true } : {}),
+    };
+  }
+
+  public async renewLease(input: RenewLeaseInput): Promise<TicketLease> {
+    const resolved = this.resolveTicketIdentifier(input.ticketId, input.project || this.config.projectCode);
+    if (!resolved) {
+      throw new Error(`Ticket #${input.ticketId} could not be located.`);
+    }
+
+    const existingLease = this.readValidLeaseFromDir(resolved.ticketDir, resolved.project, resolved.id);
+    if (!existingLease) {
+      throw new Error(`Ticket ${resolved.key} does not have an active lease to renew.`);
+    }
+
+    if (input.holder && !input.force) {
+      const requestedHolder = input.holder.trim().toLowerCase();
+      if (existingLease.holder.toLowerCase() !== requestedHolder) {
+        throw new EsedreLeaseConflictError(resolved.key, existingLease);
+      }
+    }
+
+    const ttlMinutes =
+      typeof input.ttlMinutes === 'number' && input.ttlMinutes > 0
+        ? Math.min(Math.max(1, Math.round(input.ttlMinutes)), 24 * 60)
+        : existingLease.ttlMinutes || DEFAULT_LEASE_TTL_MINUTES;
+
+    const now = new Date();
+    const updatedLease: TicketLease = {
+      ...existingLease,
+      ...(input.holder ? { holder: normalizeDashesAndMojibake(input.holder.trim()) } : {}),
+      renewedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + ttlMinutes * 60 * 1000).toISOString(),
+      ttlMinutes,
+    };
+
+    const leasePath = path.join(resolved.ticketDir, 'lease.json');
+    writeSafeFile(leasePath, JSON.stringify(updatedLease, null, 2) + '\n');
+    this.invalidateTicketCache(resolved.ticketDir);
+    return updatedLease;
+  }
+
+  public async releaseTicket(
+    input: ReleaseLeaseInput
+  ): Promise<{ released: boolean; ticketKey: string; previousLease?: TicketLease }> {
+    const resolved = this.resolveTicketIdentifier(input.ticketId, input.project || this.config.projectCode);
+    if (!resolved) {
+      throw new Error(`Ticket #${input.ticketId} could not be located.`);
+    }
+
+    const existingLease = this.readValidLeaseFromDir(resolved.ticketDir, resolved.project, resolved.id);
+    if (!existingLease) {
+      return { released: false, ticketKey: resolved.key };
+    }
+
+    if (input.holder && !input.force) {
+      const requestedHolder = input.holder.trim().toLowerCase();
+      if (existingLease.holder.toLowerCase() !== requestedHolder) {
+        throw new EsedreLeaseConflictError(resolved.key, existingLease);
+      }
+    }
+
+    const leasePath = path.join(resolved.ticketDir, 'lease.json');
+    if (fs.existsSync(leasePath)) {
+      try { fs.unlinkSync(leasePath); } catch {}
+    }
+    this.invalidateTicketCache(resolved.ticketDir);
+
+    return {
+      released: true,
+      ticketKey: resolved.key,
+      previousLease: existingLease,
+    };
+  }
+
+  public async getTicketLease(id: number | string, projectCode?: string): Promise<TicketLease | null> {
+    const resolved = this.resolveTicketIdentifier(id, projectCode || this.config.projectCode);
+    if (!resolved) return null;
+    return this.readValidLeaseFromDir(resolved.ticketDir, resolved.project, resolved.id);
+  }
+
+  public async listLeases(projectCode?: string): Promise<TicketLease[]> {
+    const tickets = await this.listTickets({
+      project: projectCode === 'all' ? undefined : projectCode,
+      leased: true,
+    });
+    return tickets
+      .map((t) => t.lease)
+      .filter((l): l is TicketLease => Boolean(l));
   }
 }

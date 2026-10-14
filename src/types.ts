@@ -1,4 +1,4 @@
-export const CURRENT_ESEDRE_VERSION = '1.2.0';
+export const CURRENT_ESEDRE_VERSION = '1.3.0';
 
 export type TicketType = 'Feature' | 'Platform' | 'Tools' | 'Idea' | 'Bug';
 export type TicketCategory = TicketType; // Back-compat alias
@@ -142,6 +142,7 @@ export interface TicketMeta {
   milestone?: string;
   inheritedFeatureFlag?: string;
   links?: TicketLink[];
+  lease?: TicketLease | null;
   projectId?: number;
   project?: string;
   lastHash?: string;
@@ -186,9 +187,80 @@ export interface EsedreTicket {
   inlineComments?: any[];
   links?: EnrichedTicketLink[];
   isBlocked?: boolean;
+  lease?: TicketLease | null;
   projectDescriptor?: ProjectDescriptor;
   lastHash?: string;
   sha1?: string;
+}
+
+export const DEFAULT_LEASE_TTL_MINUTES = 60;
+
+export interface TicketLease {
+  ticketId: number;
+  ticketKey: string;
+  project: string;
+  holder: string;
+  agentType?: string;
+  hostname?: string;
+  sessionId?: string;
+  branch?: string;
+  worktree?: string;
+  claimedAt: string;
+  renewedAt: string;
+  expiresAt: string;
+  ttlMinutes: number;
+}
+
+export interface ClaimLeaseInput {
+  ticketId: number | string;
+  holder?: string;
+  agentType?: string;
+  hostname?: string;
+  sessionId?: string;
+  branch?: string;
+  worktree?: string;
+  ttlMinutes?: number;
+  force?: boolean;
+  statusOnClaim?: TicketStatus;
+  project?: string;
+}
+
+export interface RenewLeaseInput {
+  ticketId: number | string;
+  holder?: string;
+  ttlMinutes?: number;
+  force?: boolean;
+  project?: string;
+}
+
+export interface ReleaseLeaseInput {
+  ticketId: number | string;
+  holder?: string;
+  force?: boolean;
+  project?: string;
+}
+
+export interface ClaimLeaseResult {
+  lease: TicketLease;
+  ticket: EsedreTicket;
+  renewed: boolean;
+  overridden?: boolean;
+}
+
+export class EsedreLeaseConflictError extends Error {
+  public readonly ticketKey: string;
+  public readonly activeLease: TicketLease;
+
+  constructor(ticketKey: string, activeLease: TicketLease) {
+    super(
+      `Lease Conflict on Ticket ${ticketKey}: currently leased by '${activeLease.holder}'${
+        activeLease.hostname ? ` on ${activeLease.hostname}` : ''
+      } until ${activeLease.expiresAt}. Pass --force (or force: true) to override.`
+    );
+    this.name = 'EsedreLeaseConflictError';
+    this.ticketKey = ticketKey;
+    this.activeLease = activeLease;
+  }
 }
 
 export type Ticket = EsedreTicket;

@@ -19,6 +19,10 @@ All storage engines implement the `StorageAdapter` contract defined in `src/stor
 - `getTicket(id: number | string): Promise<EsedreTicket | null>`
 - `createTicket(input: CreateTicketInput): Promise<EsedreTicket>`
 - `updateTicket(id: number | string, updates: Partial<TicketMeta>, lastHash?: string): Promise<EsedreTicket>`
+- `claimTicket(id: number | string, input: ClaimTicketInput): Promise<EsedreTicket>`
+- `renewLease(id: number | string, input: RenewLeaseInput): Promise<EsedreTicket>`
+- `releaseTicket(id: number | string, input: ReleaseTicketInput): Promise<EsedreTicket>`
+- `listActiveLeases(project?: string): Promise<TicketLeaseSummary[]>`
 - `addTicketLink(sourceId: number | string, relation: TicketLinkRelation, targetId: number | string, options?: { author?: string; project?: string }): Promise<{ source: EsedreTicket; target?: EsedreTicket }>`
 - `removeTicketLink(sourceId: number | string, targetId: number | string, options?: { relation?: TicketLinkRelation; project?: string }): Promise<{ source: EsedreTicket; target?: EsedreTicket }>`
 - `getPlan(id: number | string): Promise<string | null>`
@@ -64,6 +68,7 @@ Methods accept both numeric IDs (`96`) and compound project keys (`Profe-96`, `E
         └── tickets/
             ├── 1/
             │   ├── meta.json             # Core metadata (id, title, type, priority, milestone, sha1)
+            │   ├── lease.json            # Ephemeral TTL-backed advisory ticket lease
             │   ├── detail.md             # Markdown specification and breakdown
             │   ├── comments.json         # Historical developer and agent comments
             │   ├── implementation_plan.md# Active implementation plan
@@ -74,10 +79,12 @@ Methods accept both numeric IDs (`96`) and compound project keys (`Profe-96`, `E
             └── ...
 ```
 
-## 4. Safe File Writing (`writeSafeFile`)
+## 4. Safe File Writing & `detail.md` Metadata Reconciliation
 
 - All mutations use `writeSafeFile`, ensuring trailing newlines (`\n`) are preserved.
 - Creates parent directories recursively if they do not already exist.
+- **Metadata Header Reconciliation (`reconcileDetailMetadataHeaders`)**: Whenever a ticket's metadata (`title`, `type`, `status`, `priority`, `milestone`, `complexity`, `estimatedEffort`) is updated via `updateTicket`, `saveDetail`, `claimTicket`, or `releaseTicket`, `FilesystemStorageAdapter` reconciles and deduplicates top-of-file metadata header lines (both unbulleted `**Key**:` and bulleted `- **Key**:`) in `detail.md` so `detail.raw` never drifts from `meta.json`.
+- **Canonical `detail.md` Section Parsing**: `parseDetailMarkdown` recognizes `### Feature Breakdown`, `### Task Breakdown`, `### Fix Breakdown`, and `### Implementation Breakdown` as first-class breakdown headings (preserving indented sub-bullets under numbered items), and accurately routes `- **Technical Detail**:`, `- **Architecture**:`, and `- **Root Cause**:` bullets to `technicalDetails[]` while keeping `openQuestions[]` scoped to open question bullets.
 
 ## 5. Ticket Metadata Schema (`meta.json`)
 
@@ -119,3 +126,46 @@ Tickets with uncompleted `blocked-by` links have `isBlocked: true` projected dyn
 
 - **Project Grounding Manifests**: Per-project metadata in `project.json` (for hubs) or `.esedre/project.json` (for in-repo/federated repos) stores high-level architectural mission statements, technology stack constraints, and guidelines references.
 - **Authoritative Source of Truth**: User-maintained agent guidelines (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`) are strictly the primary source of truth. Esedre references and anchors to them rather than duplicating rules that can become stale.
+
+## 8. Cross-Project Ticket Linking & Dependency Graph Architecture
+
+1. **Semantic Relations & Inverse Mapping**:
+   - Tickets support bi-directional linked relationships across the same project or across different projects:
+     - `relates-to` <-> `relates-to` (symmetric)
+     - `blocks` <-> `blocked-by` (inverse asymmetric)
+     - `parent-of` <-> `child-of` (inverse hierarchy)
+     - `duplicates` <-> `duplicated-by` (inverse deduplication)
+2. **Bi-Directional Synchronization & Consistency**:
+   - Adding a link on Ticket A automatically registers the reciprocal inverse link on Ticket B when both are in storage scope.
+   - Removing a link on either ticket automatically clears both sides.
+3. **Dependency & Blocker Awareness**:
+   - When any link with relation `blocked-by` points to a target ticket with status !== `'Completed'`, the ticket is dynamically projected with `isBlocked: true`.
+   - The CLI formatter decorates blocked tickets with `[BLOCKED]` warning badges.
+   - LLM agents query unblocked ready work via `ese list --blocked` or `esedre_list_tickets` with `isBlocked: false`.
+4. **Cycle Detection Invariant**:
+   - Cycle detection inspects `blocks` and `parent-of` relationship trees before persisting links.
+   - Attempting to establish a circular dependency throws an error (`Cannot link ... would create a cycle`).
+5. **Agent Project Allow-List Redaction**:
+   - If an authorized ticket links to a target in a project outside the active workspace's `allowedProjects`, the link record is preserved, but target metadata is redacted to `targetTitle: '[Restricted Project]'` and target status/type are stripped.
+
+## 9. Dedicated Milestones & Umbrella Feature Flags
+
+1. **First-Class Entities**:
+   - Milestones are stored in `projects/<Code>/milestones.json` (or `.esedre/milestones.json` in standalone repo mode), distinct from tickets.
+   - Schema: `{ id: number, project: string, title: string, description?: string, status: 'Planned' | 'Active' | 'Completed' | 'Closed', featureFlag?: string, targetDate?: string, createdAt: string, updatedAt: string, completedAt?: string }`.
+2. **Umbrella Feature Flag Inheritance**:
+   - When a milestone declares an optional `featureFlag`, all member tickets linked to that milestone inherit the flag automatically (`meta.inheritedFeatureFlag = milestone.featureFlag`). If a member ticket does not specify its own `featureFlag`, it defaults to the milestone's umbrella flag. Setting `milestone: 'none'` unlinks the ticket and clears inherited flags.
+3. **CLI & MCP Surface**:
+   - CLI: `ese milestone [list|get|create|update|delete]`.
+   - MCP: `esedre_list_milestones`, `esedre_get_milestone`, `esedre_create_milestone`, `esedre_update_milestone`.
+
+## 10. Ticket Leases & Mutual Exclusion (`ese lease`)
+
+1. **Ephemeral Lease File (`lease.json` & `ticket.lease`)**:
+   - Stored in `projects/<Code>/tickets/<id>/lease.json` orthogonally to durable `meta.assignee`:
+     `{ holder: string, system?: string, claimedAt: string, expiresAt: string, ttlMinutes: number, branch?: string, pid?: number }`.
+2. **Storage Adapter Lease Methods**:
+   - `claimTicket(id, input)`: Acquires a lease on a ticket (`In Development`, default 60m TTL). Throws `EsedreLeaseConflictError` if an unexpired lease is held by a different `holder` unless `force: true` is passed. Expired leases (`expiresAt <= now`) are automatically reclaimed.
+   - `renewLease(id, input)`: Extends `expiresAt` for the active lease holder.
+   - `releaseTicket(id, input)`: Removes `lease.json`, optionally transitions `status` (`Completed` or `Planned`), and optionally appends completion notes to ticket comments.
+   - `listActiveLeases(project?)`: Returns all unexpired leases across authorized projects.

@@ -13,6 +13,11 @@ import {
   CreateMilestoneInput,
   UpdateMilestoneInput,
   TicketLinkRelation,
+  TicketLease,
+  ClaimLeaseInput,
+  RenewLeaseInput,
+  ReleaseLeaseInput,
+  ClaimLeaseResult,
 } from '../types.js';
 
 export interface CreateTicketInput {
@@ -43,6 +48,8 @@ export interface ListTicketsFilter {
   milestone?: string;
   isBlocked?: boolean;
   linkedTo?: string;
+  leased?: boolean;
+  leasedBy?: string;
   search?: string;
 }
 
@@ -124,5 +131,11 @@ export interface StorageAdapter {
   ): Promise<{ filename: string; relativePath: string }>;
   getAttachmentPath?(id: number | string, filename: string): string | null;
   getDuplicateProjectWarnings?(): DuplicateProjectWarning[];
+
+  claimTicket(input: ClaimLeaseInput): Promise<ClaimLeaseResult>;
+  renewLease(input: RenewLeaseInput): Promise<TicketLease>;
+  releaseTicket(input: ReleaseLeaseInput): Promise<{ released: boolean; ticketKey: string; previousLease?: TicketLease }>;
+  getTicketLease(id: number | string, projectCode?: string): Promise<TicketLease | null>;
+  listLeases(projectCode?: string): Promise<TicketLease[]>;
 }
 

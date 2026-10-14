@@ -40,13 +40,25 @@ The unified gateway at port `5674` coordinates two internal sub-services:
 |---|---|---|---|
 | **Gateway Proxy** | `5674` | `/` $\rightarrow$ `/app/` | Single public entry point for web browsers, reverse proxies, and tunnels |
 | **Web UI Server** | `5675` | `/app` | Serves compiled React 19 UI bundle from `dist/web/` |
-| **REST API Server** | `5676` | `/api` | JSON endpoints for ticket inspection, bulk hydration (`/api/planning/all`), persistence (`/api/planning/answers`, `/api/planning/details`, `/api/planning/inline-comments`, `/api/planning/upload-attachment`, `/api/planning/attachment`), and health pings |
+| **REST API Server** | `5676` | `/api` | JSON endpoints for ticket inspection, bulk hydration (`/api/planning/all`), leases (`/api/planning/leases`), persistence (`/api/planning/answers`, `/api/planning/details`, `/api/planning/inline-comments`, `/api/planning/upload-attachment`, `/api/planning/attachment`), and health pings |
 
 ### Routing Logic
 - `GET /` $\rightarrow$ Redirects/rewrites to `/app/`.
 - `GET /app` $\rightarrow$ Proxies to internal Web UI (`5675`).
 - `GET /api/*` $\rightarrow$ Proxies to internal REST API (`5676`).
 - Query parameters: `?project=all` activates cross-project portfolio overview; `?project=Profe` filters to specific project.
+
+### Multi-Project Ticket ID & Performance Architecture
+1. **Compound ID Uniqueness**:
+   - In cross-project or portfolio mode (`project=all`), numeric ticket IDs collide across repositories (e.g. `Profe-1` vs `Esedre-1`). All storage lookup maps, URL anchors, and React keys must use the compound key `${projectCode}-${ticketNumber}`.
+   - **DOM Anchor Invariant**: Ticket cards and scroll targets must strictly use `id="feature-card-${projectCode}-${number}"`, never bare `id="feature-card-${number}"`, preventing DOM query collisions and broken jump navigation.
+2. **Prohibition of N+1 Hydration Waterfalls**:
+   - Initial UI load must fetch consolidated state in a single HTTP round-trip via `/api/planning/all`.
+   - Sequential N+1 client fetches across `getMetas()`, `getTicketDetails()`, `getAnswers()`, `getComments()`, and `getPlanHistory()` on initial mount are strictly forbidden.
+3. **Ticket Lease REST Endpoints**:
+   - `GET /api/planning/leases`: Returns active unexpired ticket leases across projects with `remainingSeconds`.
+   - `POST /api/planning/leases/claim`: Acquires a ticket lease.
+   - `POST /api/planning/leases/release`: Releases an active ticket lease.
 
 ---
 

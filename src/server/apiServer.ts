@@ -172,7 +172,7 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
             const code = t.projectDescriptor?.code || t.meta.project || 'Profe';
             const prefixedKey = `${code}-${t.meta.id}`;
 
-            const metaWithLinks = { ...t.meta, links: t.links || t.meta.links || [], isBlocked: t.isBlocked };
+            const metaWithLinks = { ...t.meta, links: t.links || t.meta.links || [], isBlocked: t.isBlocked, lease: t.lease || t.meta.lease || null };
             metasMap[prefixedKey] = metaWithLinks;
             if (!metasMap[numKey] || code.toUpperCase() === 'PROF') {
               metasMap[numKey] = metaWithLinks;
@@ -388,6 +388,13 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
           const project = url.searchParams.get('project') || undefined;
           const milestones = await reqStorage.listMilestones(project);
           sendJson(res, 200, { milestones });
+          return true;
+        }
+
+        if (pathname === '/api/planning/leases') {
+          const project = url.searchParams.get('project') || undefined;
+          const leases = await reqStorage.listLeases(project);
+          sendJson(res, 200, { leases });
           return true;
         }
       }
@@ -642,6 +649,64 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
           sendJson(res, 200, { success: true, source: result.source, target: result.target });
           return true;
         }
+
+        if (pathname === '/api/planning/leases/claim') {
+          invalidateApiCache();
+          const { ticketId, holder, agentType, hostname, sessionId, branch, worktree, ttlMinutes, force, project } = body;
+          if (!ticketId) {
+            sendJson(res, 400, { error: 'ticketId is required.' });
+            return true;
+          }
+          const result = await reqStorage.claimTicket({
+            ticketId,
+            holder,
+            agentType,
+            hostname,
+            sessionId,
+            branch,
+            worktree,
+            ttlMinutes,
+            force: Boolean(force),
+            project,
+          });
+          sendJson(res, 200, { success: true, ...result });
+          return true;
+        }
+
+        if (pathname === '/api/planning/leases/renew') {
+          invalidateApiCache();
+          const { ticketId, holder, ttlMinutes, force, project } = body;
+          if (!ticketId) {
+            sendJson(res, 400, { error: 'ticketId is required.' });
+            return true;
+          }
+          const lease = await reqStorage.renewLease({
+            ticketId,
+            holder,
+            ttlMinutes,
+            force: Boolean(force),
+            project,
+          });
+          sendJson(res, 200, { success: true, lease });
+          return true;
+        }
+
+        if (pathname === '/api/planning/leases/release') {
+          invalidateApiCache();
+          const { ticketId, holder, force, project } = body;
+          if (!ticketId) {
+            sendJson(res, 400, { error: 'ticketId is required.' });
+            return true;
+          }
+          const result = await reqStorage.releaseTicket({
+            ticketId,
+            holder,
+            force: Boolean(force),
+            project,
+          });
+          sendJson(res, 200, { success: true, ...result });
+          return true;
+        }
       }
 
       sendJson(res, 404, { error: `Endpoint not found: ${pathname}` });
@@ -649,6 +714,10 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
     } catch (err: any) {
       if (err.name === 'EsedreAuthorizationError' || err.message?.includes('outside this workspace\'s authorized scope') || err.message?.includes('Access Denied')) {
         sendJson(res, 403, { error: err.message });
+        return true;
+      }
+      if (err.name === 'EsedreLeaseConflictError') {
+        sendJson(res, 409, { error: err.message, ticketKey: err.ticketKey, activeLease: err.activeLease });
         return true;
       }
       console.error('[Esedre API Error]:', err);

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { ensureGlobalEsedreStore } from './server/daemon.js';
 import {
@@ -207,7 +208,12 @@ export const HISTORIC_SKILL_HASHES: string[] = [
   '05f129fb6e06a18df00215af105567abcbf0bc67',
   '5d330ecf8fc96f383946e0351adb60378afa70f0',
   '23716c9db561e52e5115dc364fe154d3a7bc1e23',
+  '75d50d5f9cf9348cca9d9b2466e04cf7992ef17e',
+  'd0bd99ea93d9c65245b3be51188d4bc153024092',
+  'e5d4fe4f2ae0bd464bad877ea1e5ab63cef747fa',
+  'd25597e8c2c26cdc5873e5dbf02335032db07580',
 ];
+
 
 export const ESEDRE_SKILL_TEMPLATE = `---
 name: esedre
@@ -216,7 +222,7 @@ description: Tooling and workflow reference for interacting with the Esedre deve
 
 # Esedre Planning & Roadmap Workflow
 
-Esedre is the developer ticketing and LLM coding partner coordination platform. The engine codebase resides in the standalone repository \`aellinsar/esedre\` (\`../esedre\`), and operates on decoupled ticket repositories (such as \`aellinsar/esedre-data\` configured in \`.esedre/esedre.json\`). Interact with tickets via in-repo shell wrappers in \`.esedre/\` (\`.esedre/ese\`), or the global \`ese\` CLI.
+Esedre is the developer ticketing and LLM coding partner coordination platform. The engine codebase resides in the standalone repository \`aellinsar/esedre\` (\`../esedre\`), and operates on decoupled ticket repositories (such as \`aellinsar/esedre-data\` configured in \`~/.esedre/config.json\` or \`.esedre/esedre.json\`). Interact with tickets via in-repo shell wrappers in \`.esedre/\` (\`.esedre/ese\` on POSIX/macOS/Linux/Git Bash, or \`.\\.esedre\\ese.cmd\` on Windows PowerShell/CMD), or the global \`ese\` CLI.
 
 ## 0. Authoritative Ingress Hierarchy & Zero-Latency Context (\`.esedre/snapshot.json\`)
 
@@ -225,38 +231,49 @@ All ticket discovery, inspection, and state management strictly follow this posi
 1. **Step 1 (Default for Read-Only Inspection) - Local Snapshot Projection**:
    Always read \`.esedre/snapshot.json\` in the workspace root first. It provides an immediate, zero-latency local projection containing all active and completed tickets, summaries, implementation plans, revision numbers, completion dates (\`completedAt\`), and staleness metrics (\`daysSinceUpdate\`).
 2. **Step 2 (Dynamic Queries & State Mutations) - Esedre MCP Tools**:
-   Use first-class MCP tools when active in the session (\`esedre_list_tickets\`, \`esedre_get_ticket\`, \`esedre_get_plan\`, \`esedre_save_plan\`, \`esedre_update_ticket\`, \`esedre_add_comment\`).
+   Use first-class MCP tools when active in the session (\`esedre_list_tickets\`, \`esedre_get_ticket\`, \`esedre_get_plan\`, \`esedre_save_plan\`, \`esedre_update_ticket\`, \`esedre_claim_ticket\`, \`esedre_renew_lease\`, \`esedre_release_ticket\`, \`esedre_list_leases\`, \`esedre_add_comment\`).
 3. **Step 3 (Terminal & Script Fallback) - In-Repo CLI Wrapper**:
-   Use \`.esedre/ese\` (\`.esedre/ese get\`, \`.esedre/ese plan\`, \`.esedre/ese update\`, \`.esedre/ese snapshot\`, \`.esedre/ese refresh\`).
+   - **POSIX (macOS, Linux, Git Bash, WSL)**: \`.esedre/ese <command>\` (e.g. \`.esedre/ese get\`, \`.esedre/ese plan\`, \`.esedre/ese update\`, \`.esedre/ese lease\`, \`.esedre/ese snapshot\`).
+   - **Windows (PowerShell / CMD)**: \`.\\.esedre\\ese.cmd <command>\` or \`.\\.esedre\\ese.ps1 <command>\` (do not invoke the extensionless POSIX script \`.esedre/ese\` directly in PowerShell or \`cmd.exe\`, as Windows will fail or prompt to select an application to open the file).
 4. **Storage Boundary**:
    Backing ticket hubs (such as \`esedre-data\`) represent data storage managed by the engine. All agent interactions with roadmap tickets flow through the snapshot projection, MCP tools, or CLI wrappers.
 
 ## 1. Model Context Protocol (MCP) Tools
 
-When Esedre MCP is active in your agent session (\`.agents/mcp_config.json\`), use these tools directly:
+When Esedre MCP is active in your agent session (\`.agents/mcp.json\` or \`.agents/mcp_config.json\`), use these tools directly:
 
 | Tool | Purpose | Key Arguments |
 |---|---|---|
 | \`esedre_list_tickets\` | List roadmap tickets with filters | \`project\` (e.g. \`Profe\`, \`Esedre\`, \`Alce\`), \`status\`, \`type\`, \`priority\`, \`milestone\`, \`isBlocked\`, \`linkedTo\`, \`search\`, \`includePlan\` |
-| \`esedre_get_ticket\` | Full specification, summary, comments, revision & sha1 | \`ticketId\` (numeric e.g. \`96\` or compound e.g. \`Profe-96\`) |
+| \`esedre_get_ticket\` | Full specification, summary, comments, links, lease, revision & sha1 | \`ticketId\` (numeric e.g. \`96\` or compound e.g. \`Profe-96\`) |
 | \`esedre_get_plan\` | Active implementation plan markdown | \`ticketId\` (numeric or compound) |
 | \`esedre_save_plan\` | Save implementation plan markdown with OCC | \`ticketId\`, \`planMarkdown\`, \`lastHash\` |
-| \`esedre_create_ticket\` | Mint a new ticket with auto sequential ID | \`title\` (max 48 chars), \`type\`, \`project\`, \`effort\`, \`summary\`, \`detail\` |
-| \`esedre_update_ticket\` | Update ticket attributes with OCC | \`ticketId\`, \`status\`, \`type\`, \`title\`, \`complexity\`, \`effort\`, \`inDevelopment\`, \`featureFlag\`, \`lastHash\` |
+| \`esedre_create_ticket\` | Mint a new ticket with auto sequential ID | \`title\` (max 48 chars), \`type\`, \`project\`, \`priority\`, \`milestone\`, \`effort\`, \`summary\`, \`detail\` |
+| \`esedre_update_ticket\` | Update ticket attributes with OCC | \`ticketId\`, \`status\`, \`type\`, \`priority\`, \`milestone\`, \`title\`, \`detail\`, \`detailMarkdown\`, \`complexity\`, \`effort\`, \`inDevelopment\`, \`featureFlag\`, \`lastHash\` |
+| \`esedre_claim_ticket\` | Claim an ephemeral TTL lease on a ticket (\`In Development\`) | \`ticketId\`, \`holder\`/\`workerId\`, \`agentType\`/\`system\`, \`ttlMinutes\`, \`branch\`, \`force\` |
+| \`esedre_renew_lease\` | Extend an active ticket lease TTL | \`ticketId\`, \`holder\`/\`workerId\`, \`system\`, \`ttlMinutes\` |
+| \`esedre_release_ticket\` | Release a ticket lease and optionally transition status | \`ticketId\`, \`holder\`/\`workerId\`, \`system\`, \`finalStatus\`, \`notes\`, \`force\` |
+| \`esedre_list_leases\` | List all active unexpired ticket leases | \`project\` |
+| \`esedre_link_ticket\` | Establish bi-directional ticket relationship | \`sourceTicketId\`, \`relation\` (\`relates-to\` \\| \`blocks\` \\| \`parent-of\` \\| \`duplicates\`), \`targetTicketId\`, \`author\` |
+| \`esedre_unlink_ticket\` | Remove bi-directional ticket relationship | \`sourceTicketId\`, \`targetTicketId\`, \`relation\` |
+| \`esedre_list_milestones\` | List project milestones and deliverables progress | \`project\` |
+| \`esedre_get_milestone\` | Get milestone specs, umbrella flag, and member tickets | \`milestoneId\` (numeric or title), \`project\` |
+| \`esedre_create_milestone\` | Create a project milestone with optional umbrella flag | \`title\`, \`project\`, \`featureFlag\`, \`status\`, \`targetDate\`, \`description\` |
+| \`esedre_update_milestone\` | Update milestone status, umbrella flag, or title | \`milestoneId\`, \`project\`, \`title\`, \`featureFlag\`, \`status\`, \`targetDate\`, \`description\` |
 | \`esedre_add_comment\` | Append developer or agent comment | \`ticketId\`, \`text\`, \`file\`, \`author\` |
 
 ## 2. Core CLI Commands (Fallback via \`run_command\`)
 
-Both \`esedre\` and \`ese\` work interchangeably:
+Both \`esedre\` and \`ese\` work interchangeably. On POSIX shells use \`.esedre/ese <command>\`; on Windows PowerShell or CMD use \`.\\.esedre\\ese.cmd <command>\` (or \`.\\.esedre\\ese.ps1 <command>\`):
 
 ### List Tickets
 \`\`\`bash
-.esedre/ese list [-p|--project <code|all>] [-s|--status <status>] [-t|--type <type>] [-q|--search <q>] [--json]
+.esedre/ese list [-p|--project <code|all>] [-s|--status <status>] [-t|--type <type>] [-P|--priority <priority>] [-m|--milestone <name>] [--blocked] [--linked-to <ticketKey>] [-q|--search <q>] [--json]
 \`\`\`
 
 ### Read Ticket Details
 \`\`\`bash
-.esedre/ese get <ticketId> [--json]
+.esedre/ese get <ticketId...> [--json]
 \`\`\`
 
 ### Read or Update Implementation Plans
@@ -268,14 +285,35 @@ Both \`esedre\` and \`ese\` work interchangeably:
 
 ### Create a Ticket
 \`\`\`bash
-.esedre/ese create --title "..." [-p|--project <code>] [-t|--type Feature] [--complexity Medium] [--effort "2.0 - 4.0 hours"] [--detail "<md>"] [--file <path>] [--json]
+.esedre/ese create --title "..." [-p|--project <code>] [-t|--type Feature] [-P|--priority High] [-m|--milestone <name>] [--complexity Medium] [--effort "2.0 - 4.0 hours"] [--detail "<md>"] [--file <path>] [--json]
 \`\`\`
 
 ### Update Ticket Status & Attributes
 \`\`\`bash
 .esedre/ese update <ticketId> --status "In Development"
 .esedre/ese update <ticketId> --status "Completed"
-.esedre/ese update <ticketId> --type Feature --complexity Medium --effort "2.0 - 4.0 hours"
+.esedre/ese update <ticketId> --type Feature -P High --complexity Medium --effort "2.0 - 4.0 hours"
+.esedre/ese update <ticketId> -P none           # Clears priority
+.esedre/ese update <ticketId> -m "Release 1.0"  # Links ticket to milestone (inherits umbrella feature flag)
+.esedre/ese update <ticketId> -m none           # Unlinks ticket from milestone
+.esedre/ese update <ticketId> --detail "<markdownContent>"  # Updates specification markdown
+.esedre/ese update <ticketId> --file <detailFilePath>       # Overwrites specification from file
+\`\`\`
+
+### Ticket Specification (\`detail.md\`) Sections
+When authoring or updating a ticket's \`detail.md\` (via \`--detail\`, \`--file\`, or \`esedre_update_ticket\`), the snapshot compiler and UI parser recognize the following canonical \`###\` headings:
+- \`### Summary\`: Concise overview of the problem or feature.
+- \`### Feature Breakdown\` (or aliases \`### Task Breakdown\`, \`### Fix Breakdown\`, \`### Implementation Breakdown\`): Numbered or bulleted deliverables and fix steps (indented sub-bullets are preserved under their parent item). Use \`### Fix Breakdown\` or \`### Task Breakdown\` naturally for \`Bug\` and \`Tools\` tickets.
+- \`### Technical Details\` (or \`### Technical Details & Architecture\`): Bold-keyed architectural notes (e.g. \`- **Architecture**: ...\`, \`- **Key Modules**: ...\`, \`- **Root Cause**: ...\`, \`- **Technical Detail**: ...\`).
+- \`### Open Questions\` (or \`### Open Questions & Decisions\`): Unresolved design questions (\`- **QuestionId**: Question text?\`), which populate \`openQuestions[]\` in \`.esedre/snapshot.json\`.
+
+### Ticket Leases (\`ese lease\`)
+\`\`\`bash
+.esedre/ese lease claim <ticketId> [--worker-id <id>] [--system <name>] [--ttl <minutes>] [--branch <branch>] [--force] [--json]
+.esedre/ese lease renew <ticketId> [--worker-id <id>] [--system <name>] [--ttl <minutes>] [--json]
+.esedre/ese lease release <ticketId> [--worker-id <id>] [--system <name>] [--status <Completed|Planned>] [--notes "..."] [--force] [--json]
+.esedre/ese lease list [-p|--project <code|all>] [--json]
+# Top-level aliases: ese claim, ese renew, ese release, ese leases
 \`\`\`
 
 ### Append Comments or Notes
@@ -283,6 +321,23 @@ Both \`esedre\` and \`ese\` work interchangeably:
 .esedre/ese comment <ticketId> "Verified implementation." --author "Agent"
 .esedre/ese comment <ticketId> --file <commentFilePath> --author "Agent"
 .esedre/ese comment <ticketId> --text "Verified implementation." --author "Agent"
+\`\`\`
+
+### Link or Unlink Tickets
+\`\`\`bash
+.esedre/ese link <sourceId> <relation> <targetId> [--author "..."]
+.esedre/ese unlink <sourceId> <targetId> [--relation <relation>]
+# Supported relations: relates-to, blocks, parent-of, duplicates
+# Inverse reciprocal links are automatically synchronized.
+\`\`\`
+
+### Manage Milestones & Umbrella Feature Flags
+\`\`\`bash
+.esedre/ese milestone list [-p|--project <code>] [--json]
+.esedre/ese milestone get <id|title> [-p|--project <code>] [--json]
+.esedre/ese milestone create --title "..." [-p|--project <code>] [--flag <flag>] [--status <status>] [--target-date <YYYY-MM-DD>] [--description "..."] [--json]
+.esedre/ese milestone update <id|title> [-p|--project <code>] [--title "..."] [--flag <flag|none>] [--status <status>] [--target-date <YYYY-MM-DD>] [--description "..."] [--json]
+.esedre/ese milestone delete <id|title> [-p|--project <code>] [--json]
 \`\`\`
 
 ### Regenerate Snapshot
@@ -327,7 +382,10 @@ If the host application declares any or all of the 12 core design tokens on \`:r
 ## 4. Safety & Invariants
 - **Always use \`--json\`** for CLI programmatic inspection.
 - **Optimistic Concurrency**: Writes support \`--last-hash <hash>\` to prevent overwriting concurrent updates.
+- **Ticket Leases (\`ese lease\`)**: Claim a lease (\`ese lease claim <id>\` or \`esedre_claim_ticket\`) when starting active work so concurrent agent sessions or subagents do not collide on the same ticket, and release it (\`ese lease release <id>\`) upon completion.
 - **Universal Type Naming**: Always use \`type\` (\`Feature\`, \`Platform\`, \`Tools\`, \`Idea\`, \`Bug\`). The legacy name \`category\` is deprecated.
+- **Ticket Priority**: The \`priority\` field is optional (\`Critical\`, \`High\`, \`Medium\`, \`Low\`, or unset/null). Backwards compatible with legacy tickets lacking a priority field. To clear via CLI use \`-P none\` or \`--priority none\` (in code/MCP, pass \`null\` or \`'none'\`).
+- **Milestones & Umbrella Feature Flags**: Milestones group tickets into deliverables with completion metrics. Milestones can declare an optional umbrella feature flag which member tickets inherit automatically. Unlinking a ticket (\`-m none\`) removes inherited flags.
 - **Compound IDs for Multi-Project Portfolios**: In \`project=all\`, ticket IDs are \`\${projectCode}-\${id}\` (e.g. \`Profe-1\`, \`Esedre-1\`). DOM anchors strictly use \`feature-card-\${projectCode}-\${id}\`.
 - **Never delete tickets** directly via filesystem.
 - **Workspace Scoping**: An LLM coding partner operates strictly within the authorized project scope declared in the local repository configuration. Central repository linking and system-level configuration are managed separately; focus roadmap work, implementation plans, and verification notes on this project.
@@ -350,6 +408,43 @@ export interface ConfigureOptions {
   force?: boolean;
 }
 
+export const AGENT_RULE_MAX_BYTES = 24000;
+
+export interface AgentRuleSizeWarning {
+  file: string;
+  bytes: number;
+  limitBytes: number;
+  message: string;
+}
+
+export function checkAgentRuleSizes(targetDir: string): AgentRuleSizeWarning[] {
+  const candidates = [
+    'AGENTS.md',
+    'GEMINI.md',
+    '.agents/AGENTS.md',
+    '.agents/GEMINI.md',
+    '.gemini/GEMINI.md',
+  ];
+  const warnings: AgentRuleSizeWarning[] = [];
+  for (const rel of candidates) {
+    const fullPath = path.join(targetDir, rel);
+    if (fs.existsSync(fullPath)) {
+      try {
+        const stat = fs.statSync(fullPath);
+        if (stat.isFile() && stat.size > AGENT_RULE_MAX_BYTES) {
+          warnings.push({
+            file: rel,
+            bytes: stat.size,
+            limitBytes: AGENT_RULE_MAX_BYTES,
+            message: `${rel} is ${stat.size.toLocaleString()} bytes (exceeds ${AGENT_RULE_MAX_BYTES.toLocaleString()}-byte agent rule context limit and will be truncated; extract detailed specs into .agents/skills/<name>/SKILL.md).`,
+          });
+        }
+      } catch {}
+    }
+  }
+  return warnings;
+}
+
 export interface ConfigureResult {
   esedreJsonCreatedOrUpdated: boolean;
   projectRegistered?: boolean;
@@ -365,6 +460,7 @@ export interface ConfigureResult {
   globalStoreStatus: 'ready' | 'warning';
   globalStorePath: string;
   globalStoreError?: string;
+  ruleSizeWarnings: AgentRuleSizeWarning[];
 }
 
 export function plantWrappers(targetDir: string): void {
@@ -391,37 +487,107 @@ export function plantWrappers(targetDir: string): void {
   }
 }
 
-export function setupMcpConfig(targetDir: string): boolean {
-  const agentsDir = path.join(targetDir, '.agents');
-  fs.mkdirSync(agentsDir, { recursive: true });
-  const mcpConfigPath = path.join(agentsDir, 'mcp_config.json');
+export function setupGlobalAntigravityMcpConfig(options: { geminiDir?: string } = {}): boolean {
+  const geminiDir =
+    options.geminiDir ||
+    process.env.ESEDRE_GEMINI_DIR ||
+    (process.env.VITEST ? null : path.join(os.homedir(), '.gemini'));
 
-  let configObj: any = { mcpServers: {} };
-  if (fs.existsSync(mcpConfigPath)) {
-    try {
-      configObj = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf-8'));
-      if (!configObj.mcpServers) configObj.mcpServers = {};
-    } catch {}
-  }
-
-  if (process.platform === 'win32') {
-    configObj.mcpServers.esedre = {
-      command: 'cmd.exe',
-      args: ['/c', '.esedre\\esedre.cmd', 'mcp'],
-    };
-  } else {
-    configObj.mcpServers.esedre = {
-      command: '.esedre/esedre',
-      args: ['mcp'],
-    };
+  if (!geminiDir || !fs.existsSync(geminiDir)) {
+    return false;
   }
 
   try {
-    fs.writeFileSync(mcpConfigPath, JSON.stringify(configObj, null, 2) + '\n', 'utf-8');
+    const configDir = path.join(geminiDir, 'config');
+    fs.mkdirSync(configDir, { recursive: true });
+    const mcpConfigPath = path.join(configDir, 'mcp_config.json');
+
+    let configObj: any = { mcpServers: {} };
+    if (fs.existsSync(mcpConfigPath)) {
+      try {
+        configObj = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf-8'));
+        if (!configObj || typeof configObj !== 'object') configObj = {};
+        if (!configObj.mcpServers || typeof configObj.mcpServers !== 'object') {
+          configObj.mcpServers = {};
+        }
+      } catch {
+        configObj = { mcpServers: {} };
+      }
+    }
+
+    const existing = configObj.mcpServers.esedre;
+    const existingArgs = Array.isArray(existing?.args) ? existing.args.join(' ') : '';
+    const isBareRelativeWrapper =
+      existing?.command === '.esedre/esedre' ||
+      existing?.command === '.esedre\\esedre.cmd' ||
+      (existing?.command === 'cmd.exe' &&
+        existingArgs.includes('.esedre\\esedre.cmd') &&
+        !existingArgs.toLowerCase().includes('if exist'));
+
+    if (!existing || isBareRelativeWrapper) {
+      if (process.platform === 'win32') {
+        const globalNpmEse = path.join(
+          process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
+          'npm',
+          'ese.cmd'
+        );
+        const fallbackCmd = fs.existsSync(globalNpmEse) ? `call "${globalNpmEse}" mcp` : 'call ese mcp';
+        configObj.mcpServers.esedre = {
+          command: 'cmd.exe',
+          args: ['/c', `if exist .esedre\\esedre.cmd (call .esedre\\esedre.cmd mcp) else (${fallbackCmd})`],
+        };
+      } else {
+        configObj.mcpServers.esedre = {
+          command: 'sh',
+          args: ['-c', 'if [ -x .esedre/esedre ]; then exec .esedre/esedre mcp; else exec ese mcp; fi'],
+        };
+      }
+      fs.writeFileSync(mcpConfigPath, JSON.stringify(configObj, null, 2) + '\n', 'utf-8');
+    }
     return true;
   } catch {
     return false;
   }
+}
+
+export function setupMcpConfig(targetDir: string, options: { geminiDir?: string } = {}): boolean {
+  const agentsDir = path.join(targetDir, '.agents');
+  fs.mkdirSync(agentsDir, { recursive: true });
+
+  const writeConfigFile = (fileName: string): boolean => {
+    const mcpConfigPath = path.join(agentsDir, fileName);
+    let configObj: any = { mcpServers: {} };
+    if (fs.existsSync(mcpConfigPath)) {
+      try {
+        configObj = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf-8'));
+        if (!configObj.mcpServers) configObj.mcpServers = {};
+      } catch {}
+    }
+
+    if (process.platform === 'win32') {
+      configObj.mcpServers.esedre = {
+        command: 'cmd.exe',
+        args: ['/c', '.esedre\\esedre.cmd', 'mcp'],
+      };
+    } else {
+      configObj.mcpServers.esedre = {
+        command: '.esedre/esedre',
+        args: ['mcp'],
+      };
+    }
+
+    try {
+      fs.writeFileSync(mcpConfigPath, JSON.stringify(configObj, null, 2) + '\n', 'utf-8');
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const okLegacy = writeConfigFile('mcp_config.json');
+  const okModern = writeConfigFile('mcp.json');
+  setupGlobalAntigravityMcpConfig(options);
+  return okLegacy && okModern;
 }
 
 export function setupSkill(targetDir: string, options: { force?: boolean } = {}): { status: ContentStatus; updated: boolean } {
@@ -444,7 +610,11 @@ export function setupSkill(targetDir: string, options: { force?: boolean } = {})
   const hasBannedOrDeprecatedTerms =
     currentContent.includes('companion agent') ||
     currentContent.includes('companion LLM') ||
-    currentContent.includes('tools/esedre.mjs');
+    currentContent.includes('tools/esedre.mjs') ||
+    (currentContent.includes('# Esedre Planning & Roadmap Workflow') &&
+      (!currentContent.includes('ese.cmd') ||
+        !currentContent.includes('Fix Breakdown') ||
+        !currentContent.includes('<ticketId...>')));
 
   if (options.force || status === 'HISTORIC_DEFAULT' || status === 'MISSING' || hasBannedOrDeprecatedTerms) {
     fs.writeFileSync(skillFile, ESEDRE_SKILL_TEMPLATE, 'utf-8');
@@ -722,6 +892,8 @@ export function configureWorkspace(targetDir: string, options: ConfigureOptions 
     console.warn(`\x1b[33m⚠️ Warning: Could not initialize global store at ${globalStoreRes.path}: ${globalStoreRes.error}\x1b[0m`);
   }
 
+  const ruleSizeWarnings = checkAgentRuleSizes(targetDir);
+
   return {
     esedreJsonCreatedOrUpdated: true,
     projectRegistered,
@@ -737,6 +909,7 @@ export function configureWorkspace(targetDir: string, options: ConfigureOptions 
     globalStoreStatus: globalStoreRes.ok ? 'ready' : 'warning',
     globalStorePath: globalStoreRes.path,
     globalStoreError: globalStoreRes.error,
+    ruleSizeWarnings,
   };
 }
 
@@ -748,12 +921,13 @@ export const ESEDRE_HUB_AGENTS_TEMPLATE = `# Agent Guidelines: esedre-data
 - **Backing Storage Repository**: \`esedre-data\` is a dedicated, decoupled data hub storing raw tickets, metadata manifests, and implementation plans managed by the Esedre engine.
 - **Authorized Ingress Channels**: Ticket discovery, read-only inspection, status updates, and plan authoring strictly ingress through the Esedre application layer in consuming project workspaces:
   1. **Local Workspace Snapshot**: Check the consuming workspace's \`.esedre/snapshot.json\` first for instant, zero-latency read access to ticket summaries, plans, and statuses.
-  2. **Esedre MCP Tools**: Use \`esedre_get_ticket\`, \`esedre_list_tickets\`, \`esedre_get_plan\`, \`esedre_save_plan\`, and \`esedre_update_ticket\`.
-  3. **Esedre CLI**: Execute \`.esedre/ese get <id>\`, \`.esedre/ese list\`, or \`.esedre/ese plan\` from within the relevant project workspace.
+  2. **Esedre MCP Tools**: Use \`esedre_get_ticket\`, \`esedre_list_tickets\`, \`esedre_get_plan\`, \`esedre_save_plan\`, \`esedre_create_ticket\`, \`esedre_update_ticket\`, \`esedre_claim_ticket\`, \`esedre_renew_lease\`, \`esedre_release_ticket\`, \`esedre_list_leases\`, and \`esedre_add_comment\`.
+  3. **Esedre CLI**: Execute \`.esedre/ese get <id>\`, \`.esedre/ese list\`, \`.esedre/ese plan\`, \`.esedre/ese create\`, \`.esedre/ese update\`, \`.esedre/ese lease\`, \`.esedre/ese comment\`, \`.esedre/ese snapshot\`, or \`.esedre/ese refresh\` from within the relevant project workspace.
 
 ## 2. Ingress Redirection Protocol
 When inspecting or managing tickets for any project (such as \`Profe\`, \`Esedre\`, or \`Alce\`), navigate to that project's workspace and utilize its local \`.esedre/snapshot.json\`, Esedre MCP tools, or \`.esedre/ese\` CLI wrapper.
 `;
+
 
 export interface InitHubResult {
   projectsJsonCreated: boolean;

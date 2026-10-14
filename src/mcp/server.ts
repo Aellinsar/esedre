@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { StorageAdapter } from '../storage/adapter.js';
-import { TicketType, TicketCategory, TicketStatus, TicketPriority, EsedreConflictError, CURRENT_ESEDRE_VERSION } from '../types.js';
+import { TicketType, TicketCategory, TicketStatus, TicketPriority, EsedreConflictError, EsedreLeaseConflictError, CURRENT_ESEDRE_VERSION } from '../types.js';
+import { resolveWorkerIdentity } from '../utils/identity.js';
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -66,7 +67,7 @@ export class EsedreMcpServer {
     });
   }
 
-  private async handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse | null> {
+  public async handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse | null> {
     const id = req.id ?? null;
 
     switch (req.method) {
@@ -139,6 +140,20 @@ export class EsedreMcpServer {
                   ticketId: err.ticketId,
                   currentHash: err.currentHash,
                   lastHash: err.lastHash,
+                },
+              },
+            };
+          }
+          if (err instanceof EsedreLeaseConflictError || err.name === 'EsedreLeaseConflictError') {
+            return {
+              jsonrpc: '2.0',
+              id,
+              error: {
+                code: -32001,
+                message: err.message,
+                data: {
+                  ticketKey: err.ticketKey,
+                  activeLease: err.activeLease,
                 },
               },
             };
@@ -447,6 +462,71 @@ export class EsedreMcpServer {
           required: ['sourceTicketId', 'targetTicketId'],
         },
       },
+      {
+        name: 'esedre_claim_ticket',
+        description: 'Claim an advisory TTL-backed lease on a ticket to coordinate multi-agent and multi-machine work and prevent duplicate effort.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ticketId: { type: ['number', 'string'], description: 'Ticket ID or prefixed key (e.g. 69 or "Esedre-69")' },
+            holder: { type: 'string', description: 'Agent or developer identity claiming the ticket (e.g. "agy-subagent-1" or "desktop-worker")' },
+            workerId: { type: 'string', description: 'Alias for holder: agent or worker identity claiming the ticket' },
+            agentType: { type: 'string', description: 'Optional agent runtime identifier (e.g. "antigravity", "claude-code", "codex")' },
+            system: { type: 'string', description: 'Alias for agentType: system or runtime identifier' },
+            sessionId: { type: 'string', description: 'Optional conversation or session identifier' },
+            branch: { type: 'string', description: 'Optional Git branch associated with the lease' },
+            ttlMinutes: { type: 'number', description: 'Lease time-to-live in minutes (default: 60)' },
+            force: { type: 'boolean', description: 'Override an existing active lease held by another worker' },
+            project: { type: 'string', description: 'Optional project code when numeric ticketId is used' },
+          },
+          required: ['ticketId'],
+        },
+      },
+      {
+        name: 'esedre_renew_lease',
+        description: 'Renew (heartbeat) an active ticket lease to extend its expiration timestamp.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ticketId: { type: ['number', 'string'], description: 'Ticket ID or prefixed key' },
+            holder: { type: 'string', description: 'Holder identity verifying lease ownership' },
+            workerId: { type: 'string', description: 'Alias for holder: worker identity verifying lease ownership' },
+            system: { type: 'string', description: 'Optional system or agent runtime identifier' },
+            ttlMinutes: { type: 'number', description: 'New TTL in minutes from now (default: 60)' },
+            force: { type: 'boolean', description: 'Force renewal even if held by another identity' },
+            project: { type: 'string', description: 'Optional project code' },
+          },
+          required: ['ticketId'],
+        },
+      },
+      {
+        name: 'esedre_release_ticket',
+        description: 'Release an active lease on a ticket when work is paused, handed off, or completed.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ticketId: { type: ['number', 'string'], description: 'Ticket ID or prefixed key' },
+            holder: { type: 'string', description: 'Holder identity verifying lease ownership' },
+            workerId: { type: 'string', description: 'Alias for holder: worker identity verifying lease ownership' },
+            system: { type: 'string', description: 'Optional system or agent runtime identifier' },
+            finalStatus: { type: 'string', enum: ['Planned', 'In Development', 'Completed', 'Rejected'], description: 'Optional status to transition the ticket to upon release' },
+            notes: { type: 'string', description: 'Optional verification or handoff comment to append upon release' },
+            force: { type: 'boolean', description: 'Force release even if held by another identity' },
+            project: { type: 'string', description: 'Optional project code' },
+          },
+          required: ['ticketId'],
+        },
+      },
+      {
+        name: 'esedre_list_leases',
+        description: 'List all currently active (non-expired) ticket leases across authorized projects.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Optional project code filter (or "all")' },
+          },
+        },
+      },
     ];
   }
 
@@ -653,6 +733,86 @@ export class EsedreMcpServer {
           success: true,
           source: result.source,
           target: result.target,
+        };
+      }
+
+      case 'claim_ticket': {
+        const identity = resolveWorkerIdentity({
+          holder: args.holder || args.workerId,
+          agentType: args.agentType || args.system || 'mcp-agent',
+          sessionId: args.sessionId,
+          branch: args.branch,
+        });
+        const res = await this.storage.claimTicket({
+          ticketId: this.parseTicketId(args.ticketId),
+          holder: identity.holder,
+          agentType: identity.agentType,
+          hostname: identity.hostname,
+          sessionId: identity.sessionId,
+          branch: identity.branch,
+          worktree: identity.worktree,
+          ttlMinutes: args.ttlMinutes,
+          force: Boolean(args.force),
+          project: args.project,
+        });
+        return {
+          success: true,
+          renewed: res.renewed,
+          overridden: res.overridden || false,
+          lease: res.lease,
+          ticket: {
+            id: res.ticket.meta.id,
+            project: res.ticket.meta.project,
+            title: res.ticket.meta.title,
+            status: res.ticket.meta.status,
+            sha1: res.ticket.sha1,
+          },
+        };
+      }
+
+      case 'renew_lease': {
+        const lease = await this.storage.renewLease({
+          ticketId: this.parseTicketId(args.ticketId),
+          holder: args.holder || args.workerId,
+          ttlMinutes: args.ttlMinutes,
+          force: Boolean(args.force),
+          project: args.project,
+        });
+        return {
+          success: true,
+          lease,
+        };
+      }
+
+      case 'release_ticket': {
+        const holder = args.holder || args.workerId;
+        const parsedId = this.parseTicketId(args.ticketId);
+        const res = await this.storage.releaseTicket({
+          ticketId: parsedId,
+          holder,
+          force: Boolean(args.force),
+          project: args.project,
+        });
+        if (args.finalStatus) {
+          await this.storage.updateTicket(res.ticketKey || parsedId, { status: args.finalStatus as TicketStatus });
+        }
+        if (args.notes) {
+          await this.storage.addComment(res.ticketKey || parsedId, {
+            author: holder || res.previousLease?.holder || 'mcp-agent',
+            text: args.notes,
+          });
+        }
+        return {
+          success: true,
+          ...res,
+        };
+      }
+
+      case 'list_leases': {
+        const leases = await this.storage.listLeases(args.project);
+        return {
+          total: leases.length,
+          leases,
         };
       }
 
