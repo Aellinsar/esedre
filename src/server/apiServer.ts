@@ -498,8 +498,13 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
             sendJson(res, 400, { error: 'ticketId is required.' });
             return true;
           }
+          const planContent = planMarkdown ?? body.plan;
+          if (typeof planContent !== 'string') {
+            sendJson(res, 400, { error: 'planMarkdown or plan is required.' });
+            return true;
+          }
           invalidateApiCache();
-          await reqStorage.savePlan(ticketId, planMarkdown, lastHash);
+          await reqStorage.savePlan(ticketId, planContent, lastHash);
           sendJson(res, 200, { success: true });
           return true;
         }

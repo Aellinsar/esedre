@@ -56,7 +56,7 @@ function writeSafeFile(filePath: string, content: string | Buffer): void {
       fs.writeFileSync(tempPath, content);
       fs.renameSync(tempPath, filePath);
     } else {
-      const normalized = content.replace(/\r\n/g, '\n');
+      const normalized = (typeof content === 'string' ? content : String(content ?? '')).replace(/\r\n/g, '\n');
       fs.writeFileSync(tempPath, normalized, 'utf-8');
       fs.renameSync(tempPath, filePath);
     }
@@ -64,7 +64,7 @@ function writeSafeFile(filePath: string, content: string | Buffer): void {
     if (Buffer.isBuffer(content)) {
       fs.writeFileSync(filePath, content);
     } else {
-      const normalized = content.replace(/\r\n/g, '\n');
+      const normalized = (typeof content === 'string' ? content : String(content ?? '')).replace(/\r\n/g, '\n');
       fs.writeFileSync(filePath, normalized, 'utf-8');
     }
     if (fs.existsSync(tempPath)) {
@@ -122,6 +122,10 @@ export class FilesystemStorageAdapter implements StorageAdapter {
   public getDuplicateProjectWarnings(): DuplicateProjectWarning[] {
     this.resolveProjectLocations();
     return [...this.duplicateProjectWarnings];
+  }
+
+  public getWorkspaceRoot(): string {
+    return this.workspaceRoot;
   }
 
   constructor(workspaceRoot?: string, config?: EsedreConfig) {
@@ -2250,6 +2254,12 @@ ${input.summary || 'Summary to be defined.'}
 
     writeSafeFile(path.join(ticketDir, 'meta.json'), JSON.stringify(meta, null, 2) + '\n');
     writeSafeFile(path.join(ticketDir, 'detail.md'), detailMd);
+
+    const initialPlan = input.planMarkdown || input.plan;
+    if (initialPlan) {
+      writeSafeFile(path.join(ticketDir, 'implementation_plan.md'), normalizeDashesAndMojibake(initialPlan));
+    }
+
     this.invalidateTicketCache(ticketDir);
 
     const created = await this.getTicket(`${targetLoc.project.code}-${nextId}`);
@@ -2375,6 +2385,19 @@ ${input.summary || 'Summary to be defined.'}
       );
       writeSafeFile(path.join(locInfo.ticketDir, 'detail.md'), content);
     }
+
+    const updatedPlan = updates.planMarkdown !== undefined ? updates.planMarkdown : updates.plan;
+    if (updatedPlan !== undefined) {
+      const planPath = path.join(locInfo.ticketDir, 'implementation_plan.md');
+      if (updatedPlan === '' || updatedPlan === null) {
+        if (fs.existsSync(planPath)) {
+          try { fs.unlinkSync(planPath); } catch {}
+        }
+      } else {
+        writeSafeFile(planPath, normalizeDashesAndMojibake(updatedPlan));
+      }
+    }
+
     this.invalidateTicketCache(locInfo.ticketDir);
 
     return (await this.getTicket(`${locInfo.loc.project.code}-${locInfo.id}`))!;
@@ -2390,6 +2413,10 @@ ${input.summary || 'Summary to be defined.'}
   }
 
   public async savePlan(id: number | string, planMarkdown: string, lastHash?: string): Promise<void> {
+    if (planMarkdown === undefined || planMarkdown === null || typeof planMarkdown !== 'string') {
+      throw new Error('Plan markdown content is required and must be a string');
+    }
+
     const ticket = await this.getTicket(id);
     if (!ticket) {
       throw new Error(`Ticket #${id} does not exist`);
