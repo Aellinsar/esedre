@@ -359,7 +359,10 @@ describe('Cross-Project Ticket Linking & Dependencies', () => {
       expect(linkRes.error).toBeUndefined();
       const linkOutput = JSON.parse(linkRes.result.content[0].text);
       expect(linkOutput.success).toBe(true);
-      expect(linkOutput.source.meta.id).toBe(1);
+      expect(linkOutput.sourceKey).toBe('Core-1');
+      expect(linkOutput.relation).toBe('blocks');
+      expect(linkOutput.targetKey).toBe('Core-2');
+      expect(linkOutput.links).toHaveLength(1);
 
       // Call esedre_list_tickets with isBlocked filter
       const listRes = await callRpc({
@@ -397,6 +400,9 @@ describe('Cross-Project Ticket Linking & Dependencies', () => {
       expect(unlinkRes.error).toBeUndefined();
       const unlinkOutput = JSON.parse(unlinkRes.result.content[0].text);
       expect(unlinkOutput.success).toBe(true);
+      expect(unlinkOutput.sourceKey).toBe('Core-1');
+      expect(unlinkOutput.targetKey).toBe('Core-2');
+      expect(unlinkOutput.links).toHaveLength(0);
 
       const fetched1 = await storage.getTicket('Core-1');
       expect(fetched1!.links).toHaveLength(0);

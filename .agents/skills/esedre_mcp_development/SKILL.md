@@ -30,14 +30,14 @@ The server registers the following tools in `tools/list`:
    - Parameters: `{ ticketId: number | string }`
    - Returns implementation plan markdown.
 4. `esedre_save_plan`:
-   - Parameters: `{ ticketId: number | string, planMarkdown: string, lastHash?: string }`
-   - Persists updated plan markdown with optimistic concurrency control.
+   - Parameters: `{ ticketId: number | string, planMarkdown?: string, plan?: string, lastHash?: string }`
+   - Persists updated plan markdown with optimistic concurrency control. Accepts either `planMarkdown` or `plan` as alias with validated required parameter presence.
 5. `esedre_create_ticket`:
-   - Parameters: `{ title: string, type?: string, priority?: string, milestone?: string, project?: string, complexity?: string, effort?: string, summary?: string, detail?: string, author?: string }`
-   - Creates a new ticket with optional priority, milestone, and specification markdown.
+   - Parameters: `{ title: string, type?: string, priority?: string, milestone?: string, project?: string, complexity?: string, effort?: string, summary?: string, detail?: string, plan?: string, planMarkdown?: string, author?: string, includeRaw?: boolean }`
+   - Creates a new ticket with optional priority, milestone, specification markdown, and implementation plan in a single atomic call. By default, omits `detail.raw` to keep response payloads compact unless `includeRaw: true`.
 6. `esedre_update_ticket`:
-   - Parameters: `{ ticketId: number | string, status?: string, type?: string, priority?: string | null, milestone?: string, title?: string, detail?: string, detailMarkdown?: string, complexity?: string, effort?: string, inDevelopment?: boolean, featureFlag?: string, lastHash?: string }`
-   - Modifies ticket attributes and specification detail with optimistic concurrency control and automatic `detail.md` header reconciliation.
+   - Parameters: `{ ticketId: number | string, status?: string, type?: string, priority?: string | null, milestone?: string, title?: string, detail?: string, detailMarkdown?: string, plan?: string, planMarkdown?: string, complexity?: string, effort?: string, inDevelopment?: boolean, featureFlag?: string, lastHash?: string, includeRaw?: boolean }`
+   - Modifies ticket attributes, specification detail, and implementation plan with optimistic concurrency control and automatic `detail.md` header reconciliation. By default, omits `detail.raw` unless `includeRaw: true`.
 7. `esedre_claim_ticket`:
    - Parameters: `{ ticketId: number | string, holder?: string, workerId?: string, system?: string, branch?: string, ttlMinutes?: number, force?: boolean }`
    - Acquires a TTL-backed lease on a ticket (`In Development`, default 60m TTL) and prevents concurrent edits by other agents (`-32001`).
@@ -51,11 +51,11 @@ The server registers the following tools in `tools/list`:
     - Parameters: `{ project?: string }`
     - Lists all active unexpired ticket leases across authorized projects.
 11. `esedre_link_ticket`:
-    - Parameters: `{ sourceTicketId: number | string, relation: string, targetTicketId: number | string, author?: string }`
-    - Creates a bi-directional link between two tickets (`relates-to`, `blocks`, `parent-of`, `duplicates`).
+    - Parameters: `{ sourceTicketId: number | string, relation: string, targetTicketId: number | string, author?: string, project?: string }`
+    - Creates a bi-directional link between two tickets (`relates-to`, `blocks`, `parent-of`, `duplicates`). Returns a compact confirmation payload `{ success: true, sourceKey, relation, targetKey, sourceRevision, targetRevision, links }`.
 12. `esedre_unlink_ticket`:
-    - Parameters: `{ sourceTicketId: number | string, targetTicketId: number | string, relation?: string }`
-    - Removes a bi-directional link between two tickets.
+    - Parameters: `{ sourceTicketId: number | string, targetTicketId: number | string, project?: string }`
+    - Removes a bi-directional link between two tickets. Returns a compact confirmation payload `{ success: true, sourceKey, targetKey, sourceRevision, targetRevision, links }`.
 13. `esedre_add_comment`:
     - Parameters: `{ ticketId: number | string, text?: string, file?: string, author?: string }`
     - Appends a developer or LLM agent verification note to the ticket.
@@ -90,3 +90,18 @@ The server exposes read-only markdown resources for dynamic agent context inject
 | `-32601` | Method not found | Unknown JSON-RPC method requested. |
 | `-32602` | Invalid params | Missing required argument (e.g. ticket ID or URI). |
 | `-32603` | Internal / Security / Lease Conflict error | Thrown when storage operation fails, when the Agent Project Allow-List denies access (`EsedreAuthorizationError`), or when a ticket is actively leased by another agent (`EsedreLeaseConflictError`). |
+
+## 5. Automatic Snapshot Projection Refresh on Mutations
+
+Whenever any mutating MCP tool completes (`create_ticket`, `update_ticket`, `save_plan`, `add_comment`, `claim_ticket`, `renew_lease`, `release_ticket`, `link_ticket`, `unlink_ticket`, `create_milestone`, `update_milestone`):
+- **Workspace Resolution**: The server identifies target repository directories for the affected project code(s) by inspecting the active workspace root (`options.workspaceRoot`, `storage.getWorkspaceRoot()`, or `discovered.workspaceRoot`), local project configuration or existing `snapshot.json`, and any registered project repositories in central `~/.esedre/config.json`.
+- **Zero-Latency Ingress Parity**: The server automatically regenerates `.esedre/snapshot.json` in the consuming project repository so that local snapshot projections stay 100% synchronized with zero manual CLI intervention.
+- **Resilient Stdio Diagnostics**: Snapshot regeneration is wrapped in safe error handling: any write or filesystem issues are reported to `stderr` (`process.stderr.write`), strictly preventing `stdout` JSON-RPC stream corruption and ensuring the mutation tool response succeeds.
+
+## 6. Request Serialization & Non-Blocking Stdio
+
+- **Decoupled Stdio**: `readline.createInterface` reads strictly from `process.stdin` without binding `output: process.stdout`, preventing anonymous pipe buffer deadlocks on Windows and UNIX platforms.
+- **Sequential Request Queue**: Incoming JSON-RPC requests are queued and processed sequentially via an internal promise queue, ensuring tool responses and diagnostics write cleanly to stdout and stderr without interleaving.
+- **Snapshot Lock Map**: Concurrent mutations targeting the same repository directory serialize snapshot generation through a per-directory lock map (`snapshotLocks`), preventing concurrent file collisions on `.esedre/snapshot.json`.
+
+

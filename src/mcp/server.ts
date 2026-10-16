@@ -4,6 +4,14 @@ import readline from 'node:readline';
 import { StorageAdapter } from '../storage/adapter.js';
 import { TicketType, TicketCategory, TicketStatus, TicketPriority, EsedreConflictError, EsedreLeaseConflictError, CURRENT_ESEDRE_VERSION } from '../types.js';
 import { resolveWorkerIdentity } from '../utils/identity.js';
+import { generateProjectSnapshot } from '../snapshot.js';
+import { findEsedreConfig, readGlobalConfig, expandHome, EsedreConfig } from '../config.js';
+
+export interface EsedreMcpServerOptions {
+  workspaceRoot?: string;
+  projectCode?: string;
+  config?: EsedreConfig | null;
+}
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -25,40 +33,49 @@ interface JsonRpcResponse {
 
 export class EsedreMcpServer {
   private storage: StorageAdapter;
+  private options: EsedreMcpServerOptions;
+  private requestQueue: Promise<void> = Promise.resolve();
+  private snapshotLocks = new Map<string, Promise<void>>();
 
-  constructor(storage: StorageAdapter) {
+  constructor(storage: StorageAdapter, options: EsedreMcpServerOptions = {}) {
     this.storage = storage;
+    this.options = options;
   }
 
   public start(): void {
     const rl = readline.createInterface({
       input: process.stdin,
-      output: process.stdout,
       terminal: false,
     });
 
     // Write diagnostic info strictly to stderr to prevent stdio stream corruption
     process.stderr.write('[Esedre MCP Server] Initialized. Awaiting JSON-RPC messages on stdin...\n');
 
-    rl.on('line', async (line) => {
+    let writeQueue: Promise<void> = Promise.resolve();
+
+    rl.on('line', (line) => {
       const trimmed = line.trim();
       if (!trimmed) return;
 
-      try {
-        const req: JsonRpcRequest = JSON.parse(trimmed);
-        const res = await this.handleRequest(req);
-        if (res && req.id !== undefined && req.id !== null) {
-          process.stdout.write(JSON.stringify(res) + '\n');
+      writeQueue = writeQueue.then(async () => {
+        try {
+          const req: JsonRpcRequest = JSON.parse(trimmed);
+          const res = await this.handleRequest(req);
+          if (res && req.id !== undefined && req.id !== null) {
+            process.stdout.write(JSON.stringify(res) + '\n');
+          }
+        } catch (err: any) {
+          process.stderr.write(`[Esedre MCP Error] Failed to parse or process line: ${err.message}\n`);
+          const errorRes: JsonRpcResponse = {
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32700, message: 'Parse error: ' + err.message },
+          };
+          process.stdout.write(JSON.stringify(errorRes) + '\n');
         }
-      } catch (err: any) {
-        process.stderr.write(`[Esedre MCP Error] Failed to parse or process line: ${err.message}\n`);
-        const errorRes: JsonRpcResponse = {
-          jsonrpc: '2.0',
-          id: null,
-          error: { code: -32700, message: 'Parse error: ' + err.message },
-        };
-        process.stdout.write(JSON.stringify(errorRes) + '\n');
-      }
+      }).catch((err: any) => {
+        process.stderr.write(`[Esedre MCP Error] Unexpected queue error: ${err.message}\n`);
+      });
     });
 
     rl.on('close', () => {
@@ -68,6 +85,15 @@ export class EsedreMcpServer {
   }
 
   public async handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse | null> {
+    const run = async (): Promise<JsonRpcResponse | null> => {
+      return this.dispatchRequest(req);
+    };
+    const resPromise = this.requestQueue.then(run, run);
+    this.requestQueue = resPromise.then(() => {}, () => {});
+    return resPromise;
+  }
+
+  private async dispatchRequest(req: JsonRpcRequest): Promise<JsonRpcResponse | null> {
     const id = req.id ?? null;
 
     switch (req.method) {
@@ -252,12 +278,146 @@ export class EsedreMcpServer {
   }
 
   private parseTicketId(val: any): string | number {
+    if (val === undefined || val === null || val === '') {
+      throw new Error('Ticket ID is required');
+    }
     if (typeof val === 'number') return val;
     const str = String(val).trim();
+    if (!str || str === 'undefined' || str === 'null') {
+      throw new Error('Ticket ID is required');
+    }
     if (/^\d+$/.test(str)) {
       return parseInt(str, 10);
     }
     return str;
+  }
+
+  private async resolveTargetDirsForProject(projectCode: string): Promise<string[]> {
+    const targetDirs: string[] = [];
+    const normalizedCode = projectCode.trim().toLowerCase();
+
+    // 1. Resolve active workspace root
+    let activeWorkspaceRoot = this.options.workspaceRoot;
+    let activeConfig = this.options.config;
+
+    if (!activeWorkspaceRoot && this.storage.getWorkspaceRoot) {
+      activeWorkspaceRoot = this.storage.getWorkspaceRoot();
+    }
+
+    if (!activeWorkspaceRoot) {
+      try {
+        const discovered = findEsedreConfig(process.cwd(), { fallbackToGlobal: true });
+        activeWorkspaceRoot = discovered.workspaceRoot;
+        activeConfig = activeConfig || discovered.config;
+      } catch {}
+    }
+
+    if (!activeWorkspaceRoot) {
+      activeWorkspaceRoot = process.cwd();
+    }
+
+    // Determine if active workspace corresponds to this projectCode
+    let matchesActive = false;
+    const configuredProjectCode = this.options.projectCode || activeConfig?.projectCode;
+
+    if (configuredProjectCode) {
+      if (configuredProjectCode.trim().toLowerCase() === normalizedCode) {
+        matchesActive = true;
+      }
+    } else {
+      // No explicit projectCode configured for this workspace.
+      // Check if an existing snapshot in this workspace is for this project
+      const activeSnapshotPath = path.join(activeWorkspaceRoot, '.esedre', 'snapshot.json');
+      if (fs.existsSync(activeSnapshotPath)) {
+        try {
+          const raw = JSON.parse(fs.readFileSync(activeSnapshotPath, 'utf-8'));
+          if (raw.projectCode && raw.projectCode.trim().toLowerCase() === normalizedCode) {
+            matchesActive = true;
+          }
+        } catch {}
+      } else {
+        // If no snapshot exists yet, check if workspace has .esedre or is an initialized project repo
+        const hasEsedreDir = fs.existsSync(path.join(activeWorkspaceRoot, '.esedre'));
+        if (hasEsedreDir) {
+          try {
+            const projects = await this.storage.getProjects();
+            if (projects.length === 1 && projects[0].code.trim().toLowerCase() === normalizedCode) {
+              matchesActive = true;
+            }
+          } catch {}
+        }
+      }
+    }
+
+    if (matchesActive) {
+      targetDirs.push(activeWorkspaceRoot);
+    }
+
+    // 2. Check globally registered project repos in ~/.esedre/config.json
+    try {
+      const globalConfig = readGlobalConfig();
+      if (globalConfig?.projects) {
+        for (const [codeKey, repoPath] of Object.entries(globalConfig.projects)) {
+          if (codeKey.trim().toLowerCase() === normalizedCode && typeof repoPath === 'string') {
+            const resolvedPath = path.resolve(expandHome(repoPath));
+            if (fs.existsSync(resolvedPath)) {
+              targetDirs.push(resolvedPath);
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // Deduplicate normalized directories
+    const uniqueDirs: string[] = [];
+    const seen = new Set<string>();
+    for (const dir of targetDirs) {
+      const normalizedDir = path.resolve(dir).toLowerCase();
+      if (!seen.has(normalizedDir)) {
+        seen.add(normalizedDir);
+        uniqueDirs.push(path.resolve(dir));
+      }
+    }
+
+    return uniqueDirs;
+  }
+
+  private async refreshProjectSnapshots(projectCodes: (string | undefined | null)[]): Promise<void> {
+    const rawCodes = projectCodes.filter((c): c is string => Boolean(c && typeof c === 'string' && c.trim().length > 0));
+    if (rawCodes.length === 0) return;
+
+    // Deduplicate project codes (case-insensitive)
+    const uniqueCodes: string[] = [];
+    const seenCodes = new Set<string>();
+    for (const code of rawCodes) {
+      const lower = code.trim().toLowerCase();
+      if (!seenCodes.has(lower)) {
+        seenCodes.add(lower);
+        uniqueCodes.push(code.trim());
+      }
+    }
+
+    for (const code of uniqueCodes) {
+      try {
+        const targetDirs = await this.resolveTargetDirsForProject(code);
+        for (const targetDir of targetDirs) {
+          const lockKey = path.resolve(targetDir).toLowerCase();
+          const currentLock = this.snapshotLocks.get(lockKey) || Promise.resolve();
+          const nextLock = currentLock.then(async () => {
+            try {
+              await generateProjectSnapshot(this.storage, code, targetDir);
+              process.stderr.write(`[Esedre MCP] Refreshed snapshot for project '${code}' at ${path.join(targetDir, '.esedre', 'snapshot.json')}\n`);
+            } catch (err: any) {
+              process.stderr.write(`[Esedre MCP] Failed to refresh snapshot for project '${code}' in '${targetDir}': ${err.message}\n`);
+            }
+          }).catch(() => {});
+          this.snapshotLocks.set(lockKey, nextLock);
+          await nextLock;
+        }
+      } catch (err: any) {
+        process.stderr.write(`[Esedre MCP] Error resolving target directories for project '${code}': ${err.message}\n`);
+      }
+    }
   }
 
   private getToolDefinitions(): any[] {
@@ -311,14 +471,15 @@ export class EsedreMcpServer {
           properties: {
             ticketId: { type: ['integer', 'string'], description: 'Numeric ticket ID or compound key' },
             planMarkdown: { type: 'string', description: 'Implementation plan markdown content' },
+            plan: { type: 'string', description: 'Alias for planMarkdown: Implementation plan markdown content' },
             lastHash: { type: 'string', description: 'Optimistic concurrency control: last known sha1 hash of the ticket' },
           },
-          required: ['ticketId', 'planMarkdown'],
+          required: ['ticketId'],
         },
       },
       {
         name: 'esedre_create_ticket',
-        description: 'Create a new roadmap ticket in Esedre.',
+        description: 'Create a new roadmap ticket in Esedre with optional implementation plan.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -331,15 +492,18 @@ export class EsedreMcpServer {
             effort: { type: 'string', description: 'Estimated effort (e.g. 2.0 - 4.0 hours)' },
             summary: { type: 'string', description: 'Initial feature summary' },
             detail: { type: 'string', description: 'Initial specification, feature breakdown, or technical detail markdown' },
+            plan: { type: 'string', description: 'Initial implementation plan markdown content' },
+            planMarkdown: { type: 'string', description: 'Initial implementation plan markdown content (alias for plan)' },
             milestone: { type: 'string', description: 'Assign ticket to milestone' },
             author: { type: 'string', description: 'Submitting author name' },
+            includeRaw: { type: 'boolean', description: 'When true, includes raw unparsed markdown in ticket.detail.raw' },
           },
           required: ['title'],
         },
       },
       {
         name: 'esedre_update_ticket',
-        description: 'Update an existing ticket state (status, type, title, complexity, effort, active planning flag, or feature flag).',
+        description: 'Update an existing ticket state (status, type, title, complexity, effort, active planning flag, feature flag, detail, or plan).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -356,6 +520,9 @@ export class EsedreMcpServer {
             milestone: { type: 'string', description: 'Update ticket milestone ("none" to clear)' },
             detail: { type: 'string', description: 'Updated specification markdown for ticket detail' },
             detailMarkdown: { type: 'string', description: 'Updated specification markdown for ticket detail' },
+            plan: { type: 'string', description: 'Updated implementation plan markdown content' },
+            planMarkdown: { type: 'string', description: 'Updated implementation plan markdown content (alias for plan)' },
+            includeRaw: { type: 'boolean', description: 'When true, includes raw unparsed markdown in ticket.detail.raw' },
             lastHash: { type: 'string', description: 'Optimistic concurrency control: last known sha1 hash of the ticket' },
           },
           required: ['ticketId'],
@@ -432,7 +599,7 @@ export class EsedreMcpServer {
       },
       {
         name: 'esedre_link_ticket',
-        description: 'Establish a bi-directional link between two tickets (within or across projects) with cycle detection.',
+        description: 'Establish a bi-directional link between two tickets (within or across projects) with cycle detection. Returns a compact confirmation payload.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -451,7 +618,7 @@ export class EsedreMcpServer {
       },
       {
         name: 'esedre_unlink_ticket',
-        description: 'Remove a link between two tickets and its reciprocal link.',
+        description: 'Remove a link between two tickets and its reciprocal link. Returns a compact confirmation payload.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -600,7 +767,14 @@ export class EsedreMcpServer {
 
       case 'save_plan': {
         const id = this.parseTicketId(args.ticketId);
-        await this.storage.savePlan(id, args.planMarkdown, args.lastHash);
+        const planContent = args.planMarkdown ?? args.plan;
+        if (typeof planContent !== 'string') {
+          throw new Error("Plan markdown content is required (pass 'planMarkdown' or 'plan')");
+        }
+        await this.storage.savePlan(id, planContent, args.lastHash);
+        const ticket = await this.storage.getTicket(id);
+        const pCode = ticket?.projectDescriptor?.code || ticket?.meta.project;
+        await this.refreshProjectSnapshots([pCode]);
         return { success: true, message: `Implementation plan saved for Ticket #${id}` };
       }
 
@@ -617,10 +791,20 @@ export class EsedreMcpServer {
           summary: args.summary,
           detail: args.detail || args.detailMarkdown,
           detailMarkdown: args.detailMarkdown || args.detail,
+          plan: args.plan || args.planMarkdown,
+          planMarkdown: args.planMarkdown || args.plan,
           milestone: args.milestone,
           submittedBy: args.author || 'Agent',
         });
-        return created;
+        const pCode = created.projectDescriptor?.code || created.meta.project || args.project;
+        await this.refreshProjectSnapshots([pCode]);
+
+        const responseTicket = { ...created };
+        if (!args.includeRaw && responseTicket.detail) {
+          const { raw, ...cleanDetail } = responseTicket.detail;
+          responseTicket.detail = cleanDetail as any;
+        }
+        return responseTicket;
       }
 
       case 'update_ticket': {
@@ -641,9 +825,21 @@ export class EsedreMcpServer {
         if (args.milestone !== undefined) updates.milestone = args.milestone;
         if (args.detail !== undefined) updates.detail = args.detail;
         if (args.detailMarkdown !== undefined) updates.detailMarkdown = args.detailMarkdown;
+        if (args.plan !== undefined || args.planMarkdown !== undefined) {
+          updates.plan = args.plan ?? args.planMarkdown;
+          updates.planMarkdown = args.planMarkdown ?? args.plan;
+        }
 
         const updated = await this.storage.updateTicket(id, updates, args.lastHash);
-        return updated;
+        const pCode = updated.projectDescriptor?.code || updated.meta.project || args.project;
+        await this.refreshProjectSnapshots([pCode]);
+
+        const responseTicket = { ...updated };
+        if (!args.includeRaw && responseTicket.detail) {
+          const { raw, ...cleanDetail } = responseTicket.detail;
+          responseTicket.detail = cleanDetail as any;
+        }
+        return responseTicket;
       }
 
       case 'add_comment': {
@@ -670,6 +866,9 @@ export class EsedreMcpServer {
           text,
           author: args.author || 'Agent',
         });
+        const ticket = await this.storage.getTicket(id);
+        const pCode = ticket?.projectDescriptor?.code || ticket?.meta.project;
+        await this.refreshProjectSnapshots([pCode]);
         return comment;
       }
 
@@ -688,7 +887,7 @@ export class EsedreMcpServer {
       }
 
       case 'create_milestone': {
-        return this.storage.createMilestone({
+        const created = await this.storage.createMilestone({
           title: args.title,
           projectCode: args.project,
           description: args.description,
@@ -696,16 +895,22 @@ export class EsedreMcpServer {
           targetDate: args.targetDate,
           status: args.status,
         });
+        const pCode = created.project || args.project;
+        await this.refreshProjectSnapshots([pCode]);
+        return created;
       }
 
       case 'update_milestone': {
-        return this.storage.updateMilestone(args.id, {
+        const updated = await this.storage.updateMilestone(args.id, {
           title: args.title,
           description: args.description,
           featureFlag: args.featureFlag,
           targetDate: args.targetDate,
           status: args.status,
         }, args.project);
+        const pCode = updated.project || args.project;
+        await this.refreshProjectSnapshots([pCode]);
+        return updated;
       }
 
       case 'link_ticket': {
@@ -716,10 +921,25 @@ export class EsedreMcpServer {
           author: args.author || 'Agent',
           project: args.project,
         });
+        const p1 = result.source?.projectDescriptor?.code || result.source?.meta?.project;
+        const p2 = result.target?.projectDescriptor?.code || result.target?.meta?.project;
+        await this.refreshProjectSnapshots([p1, p2]);
+
+        const sourceProject = result.source?.projectDescriptor?.code || result.source?.meta?.project;
+        const sourceKey = sourceProject ? `${sourceProject}-${result.source.meta.id}` : `#${result.source.meta.id}`;
+        const targetProject = result.target?.projectDescriptor?.code || result.target?.meta?.project;
+        const targetKey = result.target
+          ? (targetProject ? `${targetProject}-${result.target.meta.id}` : `#${result.target.meta.id}`)
+          : String(targetId);
+
         return {
           success: true,
-          source: result.source,
-          target: result.target,
+          sourceKey,
+          relation,
+          targetKey,
+          sourceRevision: result.source?.meta?.revision || 1,
+          targetRevision: result.target?.meta?.revision,
+          links: result.source?.meta?.links || [],
         };
       }
 
@@ -729,10 +949,24 @@ export class EsedreMcpServer {
         const result = await this.storage.removeTicketLink(sourceId, targetId, {
           project: args.project,
         });
+        const p1 = result.source?.projectDescriptor?.code || result.source?.meta?.project;
+        const p2 = result.target?.projectDescriptor?.code || result.target?.meta?.project;
+        await this.refreshProjectSnapshots([p1, p2]);
+
+        const sourceProject = result.source?.projectDescriptor?.code || result.source?.meta?.project;
+        const sourceKey = sourceProject ? `${sourceProject}-${result.source.meta.id}` : `#${result.source.meta.id}`;
+        const targetProject = result.target?.projectDescriptor?.code || result.target?.meta?.project;
+        const targetKey = result.target
+          ? (targetProject ? `${targetProject}-${result.target.meta.id}` : `#${result.target.meta.id}`)
+          : String(targetId);
+
         return {
           success: true,
-          source: result.source,
-          target: result.target,
+          sourceKey,
+          targetKey,
+          sourceRevision: result.source?.meta?.revision || 1,
+          targetRevision: result.target?.meta?.revision,
+          links: result.source?.meta?.links || [],
         };
       }
 
@@ -755,6 +989,8 @@ export class EsedreMcpServer {
           force: Boolean(args.force),
           project: args.project,
         });
+        const pCode = res.ticket?.projectDescriptor?.code || res.ticket?.meta?.project || res.lease?.project || args.project;
+        await this.refreshProjectSnapshots([pCode]);
         return {
           success: true,
           renewed: res.renewed,
@@ -778,6 +1014,8 @@ export class EsedreMcpServer {
           force: Boolean(args.force),
           project: args.project,
         });
+        const pCode = lease?.project || args.project;
+        await this.refreshProjectSnapshots([pCode]);
         return {
           success: true,
           lease,
@@ -802,6 +1040,19 @@ export class EsedreMcpServer {
             text: args.notes,
           });
         }
+        let pCode = args.project;
+        if (!pCode && res.ticketKey) {
+          const match = String(res.ticketKey).match(/^([a-zA-Z0-9]+)-/);
+          if (match) pCode = match[1];
+        }
+        if (!pCode && res.previousLease?.project) {
+          pCode = res.previousLease.project;
+        }
+        if (!pCode) {
+          const ticket = await this.storage.getTicket(parsedId);
+          pCode = ticket?.projectDescriptor?.code || ticket?.meta.project;
+        }
+        await this.refreshProjectSnapshots([pCode]);
         return {
           success: true,
           ...res,

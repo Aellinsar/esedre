@@ -35,6 +35,8 @@ export interface CreateTicketInput {
   summary?: string;
   detail?: string;
   detailMarkdown?: string;
+  plan?: string;
+  planMarkdown?: string;
   milestone?: string;
   featureFlag?: string;
 }
@@ -76,6 +78,8 @@ export interface UpdateTicketInput extends Omit<Partial<TicketMeta>, 'priority'>
   priority?: TicketPriority | 'none' | null | string;
   detail?: string;
   detailMarkdown?: string;
+  plan?: string;
+  planMarkdown?: string;
 }
 
 export interface StorageAdapter {
@@ -131,6 +135,7 @@ export interface StorageAdapter {
   ): Promise<{ filename: string; relativePath: string }>;
   getAttachmentPath?(id: number | string, filename: string): string | null;
   getDuplicateProjectWarnings?(): DuplicateProjectWarning[];
+  getWorkspaceRoot?(): string | undefined;
 
   claimTicket(input: ClaimLeaseInput): Promise<ClaimLeaseResult>;
   renewLease(input: RenewLeaseInput): Promise<TicketLease>;

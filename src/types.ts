@@ -153,6 +153,8 @@ export interface TicketUpdatePayload extends Omit<Partial<TicketMeta>, 'priority
   priority?: TicketPriority | 'none' | null | string;
   detail?: string;
   detailMarkdown?: string;
+  plan?: string;
+  planMarkdown?: string;
 }
 
 export interface TicketComment {

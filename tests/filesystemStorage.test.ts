@@ -107,6 +107,14 @@ describe('FilesystemStorageAdapter', () => {
 
     const retrievedPlan = await adapter.getPlan(created.meta.id);
     expect(retrievedPlan).toBe(planContent);
+
+    // Validation checks (Ticket #81)
+    await expect(adapter.savePlan(created.meta.id, undefined as any)).rejects.toThrow(
+      'Plan markdown content is required and must be a string'
+    );
+    await expect(adapter.savePlan(created.meta.id, null as any)).rejects.toThrow(
+      'Plan markdown content is required and must be a string'
+    );
   });
 
   it('appends and lists comments with timestamps and authors', async () => {
@@ -586,4 +594,35 @@ describe('FilesystemStorageAdapter', () => {
     expect(updated.detail?.raw).not.toContain('- **Complexity**: Low\n');
     expect(updated.detail?.raw).not.toContain('1.0 - 2.0 hours');
   });
+
+  it('supports simultaneous implementation plan attachment in createTicket and updateTicket (Ticket #80)', async () => {
+    // 1. Create ticket with initial planMarkdown
+    const ticket = await adapter.createTicket({
+      title: 'Ticket with Atomic Plan',
+      category: 'Feature',
+      projectCode: 'Core',
+      summary: 'Testing simultaneous plan creation',
+      planMarkdown: '# Architecture Plan\n- Step 1: Initialize database\n- Step 2: Configure routes',
+    });
+
+    expect(ticket.planMarkdown).toBeDefined();
+    expect(ticket.planMarkdown).toContain('# Architecture Plan');
+    const plan = await adapter.getPlan(ticket.meta.id);
+    expect(plan).toContain('# Architecture Plan');
+    expect(plan).toContain('Step 1: Initialize database');
+
+    // 2. Update ticket and plan simultaneously
+    const updated = await adapter.updateTicket(ticket.meta.id, {
+      status: 'In Development',
+      planMarkdown: '# Updated Architecture Plan\n- Step 1: Completed\n- Step 2: In progress\n- Step 3: Deployment',
+    });
+
+    expect(updated.meta.status).toBe('In Development');
+    expect(updated.planMarkdown).toBeDefined();
+    expect(updated.planMarkdown).toContain('# Updated Architecture Plan');
+    const updatedPlan = await adapter.getPlan(ticket.meta.id);
+    expect(updatedPlan).toContain('# Updated Architecture Plan');
+    expect(updatedPlan).toContain('Step 3: Deployment');
+  });
 });
+

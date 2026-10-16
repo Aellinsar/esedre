@@ -283,6 +283,689 @@ describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
     expect(hydratedWithoutPlan.hasPlan).toBe(false);
     expect(hydratedWithoutPlan.planMarkdown).toBeNull();
   });
+
+  describe('Automatic snapshot refresh on mutations', () => {
+    let workspaceDir: string;
+    let wsAdapter: FilesystemStorageAdapter;
+    let wsServer: EsedreMcpServer;
+
+    beforeEach(() => {
+      workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-mcp-snapshot-'));
+      const ticketsDir = path.join(workspaceDir, 'src', 'data', 'planning', 'tickets');
+      fs.mkdirSync(ticketsDir, { recursive: true });
+
+      const projects = [
+        { id: 1, code: 'Conquest', name: 'Conquest Game', description: 'Game App' },
+      ];
+      fs.writeFileSync(
+        path.join(workspaceDir, 'src', 'data', 'planning', 'projects.json'),
+        JSON.stringify(projects, null, 2)
+      );
+
+      const esedreDir = path.join(workspaceDir, '.esedre');
+      fs.mkdirSync(esedreDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(esedreDir, 'esedre.json'),
+        JSON.stringify({ projectCode: 'Conquest' }, null, 2)
+      );
+
+      wsAdapter = new FilesystemStorageAdapter(workspaceDir);
+      wsServer = new EsedreMcpServer(wsAdapter, {
+        workspaceRoot: workspaceDir,
+        projectCode: 'Conquest',
+        config: { projectCode: 'Conquest' },
+      });
+    });
+
+    afterEach(() => {
+      if (fs.existsSync(workspaceDir)) {
+        fs.rmSync(workspaceDir, { recursive: true, force: true });
+      }
+    });
+
+    it('automatically generates .esedre/snapshot.json on esedre_create_ticket', async () => {
+      const snapshotPath = path.join(workspaceDir, '.esedre', 'snapshot.json');
+      expect(fs.existsSync(snapshotPath)).toBe(false);
+
+      const res = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 101,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: {
+            title: 'Implement battle arena',
+            project: 'Conquest',
+            summary: 'Battle arena mechanics',
+          },
+        },
+      });
+
+      expect(res.error).toBeUndefined();
+      expect(res.result).toBeDefined();
+
+      expect(fs.existsSync(snapshotPath)).toBe(true);
+      const snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
+      expect(snapshot.projectCode).toBe('Conquest');
+      expect(snapshot.totalTickets).toBe(1);
+      expect(snapshot.tickets[0].title).toBe('Implement battle arena');
+      expect(snapshot.tickets[0].hasPlan).toBe(false);
+    });
+
+    it('automatically updates snapshot.json on esedre_save_plan and esedre_update_ticket', async () => {
+      const snapshotPath = path.join(workspaceDir, '.esedre', 'snapshot.json');
+
+      await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 102,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: {
+            title: 'Implement save system',
+            project: 'Conquest',
+          },
+        },
+      });
+
+      const planRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 103,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_save_plan',
+          arguments: {
+            ticketId: 1,
+            planMarkdown: '## Architecture\n- Use SQLite serialization',
+          },
+        },
+      });
+      expect(planRes.error).toBeUndefined();
+
+      let snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
+      expect(snapshot.tickets[0].hasPlan).toBe(true);
+      expect(snapshot.tickets[0].planMarkdown).toContain('SQLite serialization');
+
+      const updateRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 104,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_update_ticket',
+          arguments: {
+            ticketId: 1,
+            status: 'In Development',
+            priority: 'High',
+          },
+        },
+      });
+      expect(updateRes.error).toBeUndefined();
+
+      snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
+      expect(snapshot.tickets[0].status).toBe('In Development');
+      expect(snapshot.tickets[0].priority).toBe('High');
+    });
+
+    it('automatically updates snapshot.json on lease claim and release', async () => {
+      const snapshotPath = path.join(workspaceDir, '.esedre', 'snapshot.json');
+
+      await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 105,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: {
+            title: 'Multiplayer lobby',
+            project: 'Conquest',
+          },
+        },
+      });
+
+      const claimRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 106,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_claim_ticket',
+          arguments: {
+            ticketId: 1,
+            holder: 'agent-151',
+            ttlMinutes: 30,
+          },
+        },
+      });
+      expect(claimRes.error).toBeUndefined();
+
+      let snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
+      expect(snapshot.activeLeases).toBeDefined();
+      expect(snapshot.activeLeases.length).toBe(1);
+      expect(snapshot.activeLeases[0].holder).toBe('agent-151');
+      expect(snapshot.tickets[0].lease?.holder).toBe('agent-151');
+
+      const releaseRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 107,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_release_ticket',
+          arguments: {
+            ticketId: 1,
+            holder: 'agent-151',
+          },
+        },
+      });
+      expect(releaseRes.error).toBeUndefined();
+
+      snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
+      expect(snapshot.activeLeases).toBeUndefined();
+      expect(snapshot.tickets[0].lease).toBeUndefined();
+    });
+
+    it('automatically updates snapshot.json on link_ticket and unlink_ticket', async () => {
+      const snapshotPath = path.join(workspaceDir, '.esedre', 'snapshot.json');
+
+      await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 108,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: {
+            title: 'Base Ticket',
+            project: 'Conquest',
+          },
+        },
+      });
+
+      await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 109,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: {
+            title: 'Dependent Ticket',
+            project: 'Conquest',
+          },
+        },
+      });
+
+      const linkRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 110,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_link_ticket',
+          arguments: {
+            sourceTicketId: 1,
+            relation: 'blocks',
+            targetTicketId: 2,
+          },
+        },
+      });
+      expect(linkRes.error).toBeUndefined();
+
+      let snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
+      const t1 = snapshot.tickets.find((t: any) => t.id === 1);
+      const t2 = snapshot.tickets.find((t: any) => t.id === 2);
+      expect(t1.links.length).toBe(1);
+      expect(t1.links[0].relation).toBe('blocks');
+      expect(t2.links.length).toBe(1);
+      expect(t2.links[0].relation).toBe('blocked-by');
+      expect(t2.isBlocked).toBe(true);
+
+      const unlinkRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 111,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_unlink_ticket',
+          arguments: {
+            sourceTicketId: 1,
+            targetTicketId: 2,
+          },
+        },
+      });
+      expect(unlinkRes.error).toBeUndefined();
+
+      snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
+      const t1After = snapshot.tickets.find((t: any) => t.id === 1);
+      const t2After = snapshot.tickets.find((t: any) => t.id === 2);
+      expect(t1After.links.length).toBe(0);
+      expect(t2After.links.length).toBe(0);
+      expect(t2After.isBlocked).toBe(false);
+    });
+
+    it('safely handles snapshot errors without breaking tool response', async () => {
+      const esedreDir = path.join(workspaceDir, '.esedre');
+      const snapshotPath = path.join(esedreDir, 'snapshot.json');
+      // Create snapshot.json as a directory so file writing fails
+      fs.mkdirSync(snapshotPath, { recursive: true });
+
+      const res = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 112,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: {
+            title: 'Resilient ticket',
+            project: 'Conquest',
+          },
+        },
+      });
+
+      expect(res.error).toBeUndefined();
+      expect(res.result).toBeDefined();
+      expect(res.result.content[0].text).toContain('Resilient ticket');
+    });
+
+    it('returns compact confirmation payload for link_ticket and unlink_ticket', async () => {
+      await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 198,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: { title: 'Ticket A', project: 'Conquest' },
+        },
+      });
+      await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 199,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: { title: 'Ticket B', project: 'Conquest' },
+        },
+      });
+
+      const linkRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 200,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_link_ticket',
+          arguments: {
+            sourceTicketId: 1,
+            relation: 'blocks',
+            targetTicketId: 2,
+            project: 'Conquest',
+          },
+        },
+      });
+
+      expect(linkRes.error).toBeUndefined();
+      const linkPayload = JSON.parse(linkRes.result.content[0].text);
+      expect(linkPayload.success).toBe(true);
+      expect(linkPayload.sourceKey).toBe('Conquest-1');
+      expect(linkPayload.relation).toBe('blocks');
+      expect(linkPayload.targetKey).toBe('Conquest-2');
+      expect(typeof linkPayload.sourceRevision).toBe('number');
+      expect(Array.isArray(linkPayload.links)).toBe(true);
+      expect(linkPayload.links.length).toBe(1);
+      // Ensure massive hydrated source/target objects are omitted
+      expect((linkPayload as any).source).toBeUndefined();
+      expect((linkPayload as any).target).toBeUndefined();
+
+      const unlinkRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 201,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_unlink_ticket',
+          arguments: {
+            sourceTicketId: 1,
+            targetTicketId: 2,
+            project: 'Conquest',
+          },
+        },
+      });
+
+      expect(unlinkRes.error).toBeUndefined();
+      const unlinkPayload = JSON.parse(unlinkRes.result.content[0].text);
+      expect(unlinkPayload.success).toBe(true);
+      expect(unlinkPayload.sourceKey).toBe('Conquest-1');
+      expect(unlinkPayload.targetKey).toBe('Conquest-2');
+      expect(typeof unlinkPayload.sourceRevision).toBe('number');
+      expect(Array.isArray(unlinkPayload.links)).toBe(true);
+      expect(unlinkPayload.links.length).toBe(0);
+      expect((unlinkPayload as any).source).toBeUndefined();
+      expect((unlinkPayload as any).target).toBeUndefined();
+    });
+
+    it('omits detail.raw by default in create_ticket and update_ticket unless includeRaw is true', async () => {
+      // 1. Create ticket without includeRaw
+      const createCleanRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 202,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: {
+            title: 'Clean detail ticket',
+            project: 'Conquest',
+            summary: 'Clean summary',
+            detail: '### Summary\nClean summary\n\n### Technical Details\n- Clean item',
+          },
+        },
+      });
+
+      expect(createCleanRes.error).toBeUndefined();
+      const cleanCreated = JSON.parse(createCleanRes.result.content[0].text);
+      expect(cleanCreated.detail).toBeDefined();
+      expect(cleanCreated.detail.summary).toBe('Clean summary');
+      expect(cleanCreated.detail.technicalDetails).toContain('Clean item');
+      expect(cleanCreated.detail.raw).toBeUndefined();
+
+      // 2. Create ticket with includeRaw: true
+      const createRawRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 203,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: {
+            title: 'Raw detail ticket',
+            project: 'Conquest',
+            summary: 'Raw summary',
+            detail: '### Summary\nRaw summary\n\n### Technical Details\n- Raw item',
+            includeRaw: true,
+          },
+        },
+      });
+
+      expect(createRawRes.error).toBeUndefined();
+      const rawCreated = JSON.parse(createRawRes.result.content[0].text);
+      expect(rawCreated.detail).toBeDefined();
+      expect(rawCreated.detail.raw).toBeDefined();
+      expect(rawCreated.detail.raw).toContain('Raw item');
+
+      // 3. Update ticket without includeRaw
+      const updateCleanRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 204,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_update_ticket',
+          arguments: {
+            ticketId: cleanCreated.meta.id,
+            project: 'Conquest',
+            detail: '### Summary\nUpdated clean summary\n\n### Technical Details\n- Updated item',
+          },
+        },
+      });
+
+      expect(updateCleanRes.error).toBeUndefined();
+      const cleanUpdated = JSON.parse(updateCleanRes.result.content[0].text);
+      expect(cleanUpdated.detail.summary).toBe('Updated clean summary');
+      expect(cleanUpdated.detail.raw).toBeUndefined();
+
+      // 4. Update ticket with includeRaw: true
+      const updateRawRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 205,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_update_ticket',
+          arguments: {
+            ticketId: cleanCreated.meta.id,
+            project: 'Conquest',
+            detail: '### Summary\nUpdated raw summary\n\n### Technical Details\n- Updated raw item',
+            includeRaw: true,
+          },
+        },
+      });
+
+      expect(updateRawRes.error).toBeUndefined();
+      const rawUpdated = JSON.parse(updateRawRes.result.content[0].text);
+      expect(rawUpdated.detail.raw).toBeDefined();
+      expect(rawUpdated.detail.raw).toContain('Updated raw item');
+    });
+
+    it('serializes concurrent parallel tool batches without deadlock or race conditions', async () => {
+      await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 298,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: { title: 'Batch Ticket A', project: 'Conquest' },
+        },
+      });
+      await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 299,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: { title: 'Batch Ticket B', project: 'Conquest' },
+        },
+      });
+
+      // Concurrently invoke link_ticket and save_plan on the same ticket
+      const [linkRes, planRes] = await Promise.all([
+        callRpc(wsServer, {
+          jsonrpc: '2.0',
+          id: 300,
+          method: 'tools/call',
+          params: {
+            name: 'esedre_link_ticket',
+            arguments: {
+              sourceTicketId: 1,
+              relation: 'relates-to',
+              targetTicketId: 2,
+              project: 'Conquest',
+            },
+          },
+        }),
+        callRpc(wsServer, {
+          jsonrpc: '2.0',
+          id: 301,
+          method: 'tools/call',
+          params: {
+            name: 'esedre_save_plan',
+            arguments: {
+              ticketId: 1,
+              project: 'Conquest',
+              planMarkdown: '## Parallel Plan Execution\n- Verified serial batching\n- No lock contention',
+            },
+          },
+        }),
+      ]);
+
+      expect(linkRes.error).toBeUndefined();
+      expect(planRes.error).toBeUndefined();
+
+      const linkData = JSON.parse(linkRes.result.content[0].text);
+      const planData = JSON.parse(planRes.result.content[0].text);
+      expect(linkData.success).toBe(true);
+      expect(planData.success).toBe(true);
+
+      // Verify both mutations persisted cleanly
+      const t1 = await wsAdapter.getTicket('Conquest-1');
+      expect(t1?.links?.some((l: any) => l.targetId === 2)).toBe(true);
+      const plan = await wsAdapter.getPlan('Conquest-1');
+      expect(plan).toContain('Verified serial batching');
+
+      // Verify snapshot was generated cleanly without file corruption
+      const snapshotPath = path.join(workspaceDir, '.esedre', 'snapshot.json');
+      const snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
+      const snapTicket = snapshot.tickets.find((t: any) => t.id === 1);
+      expect(snapTicket).toBeDefined();
+      expect(snapTicket!.links.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('creates and updates ticket with implementation plan atomically via esedre_create_ticket and esedre_update_ticket (Ticket #80)', async () => {
+      const snapshotPath = path.join(workspaceDir, '.esedre', 'snapshot.json');
+
+      // 1. Create ticket with planMarkdown in one single call
+      const createRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 400,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: {
+            title: 'Ticket with Atomic MCP Plan',
+            project: 'Conquest',
+            summary: 'Single-call creation and planning',
+            planMarkdown: '## MCP Architecture Plan\n- Milestone 1\n- Milestone 2',
+          },
+        },
+      });
+
+      expect(createRes.error).toBeUndefined();
+      const created = JSON.parse(createRes.result.content[0].text);
+      const ticketId = created.meta.id;
+
+      // Verify plan is immediately available via esedre_get_plan
+      const getPlanRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 401,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_get_plan',
+          arguments: { ticketId, project: 'Conquest' },
+        },
+      });
+
+      expect(getPlanRes.error).toBeUndefined();
+      const planPayload = JSON.parse(getPlanRes.result.content[0].text);
+      expect(planPayload.planMarkdown).toContain('## MCP Architecture Plan');
+      expect(planPayload.planMarkdown).toContain('Milestone 1');
+
+      // Verify snapshot has hasPlan: true
+      const snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
+      const snapTicket = snapshot.tickets.find((t: any) => t.id === ticketId);
+      expect(snapTicket).toBeDefined();
+      expect(snapTicket.hasPlan).toBe(true);
+      expect(snapTicket.planMarkdown).toContain('## MCP Architecture Plan');
+
+      // 2. Update ticket and plan simultaneously in one call
+      const updateRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 402,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_update_ticket',
+          arguments: {
+            ticketId,
+            project: 'Conquest',
+            status: 'In Development',
+            planMarkdown: '## Updated MCP Architecture Plan\n- Milestone 1 Completed\n- Milestone 2 In Progress',
+          },
+        },
+      });
+
+      expect(updateRes.error).toBeUndefined();
+      const updated = JSON.parse(updateRes.result.content[0].text);
+      expect(updated.meta.status).toBe('In Development');
+
+      // Verify updated plan via esedre_get_plan
+      const getUpdatedPlanRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 403,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_get_plan',
+          arguments: { ticketId, project: 'Conquest' },
+        },
+      });
+
+      expect(getUpdatedPlanRes.error).toBeUndefined();
+      const updatedPlanPayload = JSON.parse(getUpdatedPlanRes.result.content[0].text);
+      expect(updatedPlanPayload.planMarkdown).toContain('Milestone 1 Completed');
+
+      // Verify snapshot updated
+      const updatedSnapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
+      const updatedSnapTicket = updatedSnapshot.tickets.find((t: any) => t.id === ticketId);
+      expect(updatedSnapTicket.status).toBe('In Development');
+      expect(updatedSnapTicket.planMarkdown).toContain('Milestone 1 Completed');
+    });
+
+    it('validates plan parameters and supports plan alias in esedre_save_plan (Ticket #81)', async () => {
+      // 1. Create a ticket
+      const createRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 500,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: {
+            title: 'Ticket for Plan Alias Testing',
+            project: 'Conquest',
+          },
+        },
+      });
+      const ticketId = JSON.parse(createRes.result.content[0].text).meta.id;
+
+      // 2. Call esedre_save_plan with 'plan' instead of 'planMarkdown'
+      const saveWithAliasRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 501,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_save_plan',
+          arguments: {
+            ticketId,
+            project: 'Conquest',
+            plan: '## Alias Plan Content\n- Point A\n- Point B',
+          },
+        },
+      });
+
+      expect(saveWithAliasRes.error).toBeUndefined();
+      const saveAliasResult = JSON.parse(saveWithAliasRes.result.content[0].text);
+      expect(saveAliasResult.success).toBe(true);
+
+      // Verify the plan was saved via get_plan
+      const getPlanRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 502,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_get_plan',
+          arguments: { ticketId, project: 'Conquest' },
+        },
+      });
+      const planData = JSON.parse(getPlanRes.result.content[0].text);
+      expect(planData.planMarkdown).toContain('## Alias Plan Content');
+
+      // 3. Call esedre_save_plan with neither planMarkdown nor plan
+      const saveMissingRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 503,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_save_plan',
+          arguments: {
+            ticketId,
+            project: 'Conquest',
+          },
+        },
+      });
+      expect(saveMissingRes.error).toBeDefined();
+      expect(saveMissingRes.error.message).toContain("Plan markdown content is required (pass 'planMarkdown' or 'plan')");
+
+      // 4. Call esedre_save_plan without ticketId
+      const saveMissingIdRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 504,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_save_plan',
+          arguments: {
+            planMarkdown: '## Some content',
+          },
+        },
+      });
+      expect(saveMissingIdRes.error).toBeDefined();
+      expect(saveMissingIdRes.error.message).toContain('Ticket ID is required');
+    });
+  });
 });
+
 
 

@@ -72,10 +72,10 @@ ${colors.bold}ROADMAP COMMANDS (Pair Programming & LLM Agents):${colors.reset}
   ${colors.bold}plan${colors.reset}        <id> [--file <path> | --set "<markdown>"] [--last-hash <sha1>] [--json]
                View or update implementation plan with optimistic concurrency control.
 
-  ${colors.bold}create${colors.reset}      --title "..." [-p|--project <code>] [-t|--type <type>] [-P|--priority <prio>] [--complexity <c>] [--effort "<e>"] [--summary "<s>"] [--detail "<md>"] [--file <path>] [--json]
+  ${colors.bold}create${colors.reset}      --title "..." [-p|--project <code>] [-t|--type <type>] [-P|--priority <prio>] [--complexity <c>] [--effort "<e>"] [--summary "<s>"] [--detail "<md>"] [--file <path>] [--plan "<md>"] [--plan-file <path>] [--json]
                Mint a new roadmap ticket with sequential numeric ID.
 
-  ${colors.bold}update${colors.reset}      <id> [-s|--status <status>] [-t|--type <type>] [-P|--priority <prio>] [--title "..."] [--complexity <c>] [--effort "<e>"] [--detail "<md>"] [--file <path>] [--in-dev] [--flag <name>] [--last-hash <sha1>] [--force] [--json]
+  ${colors.bold}update${colors.reset}      <id> [-s|--status <status>] [-t|--type <type>] [-P|--priority <prio>] [--title "..."] [--complexity <c>] [--effort "<e>"] [--detail "<md>"] [--file <path>] [--plan "<md>"] [--plan-file <path>] [--in-dev] [--flag <name>] [--last-hash <sha1>] [--force] [--json]
                Mutate ticket status, type, priority, title, complexity, effort, active state, or feature flag with OCC protection.
 
   ${colors.bold}comment${colors.reset}     <id> ["<text>"] [--file <path>] [--text "..."] [--author "..."] [--json]
@@ -159,6 +159,8 @@ ${colors.bold}OPTIONS:${colors.reset}
   --linked-to <key>    Filter tickets that are linked to a specific ticket.
   --detail "<md>"      Specification markdown for ticket detail during create or update.
   --file <path>        Path to markdown file for detail (create, update), implementation plan (plan), or comment (comment).
+  --plan "<md>"        Implementation plan markdown for ticket during create or update.
+  --plan-file <path>   Path to markdown file for implementation plan during create or update.
   --json              Output raw machine-readable JSON (strongly recommended for autonomous LLM coding agents).
   --last-hash <hash>  Optimistic concurrency control: last known sha1 hash of the ticket from 'get'.
   --force             Bypass optimistic concurrency last-hash conflict checks on writes.
@@ -821,7 +823,11 @@ async function main(): Promise<void> {
       }
 
       case 'mcp': {
-        const mcpServer = new EsedreMcpServer(storage);
+        const mcpServer = new EsedreMcpServer(storage, {
+          workspaceRoot: discovered.workspaceRoot,
+          config: discovered.config,
+          projectCode: discovered.config?.projectCode,
+        });
         mcpServer.start();
         return;
       }
@@ -1219,7 +1225,7 @@ async function main(): Promise<void> {
         const fileArg = flags['file'] as string;
         const milestone = (flags['milestone'] as string) || (flags['m'] as string) || undefined;
 
-        let detailMarkdown: string | undefined = detailArg;
+        let detailMarkdown: string | undefined = detailArg ? normalizeDashesAndMojibake(detailArg) : undefined;
         if (fileArg) {
           const filePath = path.resolve(fileArg);
           if (!fs.existsSync(filePath)) {
@@ -1230,7 +1236,23 @@ async function main(): Promise<void> {
             }
             process.exit(1);
           }
-          detailMarkdown = fs.readFileSync(filePath, 'utf-8');
+          detailMarkdown = normalizeDashesAndMojibake(fs.readFileSync(filePath, 'utf-8'));
+        }
+
+        const planArg = flags['plan'] as string;
+        const planFileArg = (flags['plan-file'] || flags['planFile']) as string;
+        let planMarkdown: string | undefined = planArg ? normalizeDashesAndMojibake(planArg) : undefined;
+        if (planFileArg) {
+          const planFilePath = path.resolve(planFileArg);
+          if (!fs.existsSync(planFilePath)) {
+            if (isJson) {
+              console.error(JSON.stringify({ error: `Plan file "${planFileArg}" not found` }));
+            } else {
+              console.error(`${colors.red}Error: Plan file "${planFileArg}" not found.${colors.reset}`);
+            }
+            process.exit(1);
+          }
+          planMarkdown = normalizeDashesAndMojibake(fs.readFileSync(planFilePath, 'utf-8'));
         }
 
         const created = await storage.createTicket({
@@ -1245,6 +1267,8 @@ async function main(): Promise<void> {
           submittedBy,
           detail: detailMarkdown,
           detailMarkdown,
+          plan: planMarkdown,
+          planMarkdown,
           milestone,
         });
 
@@ -1315,6 +1339,26 @@ async function main(): Promise<void> {
           detailMarkdown = normalizeDashesAndMojibake(fs.readFileSync(filePath, 'utf-8'));
         }
         if (detailMarkdown !== undefined) updates.detailMarkdown = detailMarkdown;
+
+        const planArg = flags['plan'] as string;
+        const planFileArg = (flags['plan-file'] || flags['planFile']) as string;
+        let planMarkdown: string | undefined = planArg ? normalizeDashesAndMojibake(planArg) : undefined;
+        if (planFileArg) {
+          const planFilePath = path.resolve(planFileArg);
+          if (!fs.existsSync(planFilePath)) {
+            if (isJson) {
+              console.error(JSON.stringify({ error: `Plan file "${planFileArg}" not found` }));
+            } else {
+              console.error(`${colors.red}Error: Plan file "${planFileArg}" not found.${colors.reset}`);
+            }
+            process.exit(1);
+          }
+          planMarkdown = normalizeDashesAndMojibake(fs.readFileSync(planFilePath, 'utf-8'));
+        }
+        if (planMarkdown !== undefined) {
+          updates.planMarkdown = planMarkdown;
+          updates.plan = planMarkdown;
+        }
 
         const updated = await storage.updateTicket(lookupKey, updates, lastHash);
         if (isJson) {
