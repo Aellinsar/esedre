@@ -268,8 +268,12 @@ export function parsePlannedWorkMarkdown(
       const detailComplexityMatch = detailRaw.match(/\*\*Complexity\*\*:\s*([^\n]+)/i);
       const effectiveComplexity = meta.complexity || (detailComplexityMatch ? detailComplexityMatch[1].trim() : undefined) || existing?.complexity || 'Medium';
 
-      const detailEffortMatch = detailRaw.match(/\*\*Estimated Effort\*\*:\s*([^\n]+)/i);
-      const effectiveEffort = meta.estimatedEffort || (detailEffortMatch ? detailEffortMatch[1].trim() : undefined) || existing?.estimatedEffort || 'N/A';
+      const detailEffortMatch = detailRaw.match(/(?:[-*•]\s+)?\*\*(?:Estimated\s+)?Effort\*\*:\s*([^\n]+)/i);
+      const rawDetailEffort = detailEffortMatch ? detailEffortMatch[1].trim() : undefined;
+      const validDetailEffort = rawDetailEffort && rawDetailEffort.toLowerCase() !== 'undefined' && rawDetailEffort.toLowerCase() !== 'null' ? rawDetailEffort : undefined;
+      const validMetaEffort = meta.estimatedEffort && meta.estimatedEffort !== 'undefined' && meta.estimatedEffort !== 'null' ? meta.estimatedEffort : undefined;
+      const validExistingEffort = existing?.estimatedEffort && existing.estimatedEffort !== 'undefined' && existing.estimatedEffort !== 'null' ? existing.estimatedEffort : undefined;
+      const effectiveEffort = validMetaEffort || validDetailEffort || validExistingEffort || '2.0 - 4.0 hours';
 
       const effectiveFeatureFlag = meta.featureFlag || existing?.featureFlag;
       const effectiveMilestone = meta.milestone || existing?.milestone;

@@ -1636,6 +1636,9 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         projectDescriptor: effectiveLoc.project,
       };
       normalizeTicketFields(ticketObj);
+      if (!ticketObj.meta.estimatedEffort) {
+        ticketObj.meta.estimatedEffort = '2.0 - 4.0 hours';
+      }
       this.enrichTicketLinks(ticketObj);
       ticketObj.sha1 = computeTicketHash(ticketObj);
       ticketObj.lastHash = ticketObj.sha1;
@@ -1843,10 +1846,16 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     const category = type;
 
     const complexityMatch = raw.match(/\*\*Complexity\*\*:\s*([^\n]+)/i);
-    const complexity = complexityMatch ? complexityMatch[1].trim() : 'Medium';
+    const rawComplexity = complexityMatch ? normalizeDashesAndMojibake(complexityMatch[1].replace(/  +$/, '').trim()) : undefined;
+    const complexity = rawComplexity && rawComplexity.toLowerCase() !== 'undefined' && rawComplexity.toLowerCase() !== 'null'
+      ? rawComplexity
+      : 'Medium';
 
     const effortMatch = raw.match(/\*\*(?:Estimated\s+)?Effort\*\*:\s*([^\n]+)/i);
-    const estimatedEffort = effortMatch ? effortMatch[1].trim() : '2.0 - 4.0 hours';
+    const rawEffort = effortMatch ? normalizeDashesAndMojibake(effortMatch[1].replace(/  +$/, '').trim()) : undefined;
+    const estimatedEffort = rawEffort && rawEffort.toLowerCase() !== 'undefined' && rawEffort.toLowerCase() !== 'null'
+      ? rawEffort
+      : '2.0 - 4.0 hours';
 
     let summary: string | undefined;
     const summaryMatch = raw.match(/(?:##|###)\s*(?:Summary|Rationale)\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
@@ -2060,19 +2069,23 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     }
 
     if (syncAll || updates?.complexity) {
-      preamble = replaceAndDedupeLine(
-        preamble,
-        /^([ \t]*(?:[-*•]\s+)?)\*\*(Complexity)\*\*:\s*[^\n\r]*/gim,
-        (lead) => `${lead}**Complexity**: ${meta.complexity}${lead.trim() ? '' : '  '}`
-      ).text;
+      if (meta.complexity && meta.complexity !== 'undefined' && meta.complexity !== 'null') {
+        preamble = replaceAndDedupeLine(
+          preamble,
+          /^([ \t]*(?:[-*•]\s+)?)\*\*(Complexity)\*\*:\s*[^\n\r]*/gim,
+          (lead) => `${lead}**Complexity**: ${meta.complexity}${lead.trim() ? '' : '  '}`
+        ).text;
+      }
     }
 
     if (syncAll || updates?.estimatedEffort) {
-      preamble = replaceAndDedupeLine(
-        preamble,
-        /^([ \t]*(?:[-*•]\s+)?)\*\*((?:Estimated\s+)?Effort)\*\*:\s*[^\n\r]*/gim,
-        (lead, label) => `${lead}**${label || 'Estimated Effort'}**: ${meta.estimatedEffort}${lead.trim() ? '' : '  '}`
-      ).text;
+      if (meta.estimatedEffort && meta.estimatedEffort !== 'undefined' && meta.estimatedEffort !== 'null') {
+        preamble = replaceAndDedupeLine(
+          preamble,
+          /^([ \t]*(?:[-*•]\s+)?)\*\*((?:Estimated\s+)?Effort)\*\*:\s*[^\n\r]*/gim,
+          (lead, label) => `${lead}**${label || 'Estimated Effort'}**: ${meta.estimatedEffort}${lead.trim() ? '' : '  '}`
+        ).text;
+      }
     }
 
     return preamble + bodySection;
@@ -2095,7 +2108,13 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           preambleCheck
         );
       if (!hasAnyMetaLine) {
-        const metaBlock = `\n**Category**: ${meta.category}  \n${priorityLine}${milestoneLine}**Complexity**: ${meta.complexity}  \n**Estimated Effort**: ${meta.estimatedEffort}  \n`;
+        const eff = (meta.estimatedEffort && meta.estimatedEffort !== 'undefined' && meta.estimatedEffort !== 'null')
+          ? meta.estimatedEffort
+          : '2.0 - 4.0 hours';
+        const comp = (meta.complexity && meta.complexity !== 'undefined' && meta.complexity !== 'null')
+          ? meta.complexity
+          : 'Medium';
+        const metaBlock = `\n**Category**: ${meta.category}  \n${priorityLine}${milestoneLine}**Complexity**: ${comp}  \n**Estimated Effort**: ${eff}  \n`;
         processed = processed.replace(/^(# Ticket[^\n]+\n)/m, `$1${metaBlock}`);
       } else if (!/\*\*(?:Type|Category)\*\*:/i.test(preambleCheck)) {
         processed = processed.replace(/^(# Ticket[^\n]+\n)/m, `$1**Category**: ${meta.category}  \n`);
@@ -2124,10 +2143,17 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       body += `${trimmed}\n`;
     }
 
+    const effectiveEffort = (meta.estimatedEffort && meta.estimatedEffort !== 'undefined' && meta.estimatedEffort !== 'null')
+      ? meta.estimatedEffort
+      : '2.0 - 4.0 hours';
+    const effectiveComplexity = (meta.complexity && meta.complexity !== 'undefined' && meta.complexity !== 'null')
+      ? meta.complexity
+      : 'Medium';
+
     return `# Ticket #${meta.id}: ${meta.title}
 **Category**: ${meta.category}  
-${priorityLine}${milestoneLine}**Complexity**: ${meta.complexity}  
-**Estimated Effort**: ${meta.estimatedEffort}  
+${priorityLine}${milestoneLine}**Complexity**: ${effectiveComplexity}  
+**Estimated Effort**: ${effectiveEffort}  
 
 ${body.trim()}\n`;
   }
@@ -2174,6 +2200,8 @@ ${body.trim()}\n`;
     const now = new Date().toISOString();
     const effectiveType = (input.type || input.category || 'Feature') as TicketType;
     const cleanTitle = normalizeDashesAndMojibake(input.title).slice(0, 48).trim();
+    const cleanSummary = input.summary ? normalizeDashesAndMojibake(input.summary) : undefined;
+    const cleanDetailRaw = (input.detailMarkdown || input.detail) ? normalizeDashesAndMojibake(input.detailMarkdown || input.detail) : undefined;
     const cleanEffort = normalizeDashesAndMojibake(input.estimatedEffort || input.effort || '2.0 - 4.0 hours');
     const cleanComplexity = normalizeDashesAndMojibake(input.complexity || 'Medium');
     const cleanPriority = normalizePriority(input.priority);
@@ -2198,9 +2226,6 @@ ${body.trim()}\n`;
     if (!cleanFeatureFlag && initialFlag) {
       cleanFeatureFlag = initialFlag;
     }
-
-    const cleanSummary = input.summary ? normalizeDashesAndMojibake(input.summary) : undefined;
-    const cleanDetailRaw = (input.detailMarkdown || input.detail) ? normalizeDashesAndMojibake(input.detailMarkdown || input.detail) : undefined;
 
     const meta: TicketMeta = {
       id: nextId,
@@ -2295,8 +2320,20 @@ ${input.summary || 'Summary to be defined.'}
     const { priority: _p, detail: _d, detailMarkdown: _dm, ...metaFields } = updates;
     const sanitizedUpdates: Partial<TicketMeta> = { ...metaFields };
     if (sanitizedUpdates.title) sanitizedUpdates.title = normalizeDashesAndMojibake(sanitizedUpdates.title);
-    if (sanitizedUpdates.estimatedEffort) sanitizedUpdates.estimatedEffort = normalizeDashesAndMojibake(sanitizedUpdates.estimatedEffort);
-    if (sanitizedUpdates.complexity) sanitizedUpdates.complexity = normalizeDashesAndMojibake(sanitizedUpdates.complexity);
+    if (sanitizedUpdates.estimatedEffort) {
+      sanitizedUpdates.estimatedEffort = normalizeDashesAndMojibake(sanitizedUpdates.estimatedEffort);
+      const lower = sanitizedUpdates.estimatedEffort.trim().toLowerCase();
+      if (lower === 'undefined' || lower === 'null' || lower === '') {
+        delete sanitizedUpdates.estimatedEffort;
+      }
+    }
+    if (sanitizedUpdates.complexity) {
+      sanitizedUpdates.complexity = normalizeDashesAndMojibake(sanitizedUpdates.complexity);
+      const lower = sanitizedUpdates.complexity.trim().toLowerCase();
+      if (lower === 'undefined' || lower === 'null' || lower === '') {
+        delete sanitizedUpdates.complexity;
+      }
+    }
 
     const updatedMeta: TicketMeta = {
       ...existing.meta,
@@ -2307,6 +2344,12 @@ ${input.summary || 'Summary to be defined.'}
       completedAt,
       revision,
     };
+    if (!updatedMeta.estimatedEffort || updatedMeta.estimatedEffort === 'undefined' || updatedMeta.estimatedEffort === 'null') {
+      updatedMeta.estimatedEffort = existing.meta.estimatedEffort || existing.detail?.estimatedEffort || '2.0 - 4.0 hours';
+    }
+    if (!updatedMeta.complexity || updatedMeta.complexity === 'undefined' || updatedMeta.complexity === 'null') {
+      updatedMeta.complexity = existing.meta.complexity || existing.detail?.complexity || 'Medium';
+    }
 
     if ('priority' in updates || updates.priority !== undefined) {
       const rawPrio = updates.priority;

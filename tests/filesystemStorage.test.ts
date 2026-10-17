@@ -595,6 +595,45 @@ describe('FilesystemStorageAdapter', () => {
     expect(updated.detail?.raw).not.toContain('1.0 - 2.0 hours');
   });
 
+  it('preserves existing estimatedEffort and never writes literal undefined when omitted in updateTicket (Ticket #82)', async () => {
+    const ticket = await adapter.createTicket({
+      title: 'Effort Preservation Test',
+      category: 'Feature',
+      projectCode: 'Core',
+      estimatedEffort: '2.0 - 3.5 hours',
+      detailMarkdown: [
+        '# Ticket #1: Effort Preservation Test',
+        '**Category**: Feature  ',
+        '**Complexity**: Medium  ',
+        '**Estimated Effort**: 2.0 - 3.5 hours  ',
+        '',
+        '### Summary',
+        'Initial specification summary.',
+      ].join('\n'),
+    });
+
+    expect(ticket.meta.estimatedEffort).toBe('2.0 - 3.5 hours');
+    expect(ticket.detail?.estimatedEffort).toBe('2.0 - 3.5 hours');
+
+    // Update only detail without passing estimatedEffort
+    const updated = await adapter.updateTicket(ticket.meta.id, {
+      detailMarkdown: [
+        '# Ticket #1: Effort Preservation Test',
+        '**Category**: Feature  ',
+        '**Complexity**: Medium  ',
+        '**Estimated Effort**: 2.0 - 3.5 hours  ',
+        '',
+        '### Summary',
+        'Updated summary without specifying effort in updates payload.',
+      ].join('\n'),
+    });
+
+    expect(updated.meta.estimatedEffort).toBe('2.0 - 3.5 hours');
+    expect(updated.detail?.estimatedEffort).toBe('2.0 - 3.5 hours');
+    expect(updated.detail?.raw).not.toContain('undefined');
+    expect(updated.detail?.raw).toContain('**Estimated Effort**: 2.0 - 3.5 hours');
+  });
+
   it('supports simultaneous implementation plan attachment in createTicket and updateTicket (Ticket #80)', async () => {
     // 1. Create ticket with initial planMarkdown
     const ticket = await adapter.createTicket({

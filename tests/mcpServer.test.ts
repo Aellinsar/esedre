@@ -220,6 +220,48 @@ describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
     expect(updatedTicket.detail?.breakdown).toContain('Detail from MCP');
   });
 
+  it('preserves existing estimatedEffort without writing literal undefined when effort argument is omitted in esedre_update_ticket (Ticket #82)', async () => {
+    await adapter.createTicket({
+      title: 'Effort Preservation Target',
+      category: 'Feature',
+      projectCode: 'Core',
+      estimatedEffort: '2.0 - 3.5 hours',
+    });
+
+    const updateRes = await callRpc(server, {
+      jsonrpc: '2.0',
+      id: 82,
+      method: 'tools/call',
+      params: {
+        name: 'esedre_update_ticket',
+        arguments: {
+          ticketId: 1,
+          detail: [
+            '# Ticket #1: Effort Preservation Target',
+            '**Category**: Feature  ',
+            '**Complexity**: Medium  ',
+            '**Estimated Effort**: 2.0 - 3.5 hours  ',
+            '',
+            '### Summary',
+            'Updated detail without separate effort argument.',
+            '',
+            '### Feature Breakdown',
+            '1. Preserves effort cleanly',
+          ].join('\n'),
+          includeRaw: true,
+        },
+      },
+    });
+
+    expect(updateRes.result).toBeDefined();
+    const updatedTicket = JSON.parse(updateRes.result.content[0].text);
+    expect(updatedTicket.meta.id).toBe(1);
+    expect(updatedTicket.meta.estimatedEffort).toBe('2.0 - 3.5 hours');
+    expect(updatedTicket.detail?.estimatedEffort).toBe('2.0 - 3.5 hours');
+    expect(updatedTicket.detail?.raw).not.toContain('undefined');
+    expect(updatedTicket.detail?.raw).toContain('**Estimated Effort**: 2.0 - 3.5 hours');
+  });
+
   it('returns hasPlan, summary, and hydrates planMarkdown when includePlan is true in esedre_list_tickets (Ticket #58)', async () => {
     // 1. Create two tickets: one with a plan, one without
     await adapter.createTicket({

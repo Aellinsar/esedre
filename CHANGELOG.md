@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Centralized `reconcileDetailMetadataHeaders` in `FilesystemStorageAdapter` so partial metadata updates (`ese update --status`, `--complexity`, `--effort`, `--priority`, `--type`, `--milestone`, `--title`, and `ese lease claim/release`) keep inline metadata headers (both unbulleted `**Key**:` and bulleted `- **Key**:`) at the top of `detail.md` synchronized with `meta.json` and deduplicate redundant header lines.
 - **Duplicate `lease` Command Blocks in `ese --help` Output (Ticket #76)**:
   - Removed 3 duplicate `lease` command help blocks from `printHelp()` in `bin/esedre.ts`.
+- **Preserve Estimated Effort and Prevent Undefined Values on Ticket Updates (Ticket #82)**:
+  - Fixed `FilesystemStorageAdapter.updateTicket` and `reconcileDetailMetadataHeaders` to preserve `existing.meta.estimatedEffort` when `effort` is omitted from update payloads, preventing template interpolation from writing literal `"undefined"` to `detail.md`.
+  - Filtered out literal `"undefined"` and `"null"` strings in `parseDetailMarkdown`, `planParser.ts`, and `normalizeTicketFields`.
+  - Added automated test coverage in `tests/mcpServer.test.ts` and `tests/filesystemStorage.test.ts`.
 
 ## [1.2.0] - 2026-10-09
 

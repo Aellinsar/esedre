@@ -59,7 +59,13 @@ export function normalizeTicketFields(ticket: EsedreTicket): EsedreTicket {
   if (!ticket) return ticket;
   if (ticket.meta) {
     if (ticket.meta.title) ticket.meta.title = normalizeDashesAndMojibake(ticket.meta.title);
-    if (ticket.meta.estimatedEffort) ticket.meta.estimatedEffort = normalizeDashesAndMojibake(ticket.meta.estimatedEffort);
+    if (ticket.meta.estimatedEffort) {
+      ticket.meta.estimatedEffort = normalizeDashesAndMojibake(ticket.meta.estimatedEffort);
+      const lower = ticket.meta.estimatedEffort.trim().toLowerCase();
+      if (lower === 'undefined' || lower === 'null' || lower === '') {
+        delete ticket.meta.estimatedEffort;
+      }
+    }
     if (ticket.meta.complexity) ticket.meta.complexity = normalizeDashesAndMojibake(ticket.meta.complexity);
     if (ticket.meta.milestone) ticket.meta.milestone = normalizeDashesAndMojibake(ticket.meta.milestone);
     if (ticket.meta.featureFlag) ticket.meta.featureFlag = normalizeDashesAndMojibake(ticket.meta.featureFlag);
@@ -75,7 +81,13 @@ export function normalizeTicketFields(ticket: EsedreTicket): EsedreTicket {
   }
   if (ticket.detail) {
     if (ticket.detail.title) ticket.detail.title = normalizeDashesAndMojibake(ticket.detail.title);
-    if (ticket.detail.estimatedEffort) ticket.detail.estimatedEffort = normalizeDashesAndMojibake(ticket.detail.estimatedEffort);
+    if (ticket.detail.estimatedEffort) {
+      ticket.detail.estimatedEffort = normalizeDashesAndMojibake(ticket.detail.estimatedEffort);
+      const lower = ticket.detail.estimatedEffort.trim().toLowerCase();
+      if (lower === 'undefined' || lower === 'null' || lower === '') {
+        delete ticket.detail.estimatedEffort;
+      }
+    }
     if (ticket.detail.summary) ticket.detail.summary = normalizeDashesAndMojibake(ticket.detail.summary);
     if (ticket.detail.milestone) ticket.detail.milestone = normalizeDashesAndMojibake(ticket.detail.milestone);
     if (ticket.detail.priority) {
@@ -90,6 +102,9 @@ export function normalizeTicketFields(ticket: EsedreTicket): EsedreTicket {
     if (ticket.detail.technicalDetails) ticket.detail.technicalDetails = ticket.detail.technicalDetails.map((t) => normalizeDashesAndMojibake(t));
     if (ticket.detail.openQuestions) ticket.detail.openQuestions = ticket.detail.openQuestions.map((q) => normalizeDashesAndMojibake(q));
     if (ticket.detail.raw) ticket.detail.raw = normalizeDashesAndMojibake(ticket.detail.raw);
+  }
+  if (ticket.meta && !ticket.meta.estimatedEffort && ticket.detail?.estimatedEffort) {
+    ticket.meta.estimatedEffort = ticket.detail.estimatedEffort;
   }
   if (ticket.planMarkdown) {
     ticket.planMarkdown = normalizeDashesAndMojibake(ticket.planMarkdown);
