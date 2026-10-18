@@ -407,5 +407,160 @@ describe('Cross-Project Ticket Linking & Dependencies', () => {
       const fetched1 = await storage.getTicket('Core-1');
       expect(fetched1!.links).toHaveLength(0);
     });
+
+    it('supports id/targetId/sourceId aliases and returns explicit parameter error messages in link and unlink', async () => {
+      const storage = new FilesystemStorageAdapter(tmpDir, { dataDir: hubDir, projectCode: 'Core' });
+      const server = new EsedreMcpServer(storage);
+
+      const callRpc = async (req: any) => {
+        return await (server as any).handleRequest(req);
+      };
+
+      await storage.createTicket({ title: 'Task One', type: 'Feature', projectCode: 'Core' });
+      await storage.createTicket({ title: 'Task Two', type: 'Feature', projectCode: 'Core' });
+
+      // 1. Calling link with no arguments returns explicit error naming both
+      const noArgsRes = await callRpc({
+        jsonrpc: '2.0',
+        id: 10,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_link_ticket',
+          arguments: {},
+        },
+      });
+      expect(noArgsRes.error).toBeDefined();
+      expect(noArgsRes.error.message).toContain('sourceTicketId and targetTicketId are required');
+
+      // 2. Calling link with only targetId returns sourceTicketId is required
+      const missingSourceRes = await callRpc({
+        jsonrpc: '2.0',
+        id: 11,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_link_ticket',
+          arguments: { targetId: 'Core-2', relation: 'blocks' },
+        },
+      });
+      expect(missingSourceRes.error).toBeDefined();
+      expect(missingSourceRes.error.message).toContain('sourceTicketId is required');
+
+      // 3. Calling link with only id returns targetTicketId is required
+      const missingTargetRes = await callRpc({
+        jsonrpc: '2.0',
+        id: 12,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_link_ticket',
+          arguments: { id: 'Core-1', relation: 'blocks' },
+        },
+      });
+      expect(missingTargetRes.error).toBeDefined();
+      expect(missingTargetRes.error.message).toContain('targetTicketId is required');
+
+      // 4. Calling link with id and targetId but missing relation
+      const missingRelRes = await callRpc({
+        jsonrpc: '2.0',
+        id: 13,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_link_ticket',
+          arguments: { id: 'Core-1', targetId: 'Core-2' },
+        },
+      });
+      expect(missingRelRes.error).toBeDefined();
+      expect(missingRelRes.error.message).toContain('relation is required');
+
+      // 5. Calling link with id and targetId succeeds
+      const aliasLinkRes = await callRpc({
+        jsonrpc: '2.0',
+        id: 14,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_link_ticket',
+          arguments: {
+            id: 'Core-1',
+            relation: 'relates-to',
+            targetId: 'Core-2',
+          },
+        },
+      });
+      expect(aliasLinkRes.error).toBeUndefined();
+      const linkOutput = JSON.parse(aliasLinkRes.result.content[0].text);
+      expect(linkOutput.success).toBe(true);
+      expect(linkOutput.sourceKey).toBe('Core-1');
+      expect(linkOutput.targetKey).toBe('Core-2');
+
+      // 6. Calling unlink with no arguments returns explicit error naming both
+      const noArgsUnlinkRes = await callRpc({
+        jsonrpc: '2.0',
+        id: 15,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_unlink_ticket',
+          arguments: {},
+        },
+      });
+      expect(noArgsUnlinkRes.error).toBeDefined();
+      expect(noArgsUnlinkRes.error.message).toContain('sourceTicketId and targetTicketId are required');
+
+      // 7. Calling unlink with only targetId
+      const unlinkMissingSourceRes = await callRpc({
+        jsonrpc: '2.0',
+        id: 16,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_unlink_ticket',
+          arguments: { targetId: 'Core-2' },
+        },
+      });
+      expect(unlinkMissingSourceRes.error).toBeDefined();
+      expect(unlinkMissingSourceRes.error.message).toContain('sourceTicketId is required');
+
+      // 8. Calling unlink with only sourceId
+      const unlinkMissingTargetRes = await callRpc({
+        jsonrpc: '2.0',
+        id: 17,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_unlink_ticket',
+          arguments: { sourceId: 'Core-1' },
+        },
+      });
+      expect(unlinkMissingTargetRes.error).toBeDefined();
+      expect(unlinkMissingTargetRes.error.message).toContain('targetTicketId is required');
+
+      // 9. Calling unlink with id and targetId aliases succeeds
+      const aliasUnlinkRes = await callRpc({
+        jsonrpc: '2.0',
+        id: 18,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_unlink_ticket',
+          arguments: {
+            id: 'Core-1',
+            targetId: 'Core-2',
+          },
+        },
+      });
+      expect(aliasUnlinkRes.error).toBeUndefined();
+      const unlinkOutput = JSON.parse(aliasUnlinkRes.result.content[0].text);
+      expect(unlinkOutput.success).toBe(true);
+
+      // 10. Calling get_ticket and save_plan with id alias succeeds
+      const getTicketRes = await callRpc({
+        jsonrpc: '2.0',
+        id: 19,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_get_ticket',
+          arguments: { id: 'Core-1' },
+        },
+      });
+      expect(getTicketRes.error).toBeUndefined();
+      const ticketOutput = JSON.parse(getTicketRes.result.content[0].text);
+      expect(ticketOutput.meta.id).toBe(1);
+    });
   });
 });
+

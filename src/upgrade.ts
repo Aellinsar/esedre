@@ -254,8 +254,8 @@ When Esedre MCP is active in your agent session (\`.agents/mcp.json\` or \`.agen
 | \`esedre_renew_lease\` | Extend an active ticket lease TTL | \`ticketId\`, \`holder\`/\`workerId\`, \`system\`, \`ttlMinutes\` |
 | \`esedre_release_ticket\` | Release a ticket lease and optionally transition status | \`ticketId\`, \`holder\`/\`workerId\`, \`system\`, \`finalStatus\`, \`notes\`, \`force\` |
 | \`esedre_list_leases\` | List all active unexpired ticket leases | \`project\` |
-| \`esedre_link_ticket\` | Establish bi-directional ticket relationship | \`sourceTicketId\`, \`relation\` (\`relates-to\` \\| \`blocks\` \\| \`parent-of\` \\| \`duplicates\`), \`targetTicketId\`, \`author\` |
-| \`esedre_unlink_ticket\` | Remove bi-directional ticket relationship | \`sourceTicketId\`, \`targetTicketId\`, \`relation\` |
+| \`esedre_link_ticket\` | Establish bi-directional ticket relationship | \`sourceTicketId\`/\`id\`, \`relation\` (\`relates-to\` \\| \`blocks\` \\| \`parent-of\` \\| \`duplicates\`), \`targetTicketId\`/\`targetId\`, \`author\` |
+| \`esedre_unlink_ticket\` | Remove bi-directional ticket relationship | \`sourceTicketId\`/\`id\`, \`targetTicketId\`/\`targetId\`, \`relation\` |
 | \`esedre_list_milestones\` | List project milestones and deliverables progress | \`project\` |
 | \`esedre_get_milestone\` | Get milestone specs, umbrella flag, and member tickets | \`milestoneId\` (numeric or title), \`project\` |
 | \`esedre_create_milestone\` | Create a project milestone with optional umbrella flag | \`title\`, \`project\`, \`featureFlag\`, \`status\`, \`targetDate\`, \`description\` |

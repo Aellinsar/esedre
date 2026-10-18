@@ -51,10 +51,10 @@ The server registers the following tools in `tools/list`:
     - Parameters: `{ project?: string }`
     - Lists all active unexpired ticket leases across authorized projects.
 11. `esedre_link_ticket`:
-    - Parameters: `{ sourceTicketId: number | string, relation: string, targetTicketId: number | string, author?: string, project?: string }`
+    - Parameters: `{ sourceTicketId: number | string, relation: string, targetTicketId: number | string, author?: string, project?: string }` (also accepts aliases `id`, `sourceId`, or `ticketId` for source, and `targetId` for target).
     - Creates a bi-directional link between two tickets (`relates-to`, `blocks`, `parent-of`, `duplicates`). Returns a compact confirmation payload `{ success: true, sourceKey, relation, targetKey, sourceRevision, targetRevision, links }`.
 12. `esedre_unlink_ticket`:
-    - Parameters: `{ sourceTicketId: number | string, targetTicketId: number | string, project?: string }`
+    - Parameters: `{ sourceTicketId: number | string, targetTicketId: number | string, project?: string }` (also accepts aliases `id`, `sourceId`, or `ticketId` for source, and `targetId` for target).
     - Removes a bi-directional link between two tickets. Returns a compact confirmation payload `{ success: true, sourceKey, targetKey, sourceRevision, targetRevision, links }`.
 13. `esedre_add_comment`:
     - Parameters: `{ ticketId: number | string, text?: string, file?: string, author?: string }`

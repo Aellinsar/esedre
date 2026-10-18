@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `lastTicketId` alongside `totalTickets` in the root of `.esedre/snapshot.json` so agents can inspect the highest allocated numeric ticket ID even when historical ticket numbers were skipped or removed.
 
 ### Fixed
+- **Support Parameter Aliases and Precise Errors in Link and Unlink MCP Tools (Ticket #83)**:
+  - Supported `id`, `sourceId`, and `ticketId` as aliases for `sourceTicketId`, and `targetId` as an alias for `targetTicketId` in `esedre_link_ticket` and `esedre_unlink_ticket`.
+  - Supported `id` as an alias for `ticketId` across single-ticket inspection, planning, update, comment, and lease MCP tools.
+  - Parameterized `parseTicketId(val, paramName)` and added explicit parameter validation returning `"sourceTicketId and targetTicketId are required"`, `"sourceTicketId is required"`, or `"targetTicketId is required"` instead of ambiguous `"Ticket ID is required"`.
+  - Exposed alias parameters in `getToolDefinitions()` schemas and documented them in skill guides.
 - **`detail.md` Combined Technical Details & Open Questions Section Routing (Ticket #70)**:
   - Fixed `FilesystemStorageAdapter.parseDetailMarkdown` and `planParser.ts` so `- **Technical Detail**:`, `- **Architecture**:`, and `- **Root Cause**:` bullets under `### Technical Details` or combined `### Technical Detail(s) & Open Questions` headings route to `technicalDetails[]` rather than leaking into `openQuestions[]`.
 - **In-Body `detail.md` Metadata Header Reconciliation on Partial Updates (Ticket #74)**:
