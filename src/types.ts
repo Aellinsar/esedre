@@ -19,6 +19,8 @@ export interface ProjectDescriptor {
   techStack?: Record<string, string> | string[];
   groundingRules?: string[];
   guidelinesRef?: string;
+  schemaVersion?: string;
+  esedreVersion?: string;
 }
 
 export interface UpdateProjectInput {
@@ -145,6 +147,8 @@ export interface TicketMeta {
   lease?: TicketLease | null;
   projectId?: number;
   project?: string;
+  schemaVersion?: string;
+  esedreVersion?: string;
   lastHash?: string;
   sha1?: string;
 }

@@ -48,7 +48,7 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 | `rename-project` | `esedre rename-project <oldCode> <newCode> [--name "<name>"]` | Renames a project code across directory storage paths, manifests, and tickets. |
 | `project` | `esedre project set <code> [--name "<name>"]` | Updates project metadata (such as display name). |
 | `snapshot`, `refresh` | `esedre snapshot [--project <code>]` | Re-generates or refreshes `.esedre/snapshot.json` projection (`totalTickets`, `lastTicketId`, `activeLeases`, `tickets`) for zero-latency agent context. |
-| `upgrade` | `esedre upgrade [--all \| -a] [--force \| -f] [--json]` | Upgrades workspace configuration, scripts, wrappers, workspace & global Antigravity MCP configs, and agent skills across current or all registered workspaces, warning if `AGENTS.md` or `GEMINI.md` exceeds 24,000 bytes. |
+| `upgrade` | `esedre upgrade [<path>] [-p\|--project <code>] [--all \| -a] [--force \| -f] [--json]` | Upgrades workspace configuration, project data schema versions (with backups in `~/.esedre/backups/`), scripts, wrappers, workspace & global Antigravity MCP configs, and agent skills across current, target project, or all registered workspaces, warning if `AGENTS.md` or `GEMINI.md` exceeds 24,000 bytes. |
 | `mcp` | `esedre mcp` | Starts the Model Context Protocol stdio server. |
 
 ### Universal Shorthand Flags
@@ -68,7 +68,7 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 ## 4. Exit Codes & Error Handling
 
 - **Code 0**: Successful execution.
-- **Code 1**: Handled user or validation error (e.g. missing required flags, ticket not found, or `EsedreLeaseConflictError`).
+- **Code 1**: Handled user or validation error (e.g. missing required flags, ticket not found, `EsedreLeaseConflictError`, or `EsedreVersionError`).
 - **Access Denied**: When a `EsedreAuthorizationError` is caught, the CLI writes `Access Denied: <message>` to `stderr` in bold red and exits with code 1.
 
 ## 5. Automated Diagnostic & Repair Invariants

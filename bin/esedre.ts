@@ -13,6 +13,7 @@ import { initLogger } from '../src/utils/logger.js';
 import {
   findEsedreConfig,
   EsedreAuthorizationError,
+  isProjectAuthorized,
   validateProjectCode,
   validateProjectName,
   getGlobalConfigPath,
@@ -36,10 +37,17 @@ import {
   initWorkspace,
   initHub,
   CURRENT_ESEDRE_VERSION,
+  CURRENT_DATA_VERSION,
   findViteConfig,
   findOutdatedWrappers,
   upgradeAllWorkspaces,
+  upgradeProjectData,
 } from '../src/upgrade.js';
+import {
+  EsedreVersionError,
+  getProjectSchemaVersion,
+  checkProjectCompatibility,
+} from '../src/migrations/index.js';
 import { startGatewayCluster } from '../src/server/gateway.js';
 import { startDaemon, stopDaemon, getDaemonStatus, printDaemonLogs } from '../src/server/daemon.js';
 
@@ -130,9 +138,10 @@ ${colors.bold}DEVELOPER ADMINISTRATION (Human Setup & Configuration):${colors.re
                • remove <target>  Unlink a project or data hub
                • set <key> <val>  Update a central configuration setting
 
-  ${colors.bold}upgrade${colors.reset}     [<path>] [--all|-a] [--force|-f] [--json]
-               Upgrade workspace configuration schema, wrappers, and agent skills. Refreshes snapshot.
-               Pass --all (-a) to upgrade all registered projects in central ~/.esedre/config.json.
+  ${colors.bold}upgrade${colors.reset}     [<path>] [-p|--project <code>] [--all|-a] [--force|-f] [--json]
+               Upgrade workspace configuration schema, wrappers, agent skills, and project data schema. Refreshes snapshot.
+               Pass --project (-p) <code> to run storage schema migrations on a specific project.
+               Pass --all (-a) to upgrade all registered workspaces and project schemas in central ~/.esedre/config.json.
                Pass --force to overwrite customized skills with the latest official template.
 
   ${colors.bold}projects${colors.reset}    [--json]
@@ -715,6 +724,7 @@ async function main(): Promise<void> {
       case 'upgrade': {
         const isAll = Boolean(flags['all'] || flags['a']);
         const isForce = Boolean(flags['force'] || flags['f']);
+        const targetProjectFlag = (flags['project'] || flags['p']) as string | undefined;
 
         if (isAll) {
           const globalCfg = readGlobalConfig();
@@ -729,7 +739,7 @@ async function main(): Promise<void> {
             return;
           }
 
-          if (allRes.workspaces.length === 0) {
+          if (allRes.workspaces.length === 0 && allRes.projectMigrations.length === 0) {
             console.log(`${colors.yellow}No registered workspaces found to upgrade.${colors.reset}`);
             return;
           }
@@ -742,6 +752,15 @@ async function main(): Promise<void> {
               const snapStr = w.totalTickets !== undefined ? ` (${w.totalTickets} tickets projected)` : '';
               console.log(`  • ${colors.bold}${w.name}${colors.reset} (${w.dir}):`);
               console.log(`    - Wrappers updated in .esedre/`);
+              if (w.migration) {
+                console.log(
+                  `    - Data Schema: v${w.migration.currentSchemaVersion} (${
+                    w.migration.appliedMigrations.length > 0
+                      ? `${w.migration.appliedMigrations.length} migration(s) applied`
+                      : 'up to date'
+                  })`
+                );
+              }
               if (w.totalTickets !== undefined) {
                 console.log(`    - Refreshed .esedre/snapshot.json${snapStr}`);
               }
@@ -755,6 +774,66 @@ async function main(): Promise<void> {
                   console.log(`    - ${colors.yellow}⚠️  ${rw.message}${colors.reset}`);
                 }
               }
+            }
+          }
+          if (allRes.projectMigrations.length > 0) {
+            console.log(`\n${colors.bold}Project Data Schemas (${allRes.projectMigrations.length}):${colors.reset}`);
+            for (const m of allRes.projectMigrations) {
+              const migNote =
+                m.appliedMigrations.length > 0
+                  ? `${colors.green}migrated v${m.previousSchemaVersion} -> v${m.currentSchemaVersion} (${m.appliedMigrations.length} step(s))${colors.reset}`
+                  : `v${m.currentSchemaVersion} (engine v${m.esedreVersion})`;
+              console.log(`  • ${colors.bold}${m.projectCode}${colors.reset}: ${migNote}`);
+            }
+          }
+          return;
+        }
+
+        if (targetProjectFlag && typeof targetProjectFlag === 'string') {
+          const cleanCode = targetProjectFlag.trim();
+          if (!isProjectAuthorized(cleanCode, discovered.config?.allowedProjects)) {
+            throw new EsedreAuthorizationError(cleanCode);
+          }
+          const migration = await upgradeProjectData(rawStorage, cleanCode);
+          let snapshotTickets: number | undefined;
+          if (
+            discovered.config?.projectCode &&
+            discovered.config.projectCode.toLowerCase() === migration.projectCode.toLowerCase()
+          ) {
+            const snap = await generateProjectSnapshot(storage, migration.projectCode, discovered.workspaceRoot);
+            snapshotTickets = snap.totalTickets;
+          }
+          if (isJson) {
+            console.log(
+              JSON.stringify(
+                {
+                  project: migration.projectCode,
+                  migration,
+                  ...(snapshotTickets !== undefined ? { snapshot: { totalTickets: snapshotTickets } } : {}),
+                },
+                null,
+                2
+              )
+            );
+          } else {
+            console.log(
+              `${colors.bold}${colors.green}✔ Project '${migration.projectCode}' data schema upgraded!${colors.reset}`
+            );
+            console.log(
+              `  • Data Schema: v${migration.previousSchemaVersion} -> v${migration.currentSchemaVersion} (Esedre v${migration.esedreVersion})`
+            );
+            console.log(
+              `  • Applied Migrations: ${
+                migration.appliedMigrations.length > 0
+                  ? migration.appliedMigrations.map((m) => `v${m.version} (${m.description})`).join(', ')
+                  : '0 (schema metadata stamped)'
+              }`
+            );
+            if (migration.backupPath) {
+              console.log(`  • Pre-Migration Backup: ${migration.backupPath}`);
+            }
+            if (snapshotTickets !== undefined) {
+              console.log(`  • Refreshed .esedre/snapshot.json (${snapshotTickets} tickets projected)`);
             }
           }
           return;
@@ -771,22 +850,46 @@ async function main(): Promise<void> {
           force: isForce,
         });
 
-        // Also refresh snapshot
+        // Also run project data schema migrations and refresh snapshot
         const projectCode = targetDiscovered.config?.projectCode;
         if (!projectCode) {
           console.error(`${colors.red}Error: "projectCode" is required in esedre.json configuration (no default fallback).${colors.reset}`);
           process.exit(1);
         }
+        const rawTargetStorage = targetDir === discovered.workspaceRoot
+          ? rawStorage
+          : new FilesystemStorageAdapter(targetDir, targetDiscovered.config);
+        const migration = await upgradeProjectData(rawTargetStorage, projectCode);
         const targetStorage = targetDir === discovered.workspaceRoot
           ? storage
-          : new SecurityFilter(new FilesystemStorageAdapter(targetDir, targetDiscovered.config), targetDiscovered.config);
+          : new SecurityFilter(rawTargetStorage, targetDiscovered.config);
         const snapshot = await generateProjectSnapshot(targetStorage, projectCode, targetDir);
 
         if (isJson) {
-          console.log(JSON.stringify({ upgrade: res, snapshot: { totalTickets: snapshot.totalTickets } }, null, 2));
+          console.log(
+            JSON.stringify(
+              {
+                upgrade: res,
+                migration,
+                snapshot: { totalTickets: snapshot.totalTickets },
+              },
+              null,
+              2
+            )
+          );
         } else {
           console.log(`${colors.bold}${colors.green}✔ Esedre upgrade completed!${colors.reset}`);
           console.log(`  • Esedre Engine Version: ${CURRENT_ESEDRE_VERSION}`);
+          console.log(
+            `  • Project Data Schema (${migration.projectCode}): v${migration.currentSchemaVersion}${
+              migration.appliedMigrations.length > 0
+                ? ` (${migration.appliedMigrations.length} migration(s) applied from v${migration.previousSchemaVersion})`
+                : ''
+            }`
+          );
+          if (migration.backupPath) {
+            console.log(`  • Pre-Migration Backup: ${migration.backupPath}`);
+          }
           console.log(`  • Wrappers updated in .esedre/`);
           console.log(`  • Refreshed .esedre/snapshot.json (${snapshot.totalTickets} tickets projected)`);
           if (res.skillConfigured) {
@@ -897,15 +1000,34 @@ async function main(): Promise<void> {
         const status = await getDaemonStatus({ port, workspaceRoot: discovered.workspaceRoot });
         const globalCfg = readGlobalConfig() || discovered.config;
         const outdatedWrappers = findOutdatedWrappers(discovered.workspaceRoot, globalCfg);
+        const visibleProjects = await storage.getProjects();
+        const pendingSchemaProjects = visibleProjects
+          .map((p) => checkProjectCompatibility(p, { operation: 'read' }))
+          .filter((c) => c.needsUpgrade);
 
         if (isJson) {
-          console.log(JSON.stringify({ ...status, outdatedWrappers }, null, 2));
+          console.log(
+            JSON.stringify(
+              {
+                ...status,
+                dataVersion: CURRENT_DATA_VERSION,
+                outdatedWrappers,
+                pendingSchemaProjects: pendingSchemaProjects.map((c) => ({
+                  projectCode: c.projectCode,
+                  currentSchemaVersion: c.schemaVersion,
+                  targetSchemaVersion: CURRENT_DATA_VERSION,
+                })),
+              },
+              null,
+              2
+            )
+          );
         } else {
           if (status.running) {
             console.log(`${colors.bold}${colors.green}● Esedre daemon is RUNNING${colors.reset}`);
             console.log(`  • Port:        ${status.port}`);
             if (status.pid) console.log(`  • PID:         ${status.pid}`);
-            if (status.version) console.log(`  • Version:     v${status.version}`);
+            if (status.version) console.log(`  • Version:     v${status.version} (schema v${CURRENT_DATA_VERSION})`);
             if (status.uptimeSeconds !== undefined) console.log(`  • Uptime:      ${status.uptimeSeconds}s`);
             if (status.startedAt) console.log(`  • Started:     ${status.startedAt}`);
             if (status.projects?.length) console.log(`  • Projects:    ${status.projects.join(', ')}`);
@@ -924,6 +1046,14 @@ async function main(): Promise<void> {
 
           if (outdatedWrappers.length > 0) {
             console.log(`\n${colors.yellow}Notice: ${outdatedWrappers.length} workspace(s) have legacy CMD wrappers (${outdatedWrappers.map((o) => o.name).join(', ')}). Run 'ese upgrade --all' to update.${colors.reset}`);
+          }
+          if (pendingSchemaProjects.length > 0) {
+            const listStr = pendingSchemaProjects
+              .map((c) => `${c.projectCode} (v${c.schemaVersion} -> v${CURRENT_DATA_VERSION})`)
+              .join(', ');
+            console.log(
+              `\n${colors.yellow}Notice: ${pendingSchemaProjects.length} project(s) have pending data schema migrations: ${listStr}. Run 'ese upgrade --project <code>' or 'ese upgrade --all'.${colors.reset}`
+            );
           }
         }
         return;
@@ -1009,7 +1139,11 @@ async function main(): Promise<void> {
         } else {
           console.log(`${colors.bold}Registered Projects:${colors.reset}`);
           for (const p of projects) {
-            console.log(`  • ${colors.bold}${p.code}${colors.reset} (#${p.id}): ${p.name}: ${colors.dim}${p.description}${colors.reset}`);
+            const compat = checkProjectCompatibility(p, { operation: 'read' });
+            const verTag = compat.needsUpgrade
+              ? `${colors.yellow}[schema v${compat.schemaVersion} -> upgrade to v${CURRENT_DATA_VERSION} available]${colors.reset}`
+              : `${colors.dim}[schema v${compat.schemaVersion}]${colors.reset}`;
+            console.log(`  • ${colors.bold}${p.code}${colors.reset} (#${p.id}): ${p.name}: ${colors.dim}${p.description}${colors.reset} ${verTag}`);
           }
         }
         return;
@@ -1023,7 +1157,11 @@ async function main(): Promise<void> {
         } else {
           console.log(`${colors.bold}Registered Projects:${colors.reset}`);
           for (const p of projects) {
-            console.log(`  • ${colors.bold}${p.code}${colors.reset} (#${p.id}): ${p.name}: ${colors.dim}${p.description}${colors.reset}`);
+            const compat = checkProjectCompatibility(p, { operation: 'read' });
+            const verTag = compat.needsUpgrade
+              ? `${colors.yellow}[schema v${compat.schemaVersion} -> upgrade to v${CURRENT_DATA_VERSION} available]${colors.reset}`
+              : `${colors.dim}[schema v${compat.schemaVersion}]${colors.reset}`;
+            console.log(`  • ${colors.bold}${p.code}${colors.reset} (#${p.id}): ${p.name}: ${colors.dim}${p.description}${colors.reset} ${verTag}`);
           }
         }
         return;
@@ -1786,6 +1924,27 @@ async function main(): Promise<void> {
     }
     if (err instanceof EsedreAuthorizationError || err.name === 'EsedreAuthorizationError') {
       console.error(`${colors.red}Access Denied: ${err.message}${colors.reset}`);
+      process.exit(1);
+    }
+    if (err instanceof EsedreVersionError || err.name === 'EsedreVersionError') {
+      if (isJson) {
+        console.error(
+          JSON.stringify(
+            {
+              error: err.message,
+              projectCode: err.projectCode,
+              currentSchemaVersion: err.currentSchemaVersion,
+              requiredSchemaVersion: err.requiredSchemaVersion,
+              reason: err.reason,
+              featureName: err.featureName,
+            },
+            null,
+            2
+          )
+        );
+      } else {
+        console.error(`${colors.red}Version Compatibility Error: ${err.message}${colors.reset}`);
+      }
       process.exit(1);
     }
     console.error(`${colors.red}Fatal Error: ${err.message}${colors.reset}`);

@@ -18,7 +18,14 @@ import { FilesystemStorageAdapter } from './storage/filesystem.js';
 import { SecurityFilter } from './securityFilter.js';
 
 import { CURRENT_ESEDRE_VERSION } from './types.js';
-export { CURRENT_ESEDRE_VERSION };
+import {
+  CURRENT_DATA_VERSION,
+  runProjectMigrations,
+  type ProjectMigrationResult,
+  type RunProjectMigrationsOptions,
+} from './migrations/index.js';
+export { CURRENT_ESEDRE_VERSION, CURRENT_DATA_VERSION, runProjectMigrations };
+export type { ProjectMigrationResult, RunProjectMigrationsOptions };
 export function computeNormalizedHash(content: string): string {
   const normalized = content.replace(/\r\n/g, '\n').trim();
   return crypto.createHash('sha1').update(normalized, 'utf-8').digest('hex');
@@ -853,6 +860,8 @@ export function configureWorkspace(targetDir: string, options: ConfigureOptions 
           dot: 'bg-cyan-400',
           border: 'border-cyan-500/40',
         },
+        schemaVersion: CURRENT_DATA_VERSION,
+        esedreVersion: CURRENT_ESEDRE_VERSION,
       };
       fs.writeFileSync(inRepoPJson, JSON.stringify(projDesc, null, 2) + '\n', 'utf-8');
       projectRegistered = true;
@@ -1046,6 +1055,7 @@ export interface UpgradeAllOptions {
   currentWorkspaceRoot?: string;
   globalConfig?: EsedreConfig | null;
   force?: boolean;
+  migrationOptions?: RunProjectMigrationsOptions;
 }
 
 export interface WorkspaceUpgradeResult {
@@ -1053,18 +1063,39 @@ export interface WorkspaceUpgradeResult {
   name: string;
   projectCode?: string;
   upgrade: ConfigureResult;
+  migration?: ProjectMigrationResult;
   totalTickets?: number;
   error?: string;
 }
 
 export interface UpgradeAllResult {
   workspaces: WorkspaceUpgradeResult[];
+  projectMigrations: ProjectMigrationResult[];
   totalUpgraded: number;
 }
 
 /**
- * Upgrade wrappers, configs, and snapshot projections across all registered workspaces
- * declared in central ~/.esedre/config.json and the active workspace.
+ * Run pending storage schema migrations and stamp schemaVersion + esedreVersion
+ * for a single project resolved through FilesystemStorageAdapter.
+ */
+export async function upgradeProjectData(
+  storage: FilesystemStorageAdapter,
+  projectCode: string,
+  options: RunProjectMigrationsOptions = {}
+): Promise<ProjectMigrationResult> {
+  const cleanCode = projectCode.trim();
+  const cleanLower = cleanCode.toLowerCase();
+  const locations = storage.resolveProjectLocations();
+  const loc = locations.find((l) => l.project.code.toLowerCase() === cleanLower);
+  if (!loc) {
+    throw new Error(`Project "${cleanCode}" not found`);
+  }
+  return runProjectMigrations(loc, storage, options);
+}
+
+/**
+ * Upgrade wrappers, configs, project data schemas, and snapshot projections across all registered
+ * workspaces and data hubs declared in central ~/.esedre/config.json and the active workspace.
  */
 export async function upgradeAllWorkspaces(options: UpgradeAllOptions = {}): Promise<UpgradeAllResult> {
   const globalCfg = options.globalConfig !== undefined ? options.globalConfig : readGlobalConfig();
@@ -1097,6 +1128,7 @@ export async function upgradeAllWorkspaces(options: UpgradeAllOptions = {}): Pro
   }
 
   const results: WorkspaceUpgradeResult[] = [];
+  const projectMigrationsMap = new Map<string, ProjectMigrationResult>();
 
   for (const [targetDir, name] of workspaceMap.entries()) {
     try {
@@ -1110,12 +1142,14 @@ export async function upgradeAllWorkspaces(options: UpgradeAllOptions = {}): Pro
       });
 
       let totalTickets: number | undefined;
+      let migration: ProjectMigrationResult | undefined;
       if (projectCode) {
         try {
-          const targetStorage = new SecurityFilter(
-            new FilesystemStorageAdapter(targetDir, targetDiscovered.config),
-            targetDiscovered.config
-          );
+          const rawStorage = new FilesystemStorageAdapter(targetDir, targetDiscovered.config);
+          migration = await upgradeProjectData(rawStorage, projectCode, options.migrationOptions);
+          projectMigrationsMap.set(migration.projectCode.toLowerCase(), migration);
+
+          const targetStorage = new SecurityFilter(rawStorage, targetDiscovered.config);
           const snapshot = await generateProjectSnapshot(targetStorage, projectCode, targetDir);
           totalTickets = snapshot.totalTickets;
         } catch {
@@ -1128,6 +1162,7 @@ export async function upgradeAllWorkspaces(options: UpgradeAllOptions = {}): Pro
         name,
         projectCode,
         upgrade: res,
+        migration,
         totalTickets,
       });
     } catch (err: any) {
@@ -1140,7 +1175,33 @@ export async function upgradeAllWorkspaces(options: UpgradeAllOptions = {}): Pro
     }
   }
 
+  // 3. Also migrate any hub or federated projects visible in globalCfg or currentWorkspaceRoot
+  const portfolioRoot = options.currentWorkspaceRoot || process.cwd();
+  const portfolioDiscovered = findEsedreConfig(portfolioRoot, { fallbackToGlobal: true });
+  const portfolioConfig: EsedreConfig = {
+    ...globalCfg,
+    ...portfolioDiscovered.config,
+    allowedProjects: ['*'],
+  };
+  try {
+    const portfolioStorage = new FilesystemStorageAdapter(portfolioRoot, portfolioConfig);
+    const allLocs = portfolioStorage.resolveProjectLocations();
+    for (const loc of allLocs) {
+      const key = loc.project.code.toLowerCase();
+      if (!projectMigrationsMap.has(key)) {
+        try {
+          const mig = await runProjectMigrations(loc, portfolioStorage, options.migrationOptions);
+          projectMigrationsMap.set(key, mig);
+        } catch {}
+      }
+    }
+  } catch {}
+
   const totalUpgraded = results.filter((r) => !r.error && r.upgrade.wrappersPlanted).length;
-  return { workspaces: results, totalUpgraded };
+  return {
+    workspaces: results,
+    projectMigrations: Array.from(projectMigrationsMap.values()),
+    totalUpgraded,
+  };
 }
 

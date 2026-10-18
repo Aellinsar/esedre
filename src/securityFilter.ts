@@ -234,7 +234,11 @@ export class SecurityFilter implements StorageAdapter {
     targetId: number | string,
     options?: { author?: string; project?: string }
   ): Promise<{ source: EsedreTicket; target?: EsedreTicket }> {
-    const sourceTicket = await this.target.getTicket(sourceId);
+    const lookupSourceId =
+      options?.project && /^\d+$/.test(String(sourceId).trim())
+        ? `${options.project.trim()}-${String(sourceId).trim()}`
+        : sourceId;
+    const sourceTicket = await this.target.getTicket(lookupSourceId);
     if (sourceTicket) {
       const code = sourceTicket.projectDescriptor?.code || sourceTicket.meta.project;
       if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
@@ -255,7 +259,11 @@ export class SecurityFilter implements StorageAdapter {
     targetId: number | string,
     options?: { relation?: TicketLinkRelation; project?: string }
   ): Promise<{ source: EsedreTicket; target?: EsedreTicket }> {
-    const sourceTicket = await this.target.getTicket(sourceId);
+    const lookupSourceId =
+      options?.project && /^\d+$/.test(String(sourceId).trim())
+        ? `${options.project.trim()}-${String(sourceId).trim()}`
+        : sourceId;
+    const sourceTicket = await this.target.getTicket(lookupSourceId);
     if (sourceTicket) {
       const code = sourceTicket.projectDescriptor?.code || sourceTicket.meta.project;
       if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {

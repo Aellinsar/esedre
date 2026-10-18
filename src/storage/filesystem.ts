@@ -38,7 +38,13 @@ import {
   ClaimLeaseResult,
   EsedreLeaseConflictError,
   DEFAULT_LEASE_TTL_MINUTES,
+  CURRENT_ESEDRE_VERSION,
 } from '../types.js';
+import {
+  CURRENT_DATA_VERSION,
+  assertProjectCompatible,
+  getProjectSchemaVersion,
+} from '../migrations/index.js';
 import { resolveWorkerIdentity } from '../utils/identity.js';
 import { StorageAdapter, CreateTicketInput, UpdateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './adapter.js';
 import { EsedreConfig, findEsedreConfig, expandHome, validateProjectCode, validateProjectName } from '../config.js';
@@ -657,6 +663,8 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         name: cleanName,
         description: cleanDesc,
         colors,
+        schemaVersion: existingPJson?.schemaVersion || CURRENT_DATA_VERSION,
+        esedreVersion: CURRENT_ESEDRE_VERSION,
       };
 
       writeSafeFile(pJsonPath, JSON.stringify(projectDesc, null, 2) + '\n');
@@ -702,6 +710,8 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       name: cleanName,
       description: cleanDesc,
       colors,
+      schemaVersion: existingPJson?.schemaVersion || CURRENT_DATA_VERSION,
+      esedreVersion: CURRENT_ESEDRE_VERSION,
     };
 
     writeSafeFile(pJsonPath, JSON.stringify(projectDesc, null, 2) + '\n');
@@ -739,6 +749,8 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     if (!loc) {
       throw new Error(`Project "${cleanCode}" not found`);
     }
+
+    assertProjectCompatible(loc.project, { operation: 'write' });
 
     const updatedDesc: ProjectDescriptor = {
       ...loc.project,
@@ -837,6 +849,8 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     if (!loc) {
       throw new Error(`Project "${cleanOld}" not found`);
     }
+
+    assertProjectCompatible(loc.project, { operation: 'write' });
 
     if (oldLower !== newLower) {
       const collision = locations.find((l) => l.project.code.toLowerCase() === newLower);
@@ -1249,6 +1263,8 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       throw new Error('Project is required to create a milestone.');
     }
 
+    assertProjectCompatible(targetLoc.project, { operation: 'write', feature: 'milestones' });
+
     const existing = this.readProjectMilestones(targetLoc);
     const existingIds = existing
       .map((m) => (typeof m.id === 'number' ? m.id : parseInt(String(m.id), 10)))
@@ -1301,6 +1317,8 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       throw new Error(`Milestone '${id}' not found.`);
     }
 
+    assertProjectCompatible(foundLoc.project, { operation: 'write', feature: 'milestones' });
+
     const now = new Date().toISOString();
     const list = this.readProjectMilestones(foundLoc);
     const m = list[foundIndex];
@@ -1349,6 +1367,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         (m) => String(m.id).toLowerCase() !== targetId && m.title.toLowerCase() !== targetId
       );
       if (filtered.length !== list.length) {
+        assertProjectCompatible(loc.project, { operation: 'write', feature: 'milestones' });
         this.writeProjectMilestones(loc, filtered);
         return true;
       }
@@ -2185,6 +2204,8 @@ ${body.trim()}\n`;
       throw new Error(`Project is required to create a ticket (available: ${availableCodes}).`);
     }
 
+    assertProjectCompatible(targetLoc.project, { operation: 'write' });
+
     if (!fs.existsSync(targetLoc.ticketsDir)) {
       fs.mkdirSync(targetLoc.ticketsDir, { recursive: true });
     }
@@ -2247,6 +2268,8 @@ ${body.trim()}\n`;
       status: 'Planned',
       projectId: targetLoc.project.id,
       project: targetLoc.project.code,
+      schemaVersion: getProjectSchemaVersion(targetLoc.project),
+      esedreVersion: CURRENT_ESEDRE_VERSION,
     };
 
     const rawDetail = cleanDetailRaw?.trim();
@@ -2309,6 +2332,8 @@ ${input.summary || 'Summary to be defined.'}
       throw new Error(`Ticket #${id} could not be located on disk`);
     }
 
+    assertProjectCompatible(locInfo.loc.project, { operation: 'write' });
+
     const metaPath = path.join(locInfo.ticketDir, 'meta.json');
     const now = new Date().toISOString();
     const isNowCompleted = updates.status === 'Completed';
@@ -2340,6 +2365,8 @@ ${input.summary || 'Summary to be defined.'}
       ...sanitizedUpdates,
       id: locInfo.id,
       project: locInfo.loc.project.code,
+      schemaVersion: existing.meta.schemaVersion || getProjectSchemaVersion(locInfo.loc.project),
+      esedreVersion: CURRENT_ESEDRE_VERSION,
       updatedAt: now,
       completedAt,
       revision,
@@ -2477,6 +2504,8 @@ ${input.summary || 'Summary to be defined.'}
       throw new Error(`Ticket #${id} could not be located on disk`);
     }
 
+    assertProjectCompatible(locInfo.loc.project, { operation: 'write' });
+
     const planPath = path.join(locInfo.ticketDir, 'implementation_plan.md');
     writeSafeFile(planPath, normalizeDashesAndMojibake(planMarkdown));
 
@@ -2502,6 +2531,8 @@ ${input.summary || 'Summary to be defined.'}
     if (!locInfo) {
       throw new Error(`Ticket #${id} could not be located on disk`);
     }
+
+    assertProjectCompatible(locInfo.loc.project, { operation: 'write' });
 
     const commentsPath = path.join(locInfo.ticketDir, 'comments.json');
     let comments: TicketComment[] = [];
@@ -2815,10 +2846,14 @@ ${input.summary || 'Summary to be defined.'}
       throw new Error(`Source ticket #${sourceId} could not be located.`);
     }
 
+    assertProjectCompatible(sourceInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
+
     const targetInfo = this.resolveTicketIdentifier(targetId, options?.project || sourceInfo.project);
     if (!targetInfo) {
       throw new Error(`Target ticket #${targetId} could not be located.`);
     }
+
+    assertProjectCompatible(targetInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
 
     if (sourceInfo.key.toLowerCase() === targetInfo.key.toLowerCase()) {
       throw new Error(`Cannot link ticket ${sourceInfo.key} to itself.`);
@@ -2908,7 +2943,12 @@ ${input.summary || 'Summary to be defined.'}
       throw new Error(`Source ticket #${sourceId} could not be located.`);
     }
 
+    assertProjectCompatible(sourceInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
+
     const targetInfo = this.resolveTicketIdentifier(targetId, options?.project || sourceInfo.project);
+    if (targetInfo) {
+      assertProjectCompatible(targetInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
+    }
     const targetKey = targetInfo ? targetInfo.key : String(targetId).trim();
 
     const now = new Date().toISOString();
@@ -2991,6 +3031,8 @@ ${input.summary || 'Summary to be defined.'}
     if (!resolved) {
       throw new Error(`Ticket #${input.ticketId} could not be located.`);
     }
+
+    assertProjectCompatible(resolved.loc.project, { operation: 'write', feature: 'ticket-leases' });
 
     const identity = resolveWorkerIdentity({
       holder: input.holder,

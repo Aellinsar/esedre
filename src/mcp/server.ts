@@ -3,6 +3,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { StorageAdapter } from '../storage/adapter.js';
 import { TicketType, TicketCategory, TicketStatus, TicketPriority, EsedreConflictError, EsedreLeaseConflictError, CURRENT_ESEDRE_VERSION } from '../types.js';
+import { EsedreVersionError } from '../migrations/index.js';
 import { resolveWorkerIdentity } from '../utils/identity.js';
 import { generateProjectSnapshot } from '../snapshot.js';
 import { findEsedreConfig, readGlobalConfig, expandHome, EsedreConfig } from '../config.js';
@@ -184,6 +185,23 @@ export class EsedreMcpServer {
               },
             };
           }
+          if (err instanceof EsedreVersionError || err.name === 'EsedreVersionError') {
+            return {
+              jsonrpc: '2.0',
+              id,
+              error: {
+                code: -32002,
+                message: err.message,
+                data: {
+                  projectCode: err.projectCode,
+                  currentSchemaVersion: err.currentSchemaVersion,
+                  requiredSchemaVersion: err.requiredSchemaVersion,
+                  reason: err.reason,
+                  featureName: err.featureName,
+                },
+              },
+            };
+          }
           return {
             jsonrpc: '2.0',
             id,
@@ -277,17 +295,23 @@ export class EsedreMcpServer {
     }
   }
 
-  private parseTicketId(val: any, paramName = 'Ticket ID'): string | number {
+  private parseTicketId(val: any, paramName = 'Ticket ID', project?: string): string | number {
     if (val === undefined || val === null || val === '') {
       throw new Error(`${paramName} is required`);
     }
-    if (typeof val === 'number') return val;
+    const cleanProject = typeof project === 'string' && project.trim() && project.trim().toLowerCase() !== 'all'
+      ? project.trim()
+      : undefined;
+    if (typeof val === 'number') {
+      return cleanProject ? `${cleanProject}-${val}` : val;
+    }
     const str = String(val).trim();
     if (!str || str === 'undefined' || str === 'null') {
       throw new Error(`${paramName} is required`);
     }
     if (/^\d+$/.test(str)) {
-      return parseInt(str, 10);
+      const num = parseInt(str, 10);
+      return cleanProject ? `${cleanProject}-${num}` : num;
     }
     return str;
   }
@@ -447,10 +471,10 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            ticketId: { type: ['integer', 'string'], description: 'Numeric ticket ID (e.g. 96, 101) or compound key (e.g. Profe-96)' },
-            id: { type: ['integer', 'string'], description: 'Alias for ticketId: numeric ticket ID or compound key' },
+            ticketId: { type: ['number', 'integer', 'string'], description: 'Numeric ticket ID (e.g. 96, 101) or compound key (e.g. Profe-96)' },
+            id: { type: ['number', 'integer', 'string'], description: 'Alias for ticketId: numeric ticket ID or compound key' },
+            project: { type: 'string', description: 'Optional project code when numeric ticketId is used' },
           },
-          required: ['ticketId'],
         },
       },
       {
@@ -459,10 +483,10 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            ticketId: { type: ['integer', 'string'], description: 'Numeric ticket ID or compound key' },
-            id: { type: ['integer', 'string'], description: 'Alias for ticketId: numeric ticket ID or compound key' },
+            ticketId: { type: ['number', 'integer', 'string'], description: 'Numeric ticket ID or compound key' },
+            id: { type: ['number', 'integer', 'string'], description: 'Alias for ticketId: numeric ticket ID or compound key' },
+            project: { type: 'string', description: 'Optional project code when numeric ticketId is used' },
           },
-          required: ['ticketId'],
         },
       },
       {
@@ -471,13 +495,13 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            ticketId: { type: ['integer', 'string'], description: 'Numeric ticket ID or compound key' },
-            id: { type: ['integer', 'string'], description: 'Alias for ticketId: numeric ticket ID or compound key' },
+            ticketId: { type: ['number', 'integer', 'string'], description: 'Numeric ticket ID or compound key' },
+            id: { type: ['number', 'integer', 'string'], description: 'Alias for ticketId: numeric ticket ID or compound key' },
+            project: { type: 'string', description: 'Optional project code when numeric ticketId is used' },
             planMarkdown: { type: 'string', description: 'Implementation plan markdown content' },
             plan: { type: 'string', description: 'Alias for planMarkdown: Implementation plan markdown content' },
             lastHash: { type: 'string', description: 'Optimistic concurrency control: last known sha1 hash of the ticket' },
           },
-          required: ['ticketId'],
         },
       },
       {
@@ -510,8 +534,9 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            ticketId: { type: ['integer', 'string'], description: 'Numeric ticket ID or compound key' },
-            id: { type: ['integer', 'string'], description: 'Alias for ticketId: numeric ticket ID or compound key' },
+            ticketId: { type: ['number', 'integer', 'string'], description: 'Numeric ticket ID or compound key' },
+            id: { type: ['number', 'integer', 'string'], description: 'Alias for ticketId: numeric ticket ID or compound key' },
+            project: { type: 'string', description: 'Optional project code when numeric ticketId is used' },
             status: { type: 'string', enum: ['Planned', 'In Development', 'Completed', 'Rejected'] },
             type: { type: 'string', enum: ['Feature', 'Platform', 'Tools', 'Idea', 'Bug'] },
             category: { type: 'string', enum: ['Feature', 'Platform', 'Tools', 'Idea', 'Bug'] },
@@ -529,7 +554,6 @@ export class EsedreMcpServer {
             includeRaw: { type: 'boolean', description: 'When true, includes raw unparsed markdown in ticket.detail.raw' },
             lastHash: { type: 'string', description: 'Optimistic concurrency control: last known sha1 hash of the ticket' },
           },
-          required: ['ticketId'],
         },
       },
       {
@@ -538,13 +562,13 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            ticketId: { type: ['integer', 'string'], description: 'Numeric ticket ID or compound key' },
-            id: { type: ['integer', 'string'], description: 'Alias for ticketId: numeric ticket ID or compound key' },
+            ticketId: { type: ['number', 'integer', 'string'], description: 'Numeric ticket ID or compound key' },
+            id: { type: ['number', 'integer', 'string'], description: 'Alias for ticketId: numeric ticket ID or compound key' },
+            project: { type: 'string', description: 'Optional project code when numeric ticketId is used' },
             text: { type: 'string', description: 'Comment message' },
             file: { type: 'string', description: 'Path to local file containing comment message markdown' },
             author: { type: 'string', description: 'Author name (e.g. Antigravity, Developer)' },
           },
-          required: ['ticketId'],
         },
       },
       {
@@ -563,10 +587,10 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            id: { type: ['integer', 'string'], description: 'Milestone ID or title' },
+            id: { type: ['number', 'integer', 'string'], description: 'Milestone ID or title' },
+            milestoneId: { type: ['number', 'integer', 'string'], description: 'Alias for id: Milestone ID or title' },
             project: { type: 'string', description: 'Project code' },
           },
-          required: ['id'],
         },
       },
       {
@@ -591,7 +615,8 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            id: { type: ['integer', 'string'], description: 'Milestone ID or title' },
+            id: { type: ['number', 'integer', 'string'], description: 'Milestone ID or title' },
+            milestoneId: { type: ['number', 'integer', 'string'], description: 'Alias for id: Milestone ID or title' },
             project: { type: 'string', description: 'Project code' },
             title: { type: 'string', description: 'New milestone title' },
             description: { type: 'string', description: 'Milestone goal and description' },
@@ -599,7 +624,6 @@ export class EsedreMcpServer {
             targetDate: { type: 'string', description: 'Target date ("none" to clear)' },
             status: { type: 'string', enum: ['Planned', 'Active', 'Completed', 'Closed'], description: 'Milestone status' },
           },
-          required: ['id'],
         },
       },
       {
@@ -608,21 +632,20 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            sourceTicketId: { type: ['integer', 'string'], description: 'Source ticket ID or compound key' },
-            id: { type: ['integer', 'string'], description: 'Alias for sourceTicketId: source ticket ID or compound key' },
-            sourceId: { type: ['integer', 'string'], description: 'Alias for sourceTicketId: source ticket ID or compound key' },
-            ticketId: { type: ['integer', 'string'], description: 'Alias for sourceTicketId: source ticket ID or compound key' },
+            sourceTicketId: { type: ['number', 'integer', 'string'], description: 'Source ticket ID or compound key' },
+            id: { type: ['number', 'integer', 'string'], description: 'Alias for sourceTicketId: source ticket ID or compound key' },
+            sourceId: { type: ['number', 'integer', 'string'], description: 'Alias for sourceTicketId: source ticket ID or compound key' },
+            ticketId: { type: ['number', 'integer', 'string'], description: 'Alias for sourceTicketId: source ticket ID or compound key' },
             relation: {
               type: 'string',
               enum: ['relates-to', 'blocks', 'blocked-by', 'parent-of', 'child-of', 'duplicates', 'duplicated-by'],
               description: 'Link relation type',
             },
-            targetTicketId: { type: ['integer', 'string'], description: 'Target ticket ID or compound key' },
-            targetId: { type: ['integer', 'string'], description: 'Alias for targetTicketId: target ticket ID or compound key' },
+            targetTicketId: { type: ['number', 'integer', 'string'], description: 'Target ticket ID or compound key' },
+            targetId: { type: ['number', 'integer', 'string'], description: 'Alias for targetTicketId: target ticket ID or compound key' },
             author: { type: 'string', description: 'Author creating the link' },
-            project: { type: 'string', description: 'Project code context for unqualified source ticket ID' },
+            project: { type: 'string', description: 'Project code context for unqualified ticket IDs' },
           },
-          required: ['sourceTicketId', 'relation', 'targetTicketId'],
         },
       },
       {
@@ -631,15 +654,14 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            sourceTicketId: { type: ['integer', 'string'], description: 'Source ticket ID or compound key' },
-            id: { type: ['integer', 'string'], description: 'Alias for sourceTicketId: source ticket ID or compound key' },
-            sourceId: { type: ['integer', 'string'], description: 'Alias for sourceTicketId: source ticket ID or compound key' },
-            ticketId: { type: ['integer', 'string'], description: 'Alias for sourceTicketId: source ticket ID or compound key' },
-            targetTicketId: { type: ['integer', 'string'], description: 'Target ticket ID or compound key' },
-            targetId: { type: ['integer', 'string'], description: 'Alias for targetTicketId: target ticket ID or compound key' },
-            project: { type: 'string', description: 'Project code context for unqualified source ticket ID' },
+            sourceTicketId: { type: ['number', 'integer', 'string'], description: 'Source ticket ID or compound key' },
+            id: { type: ['number', 'integer', 'string'], description: 'Alias for sourceTicketId: source ticket ID or compound key' },
+            sourceId: { type: ['number', 'integer', 'string'], description: 'Alias for sourceTicketId: source ticket ID or compound key' },
+            ticketId: { type: ['number', 'integer', 'string'], description: 'Alias for sourceTicketId: source ticket ID or compound key' },
+            targetTicketId: { type: ['number', 'integer', 'string'], description: 'Target ticket ID or compound key' },
+            targetId: { type: ['number', 'integer', 'string'], description: 'Alias for targetTicketId: target ticket ID or compound key' },
+            project: { type: 'string', description: 'Project code context for unqualified ticket IDs' },
           },
-          required: ['sourceTicketId', 'targetTicketId'],
         },
       },
       {
@@ -648,8 +670,8 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            ticketId: { type: ['number', 'string'], description: 'Ticket ID or prefixed key (e.g. 69 or "Esedre-69")' },
-            id: { type: ['number', 'string'], description: 'Alias for ticketId: ticket ID or prefixed key' },
+            ticketId: { type: ['number', 'integer', 'string'], description: 'Ticket ID or prefixed key (e.g. 69 or "Esedre-69")' },
+            id: { type: ['number', 'integer', 'string'], description: 'Alias for ticketId: ticket ID or prefixed key' },
             holder: { type: 'string', description: 'Agent or developer identity claiming the ticket (e.g. "agy-subagent-1" or "desktop-worker")' },
             workerId: { type: 'string', description: 'Alias for holder: agent or worker identity claiming the ticket' },
             agentType: { type: 'string', description: 'Optional agent runtime identifier (e.g. "antigravity", "claude-code", "codex")' },
@@ -660,7 +682,6 @@ export class EsedreMcpServer {
             force: { type: 'boolean', description: 'Override an existing active lease held by another worker' },
             project: { type: 'string', description: 'Optional project code when numeric ticketId is used' },
           },
-          required: ['ticketId'],
         },
       },
       {
@@ -669,8 +690,8 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            ticketId: { type: ['number', 'string'], description: 'Ticket ID or prefixed key' },
-            id: { type: ['number', 'string'], description: 'Alias for ticketId: ticket ID or prefixed key' },
+            ticketId: { type: ['number', 'integer', 'string'], description: 'Ticket ID or prefixed key' },
+            id: { type: ['number', 'integer', 'string'], description: 'Alias for ticketId: ticket ID or prefixed key' },
             holder: { type: 'string', description: 'Holder identity verifying lease ownership' },
             workerId: { type: 'string', description: 'Alias for holder: worker identity verifying lease ownership' },
             system: { type: 'string', description: 'Optional system or agent runtime identifier' },
@@ -678,7 +699,6 @@ export class EsedreMcpServer {
             force: { type: 'boolean', description: 'Force renewal even if held by another identity' },
             project: { type: 'string', description: 'Optional project code' },
           },
-          required: ['ticketId'],
         },
       },
       {
@@ -687,8 +707,8 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            ticketId: { type: ['number', 'string'], description: 'Ticket ID or prefixed key' },
-            id: { type: ['number', 'string'], description: 'Alias for ticketId: ticket ID or prefixed key' },
+            ticketId: { type: ['number', 'integer', 'string'], description: 'Ticket ID or prefixed key' },
+            id: { type: ['number', 'integer', 'string'], description: 'Alias for ticketId: ticket ID or prefixed key' },
             holder: { type: 'string', description: 'Holder identity verifying lease ownership' },
             workerId: { type: 'string', description: 'Alias for holder: worker identity verifying lease ownership' },
             system: { type: 'string', description: 'Optional system or agent runtime identifier' },
@@ -697,7 +717,6 @@ export class EsedreMcpServer {
             force: { type: 'boolean', description: 'Force release even if held by another identity' },
             project: { type: 'string', description: 'Optional project code' },
           },
-          required: ['ticketId'],
         },
       },
       {
@@ -769,20 +788,20 @@ export class EsedreMcpServer {
       }
 
       case 'get_ticket': {
-        const id = this.parseTicketId(args.ticketId ?? args.id);
+        const id = this.parseTicketId(args.ticketId ?? args.id, 'Ticket ID', args.project);
         const ticket = await this.storage.getTicket(id);
         if (!ticket) throw new Error(`Ticket #${id} not found`);
         return ticket;
       }
 
       case 'get_plan': {
-        const id = this.parseTicketId(args.ticketId ?? args.id);
+        const id = this.parseTicketId(args.ticketId ?? args.id, 'Ticket ID', args.project);
         const plan = await this.storage.getPlan(id);
         return { ticketId: id, planMarkdown: plan || null };
       }
 
       case 'save_plan': {
-        const id = this.parseTicketId(args.ticketId ?? args.id);
+        const id = this.parseTicketId(args.ticketId ?? args.id, 'Ticket ID', args.project);
         const planContent = args.planMarkdown ?? args.plan;
         if (typeof planContent !== 'string') {
           throw new Error("Plan markdown content is required (pass 'planMarkdown' or 'plan')");
@@ -824,7 +843,7 @@ export class EsedreMcpServer {
       }
 
       case 'update_ticket': {
-        const id = this.parseTicketId(args.ticketId ?? args.id);
+        const id = this.parseTicketId(args.ticketId ?? args.id, 'Ticket ID', args.project);
         const updates: any = {};
         const type = (args.type || args.category) as TicketType | undefined;
         if (type) {
@@ -859,7 +878,7 @@ export class EsedreMcpServer {
       }
 
       case 'add_comment': {
-        const id = this.parseTicketId(args.ticketId ?? args.id);
+        const id = this.parseTicketId(args.ticketId ?? args.id, 'Ticket ID', args.project);
         let text = args.text;
         if (!text && args.file) {
           const resolvedPath = path.resolve(process.cwd(), args.file);
@@ -893,8 +912,12 @@ export class EsedreMcpServer {
       }
 
       case 'get_milestone': {
-        const m = await this.storage.getMilestone(args.id, args.project);
-        if (!m) throw new Error(`Milestone '${args.id}' not found`);
+        const rawMilestoneId = args.id ?? args.milestoneId ?? args.ticketId;
+        if (rawMilestoneId === undefined || rawMilestoneId === null || String(rawMilestoneId).trim() === '') {
+          throw new Error('Milestone ID is required');
+        }
+        const m = await this.storage.getMilestone(rawMilestoneId, args.project);
+        if (!m) throw new Error(`Milestone '${rawMilestoneId}' not found`);
         const tickets = await this.storage.listTickets({ project: args.project || m.project, milestone: String(m.id) });
         return {
           ...m,
@@ -917,7 +940,11 @@ export class EsedreMcpServer {
       }
 
       case 'update_milestone': {
-        const updated = await this.storage.updateMilestone(args.id, {
+        const rawMilestoneId = args.id ?? args.milestoneId ?? args.ticketId;
+        if (rawMilestoneId === undefined || rawMilestoneId === null || String(rawMilestoneId).trim() === '') {
+          throw new Error('Milestone ID is required');
+        }
+        const updated = await this.storage.updateMilestone(rawMilestoneId, {
           title: args.title,
           description: args.description,
           featureFlag: args.featureFlag,
@@ -944,8 +971,8 @@ export class EsedreMcpServer {
         if (!args.relation) {
           throw new Error('relation is required');
         }
-        const sourceId = this.parseTicketId(sourceRaw, 'sourceTicketId');
-        const targetId = this.parseTicketId(targetRaw, 'targetTicketId');
+        const sourceId = this.parseTicketId(sourceRaw, 'sourceTicketId', args.project);
+        const targetId = this.parseTicketId(targetRaw, 'targetTicketId', args.project);
         const relation = String(args.relation).toLowerCase().replace(/_/g, '-') as any;
         const result = await this.storage.addTicketLink(sourceId, relation, targetId, {
           author: args.author || 'Agent',
@@ -985,8 +1012,8 @@ export class EsedreMcpServer {
         if (!targetRaw) {
           throw new Error('targetTicketId is required');
         }
-        const sourceId = this.parseTicketId(sourceRaw, 'sourceTicketId');
-        const targetId = this.parseTicketId(targetRaw, 'targetTicketId');
+        const sourceId = this.parseTicketId(sourceRaw, 'sourceTicketId', args.project);
+        const targetId = this.parseTicketId(targetRaw, 'targetTicketId', args.project);
         const result = await this.storage.removeTicketLink(sourceId, targetId, {
           project: args.project,
         });

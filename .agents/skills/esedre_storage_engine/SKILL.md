@@ -169,3 +169,19 @@ Tickets with uncompleted `blocked-by` links have `isBlocked: true` projected dyn
    - `renewLease(id, input)`: Extends `expiresAt` for the active lease holder.
    - `releaseTicket(id, input)`: Removes `lease.json`, optionally transitions `status` (`Completed` or `Planned`), and optionally appends completion notes to ticket comments.
    - `listActiveLeases(project?)`: Returns all unexpired leases across authorized projects.
+
+## 11. Storage Migration & Multi-Version Compatibility Engine (`src/migrations/`)
+
+1. **Version Stamping (`schemaVersion` & `esedreVersion`)**:
+   - `project.json` and ticket `meta.json` record `schemaVersion` (`CURRENT_DATA_VERSION`, e.g. `'1.0.0'`) and `esedreVersion` (`CURRENT_ESEDRE_VERSION`, e.g. `'1.3.0'`).
+   - Legacy manifests lacking `schemaVersion` default to `'1.0.0'`.
+2. **Multi-Owner Compatibility Guards (`assertProjectCompatible`)**:
+   - Normal read and write operations never silently auto-migrate older projects on shared or federated hubs.
+   - Mutating adapter methods enforce `assertProjectCompatible(project, featureName?)`, throwing `EsedreVersionError`:
+     - `BELOW_MIN_SUPPORTED`: Project schema is older than `MIN_SUPPORTED_DATA_VERSION`.
+     - `ABOVE_CURRENT_ENGINE`: Project schema is newer than `CURRENT_DATA_VERSION` (prevents older Esedre clients from corrupting newer schemas).
+     - `FEATURE_REQUIRES_UPGRADE`: A specific feature in `FEATURE_MIN_SCHEMA_VERSION` requires a higher schema version than the project currently uses.
+3. **Explicit Upgrades & Atomic Backups (`runProjectMigrations`)**:
+   - Triggered explicitly via `ese upgrade`, `ese upgrade --project <Code>`, or `ese upgrade --all`.
+   - Before any schema transformation runs, `createProjectMigrationBackup` snapshots `project.json`, `milestones.json`, and `tickets/` into `~/.esedre/backups/<ProjectCode>-<timestamp>-v<from>/` with a `backup-manifest.json`.
+

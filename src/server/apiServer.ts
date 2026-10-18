@@ -725,6 +725,17 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
         sendJson(res, 409, { error: err.message, ticketKey: err.ticketKey, activeLease: err.activeLease });
         return true;
       }
+      if (err.name === 'EsedreVersionError') {
+        sendJson(res, 409, {
+          error: err.message,
+          projectCode: err.projectCode,
+          currentSchemaVersion: err.currentSchemaVersion,
+          requiredSchemaVersion: err.requiredSchemaVersion,
+          reason: err.reason,
+          featureName: err.featureName,
+        });
+        return true;
+      }
       console.error('[Esedre API Error]:', err);
       sendJson(res, 500, { error: err.message });
       return true;

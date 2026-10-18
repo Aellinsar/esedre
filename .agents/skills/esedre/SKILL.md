@@ -40,9 +40,9 @@ When Esedre MCP is active in your agent session (`.agents/mcp.json` or `.agents/
 | `esedre_link_ticket` | Establish bi-directional ticket relationship | `sourceTicketId`/`id`, `relation` (`relates-to` \| `blocks` \| `parent-of` \| `duplicates`), `targetTicketId`/`targetId`, `author` |
 | `esedre_unlink_ticket` | Remove bi-directional ticket relationship | `sourceTicketId`/`id`, `targetTicketId`/`targetId`, `relation` |
 | `esedre_list_milestones` | List project milestones and deliverables progress | `project` |
-| `esedre_get_milestone` | Get milestone specs, umbrella flag, and member tickets | `milestoneId` (numeric or title), `project` |
+| `esedre_get_milestone` | Get milestone specs, umbrella flag, and member tickets | `milestoneId`/`id` (`<string\|number>`: numeric ID, title, or `Project:Title`), `project` |
 | `esedre_create_milestone` | Create a project milestone with optional umbrella flag | `title`, `project`, `featureFlag`, `status`, `targetDate`, `description` |
-| `esedre_update_milestone` | Update milestone status, umbrella flag, or title | `milestoneId`, `project`, `title`, `featureFlag`, `status`, `targetDate`, `description` |
+| `esedre_update_milestone` | Update milestone status, umbrella flag, or title | `milestoneId`/`id` (`<string\|number>`), `project`, `title`, `featureFlag`, `status`, `targetDate`, `description` |
 | `esedre_add_comment` | Append developer or agent comment | `ticketId`, `text`, `file`, `author` |
 
 ## 2. Core CLI Commands (Fallback via `run_command`)

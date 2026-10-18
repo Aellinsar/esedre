@@ -561,6 +561,65 @@ describe('Cross-Project Ticket Linking & Dependencies', () => {
       const ticketOutput = JSON.parse(getTicketRes.result.content[0].text);
       expect(ticketOutput.meta.id).toBe(1);
     });
+
+    it('resolves unqualified numeric ticket IDs via project parameter when multiple projects have the same ticket numbers', async () => {
+      // Unscoped adapter (no default projectCode), wrapped in SecurityFilter
+      const rawStorage = new FilesystemStorageAdapter(tmpDir, { dataDir: hubDir });
+      const securedStorage = new SecurityFilter(rawStorage, { allowedProjects: ['Core', 'Web'] });
+      const server = new EsedreMcpServer(securedStorage);
+
+      const callRpc = async (req: any) => {
+        return await (server as any).handleRequest(req);
+      };
+
+      // Both Core and Web have tickets #1 and #2
+      await securedStorage.createTicket({ title: 'Core One', type: 'Feature', projectCode: 'Core' });
+      await securedStorage.createTicket({ title: 'Core Two', type: 'Feature', projectCode: 'Core' });
+      await securedStorage.createTicket({ title: 'Web One', type: 'Feature', projectCode: 'Web' });
+      await securedStorage.createTicket({ title: 'Web Two', type: 'Feature', projectCode: 'Web' });
+
+      // 1. Link numeric 1 -> 2 with project: 'Core' via MCP (goes through SecurityFilter.addTicketLink)
+      const linkRes = await callRpc({
+        jsonrpc: '2.0',
+        id: 30,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_link_ticket',
+          arguments: {
+            sourceTicketId: 1,
+            relation: 'blocks',
+            targetTicketId: 2,
+            project: 'Core',
+          },
+        },
+      });
+      expect(linkRes.error).toBeUndefined();
+      const linkOut = JSON.parse(linkRes.result.content[0].text);
+      expect(linkOut.success).toBe(true);
+      expect(linkOut.sourceKey).toBe('Core-1');
+      expect(linkOut.targetKey).toBe('Core-2');
+
+      // 2. Get ticket #1 with project: 'Web' using numeric id
+      const getRes = await callRpc({
+        jsonrpc: '2.0',
+        id: 31,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_get_ticket',
+          arguments: {
+            id: 1,
+            project: 'Web',
+          },
+        },
+      });
+      expect(getRes.error).toBeUndefined();
+      const getOut = JSON.parse(getRes.result.content[0].text);
+      expect(getOut.meta.title).toBe('Web One');
+
+      // 3. Unlink numeric 1 -> 2 with project: 'Core' directly via SecurityFilter.removeTicketLink
+      const unlinkDirect = await securedStorage.removeTicketLink(1, 2, { project: 'Core' });
+      expect(unlinkDirect.source.links).toHaveLength(0);
+    });
   });
 });
 

@@ -94,7 +94,7 @@
 2. **Configuration & Upgrade Commands**:
    - `ese init [path]`: Initializes a workspace, data hub (`--hub`), or hub project (`--project <Code> [--name <Name>] [--hub <hub>]`).
    - `ese configure`: Manages `~/.esedre/config.json` (`add`, `remove`, `set`).
-   - `ese upgrade [<path>] [--all|-a] [--force|-f]`: Upgrades workspace config schema, wrappers, MCP config, and `.agents/skills/esedre/SKILL.md` (with warnings if `AGENTS.md` or `GEMINI.md` exceeds 24,000 bytes).
+   - `ese upgrade [<path>] [-p|--project <Code>] [--all|-a] [--force|-f]`: Upgrades workspace config schema, project storage schema versions (`schemaVersion` / `esedreVersion` with pre-migration backups in `~/.esedre/backups/`), wrappers, MCP config, and `.agents/skills/esedre/SKILL.md` (with warnings if `AGENTS.md` or `GEMINI.md` exceeds 24,000 bytes).
    - `ese rename-project <oldCode> <newCode> [--name "<name>"]` and `ese project set <code> [--name "<name>"]`.
 3. **Multi-Project Agent Isolation (`allowedProjects`)**:
    - Agents are strictly scoped to projects in `.esedre/esedre.json`'s `allowedProjects` (or `"*"` for umbrella workspaces).
@@ -152,6 +152,10 @@
 5. **Ticket Leases (`ese lease`)**:
    - Ephemeral ticket leases (`projects/<Code>/tickets/<id>/lease.json`) provide TTL-backed mutual exclusion across concurrent agent sessions, subagents, CLI workflows, and remote machines without overwriting durable `meta.assignee`.
    - CLI: `ese lease [claim|release|renew|list]` (and top-level aliases `ese claim|release|renew|leases`). MCP: `esedre_claim_ticket`, `esedre_renew_lease`, `esedre_release_ticket`, `esedre_list_leases`.
+6. **Storage Migration & Multi-Version Compatibility Engine (`src/migrations/`)**:
+   - `project.json` and ticket `meta.json` stamp `schemaVersion` (`CURRENT_DATA_VERSION`) and `esedreVersion` (`CURRENT_ESEDRE_VERSION`).
+   - Normal read/write operations never silently auto-migrate older projects across multi-owner hubs; mutations enforce `assertProjectCompatible` (`EsedreVersionError`: `BELOW_MIN_SUPPORTED`, `ABOVE_CURRENT_ENGINE`, `FEATURE_REQUIRES_UPGRADE`, MCP `-32002`, REST `409`).
+   - Explicit schema migrations run via `ese upgrade`, `ese upgrade --project <Code>`, or `ese upgrade --all` after creating an atomic timestamped backup in `~/.esedre/backups/`.
 
 ---
 
