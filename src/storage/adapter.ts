@@ -136,6 +136,7 @@ export interface StorageAdapter {
   getAttachmentPath?(id: number | string, filename: string): string | null;
   getDuplicateProjectWarnings?(): DuplicateProjectWarning[];
   getWorkspaceRoot?(): string | undefined;
+  getProjectRepoRoot?(projectCode: string): string | undefined;
 
   claimTicket(input: ClaimLeaseInput): Promise<ClaimLeaseResult>;
   renewLease(input: RenewLeaseInput): Promise<TicketLease>;

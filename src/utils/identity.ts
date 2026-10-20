@@ -1,4 +1,5 @@
 import os from 'node:os';
+import path from 'node:path';
 import { execSync } from 'node:child_process';
 
 export interface WorkerIdentityInput {
@@ -21,9 +22,30 @@ export interface ResolvedWorkerIdentity {
 }
 
 export function detectGitBranch(cwd?: string): string | undefined {
+  const targetCwd = cwd || process.cwd();
+  try {
+    const out = execSync('git branch --show-current', {
+      cwd: targetCwd,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf-8',
+      timeout: 1500,
+    }).trim();
+    if (out) return out;
+  } catch {}
+
+  try {
+    const out = execSync('git symbolic-ref --short HEAD', {
+      cwd: targetCwd,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf-8',
+      timeout: 1500,
+    }).trim();
+    if (out) return out;
+  } catch {}
+
   try {
     const out = execSync('git rev-parse --abbrev-ref HEAD', {
-      cwd: cwd || process.cwd(),
+      cwd: targetCwd,
       stdio: ['ignore', 'pipe', 'ignore'],
       encoding: 'utf-8',
       timeout: 1500,
@@ -32,6 +54,15 @@ export function detectGitBranch(cwd?: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+export function isPathInside(childPath: string, parentPath: string): boolean {
+  if (!childPath || !parentPath) return false;
+  const normParent = path.resolve(parentPath).toLowerCase();
+  const normChild = path.resolve(childPath).toLowerCase();
+  if (normChild === normParent) return true;
+  const rel = path.relative(normParent, normChild);
+  return !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
 export function resolveWorkerIdentity(input?: WorkerIdentityInput): ResolvedWorkerIdentity {

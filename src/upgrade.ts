@@ -257,7 +257,7 @@ When Esedre MCP is active in your agent session (\`.agents/mcp.json\` or \`.agen
 | \`esedre_save_plan\` | Save implementation plan markdown with OCC | \`ticketId\`, \`planMarkdown\`, \`lastHash\` |
 | \`esedre_create_ticket\` | Mint a new ticket with auto sequential ID | \`title\` (max 48 chars), \`type\`, \`project\`, \`priority\`, \`milestone\`, \`effort\`, \`summary\`, \`detail\` |
 | \`esedre_update_ticket\` | Update ticket attributes with OCC | \`ticketId\`, \`status\`, \`type\`, \`priority\`, \`milestone\`, \`title\`, \`detail\`, \`detailMarkdown\`, \`complexity\`, \`effort\`, \`inDevelopment\`, \`featureFlag\`, \`lastHash\` |
-| \`esedre_claim_ticket\` | Claim an ephemeral TTL lease on a ticket (\`In Development\`) | \`ticketId\`, \`holder\`/\`workerId\`, \`agentType\`/\`system\`, \`ttlMinutes\`, \`branch\`, \`force\` |
+| \`esedre_claim_ticket\` | Claim an ephemeral TTL lease on a ticket (\`In Development\`) | \`ticketId\`, \`holder\`/\`workerId\`, \`agentType\`/\`system\`, \`ttlMinutes\`, \`branch\`, \`worktree\`, \`force\` |
 | \`esedre_renew_lease\` | Extend an active ticket lease TTL | \`ticketId\`, \`holder\`/\`workerId\`, \`system\`, \`ttlMinutes\` |
 | \`esedre_release_ticket\` | Release a ticket lease and optionally transition status | \`ticketId\`, \`holder\`/\`workerId\`, \`system\`, \`finalStatus\`, \`notes\`, \`force\` |
 | \`esedre_list_leases\` | List all active unexpired ticket leases | \`project\` |

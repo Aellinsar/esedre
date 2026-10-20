@@ -29,6 +29,13 @@ export class SecurityFilter implements StorageAdapter {
     return this.target.getDuplicateProjectWarnings ? this.target.getDuplicateProjectWarnings() : [];
   }
 
+  public getProjectRepoRoot(projectCode: string): string | undefined {
+    if (!isProjectAuthorized(projectCode, this.config.allowedProjects)) {
+      return undefined;
+    }
+    return this.target.getProjectRepoRoot ? this.target.getProjectRepoRoot(projectCode) : undefined;
+  }
+
   public getWorkspaceRoot(): string | undefined {
     return this.target.getWorkspaceRoot ? this.target.getWorkspaceRoot() : undefined;
   }

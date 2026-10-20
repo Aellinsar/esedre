@@ -45,9 +45,9 @@ import {
   assertProjectCompatible,
   getProjectSchemaVersion,
 } from '../migrations/index.js';
-import { resolveWorkerIdentity } from '../utils/identity.js';
+import { resolveWorkerIdentity, isPathInside } from '../utils/identity.js';
 import { StorageAdapter, CreateTicketInput, UpdateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './adapter.js';
-import { EsedreConfig, findEsedreConfig, expandHome, validateProjectCode, validateProjectName } from '../config.js';
+import { EsedreConfig, findEsedreConfig, readGlobalConfig, expandHome, validateProjectCode, validateProjectName } from '../config.js';
 import { computeTicketHash, verifyTicketHash } from '../snapshot.js';
 import { normalizeDashesAndMojibake, normalizeTicketFields, normalizePriority } from '../utils/formatter.js';
 
@@ -84,6 +84,7 @@ export interface ResolvedProjectLocation {
   ticketsDir: string;
   sourceType: 'hub' | 'in-repo' | 'federated';
   hubDir?: string;
+  projectDir?: string;
   isSharedDir?: boolean;
 }
 
@@ -128,6 +129,67 @@ export class FilesystemStorageAdapter implements StorageAdapter {
   public getDuplicateProjectWarnings(): DuplicateProjectWarning[] {
     this.resolveProjectLocations();
     return [...this.duplicateProjectWarnings];
+  }
+
+  public getProjectRepoRoot(projectCode: string): string | undefined {
+    if (!projectCode) return undefined;
+    const normCode = projectCode.trim().toLowerCase();
+
+    // 1. Check local config.projects
+    if (this.config.projects && typeof this.config.projects === 'object') {
+      for (const [key, rawPath] of Object.entries(this.config.projects)) {
+        if (key.trim().toLowerCase() === normCode && typeof rawPath === 'string') {
+          const expanded = expandHome(rawPath);
+          const resolved = path.isAbsolute(expanded)
+            ? path.resolve(expanded)
+            : path.resolve(this.workspaceRoot, expanded);
+          if (fs.existsSync(resolved)) {
+            return resolved;
+          }
+        }
+      }
+    }
+
+    // 2. Check global config.projects (~/.esedre/config.json)
+    try {
+      const globalConfig = readGlobalConfig();
+      if (globalConfig?.projects && typeof globalConfig.projects === 'object') {
+        for (const [key, rawPath] of Object.entries(globalConfig.projects)) {
+          if (key.trim().toLowerCase() === normCode && typeof rawPath === 'string') {
+            const resolved = path.resolve(expandHome(rawPath));
+            if (fs.existsSync(resolved)) {
+              return resolved;
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // 3. Check resolved project locations
+    const locations = this.resolveProjectLocations();
+    const loc = locations.find((l) => l.project.code.trim().toLowerCase() === normCode);
+    if (loc) {
+      if (loc.projectDir && fs.existsSync(loc.projectDir)) {
+        return loc.projectDir;
+      }
+      if (loc.sourceType === 'in-repo') {
+        return this.workspaceRoot;
+      }
+      if (loc.sourceType === 'federated') {
+        const pDir = path.resolve(loc.ticketsDir, '..');
+        const candidate = path.basename(pDir) === '.esedre' ? path.resolve(pDir, '..') : pDir;
+        if (fs.existsSync(candidate)) {
+          return candidate;
+        }
+      }
+    }
+
+    // 4. Check if current workspace corresponds to this project
+    if (this.config.projectCode && this.config.projectCode.trim().toLowerCase() === normCode) {
+      return this.workspaceRoot;
+    }
+
+    return undefined;
   }
 
   public getWorkspaceRoot(): string {
@@ -422,6 +484,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
             project: desc,
             ticketsDir: actualTicketsDir,
             sourceType: 'federated',
+            projectDir,
           });
         } else {
           const firstSource = codeToSource.get(codeKey) || 'configured location';
@@ -498,6 +561,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
             project: desc,
             ticketsDir: foundTicketsDir,
             sourceType: 'in-repo',
+            projectDir: this.workspaceRoot,
             isSharedDir: isShared,
           });
         }
@@ -2342,8 +2406,14 @@ ${input.summary || 'Summary to be defined.'}
       : (updates.status && updates.status !== 'Completed' ? undefined : existing.meta.completedAt);
     const revision = (existing.meta.revision || 1) + 1;
 
-    const { priority: _p, detail: _d, detailMarkdown: _dm, ...metaFields } = updates;
+    const { priority: _p, detail: _d, detailMarkdown: _dm, plan: _pl, planMarkdown: _pm, ...metaFields } = updates;
     const sanitizedUpdates: Partial<TicketMeta> = { ...metaFields };
+    if (
+      (updates.status === 'Completed' || updates.status === 'Rejected') &&
+      updates.isActivePlanning === undefined
+    ) {
+      sanitizedUpdates.isActivePlanning = false;
+    }
     if (sanitizedUpdates.title) sanitizedUpdates.title = normalizeDashesAndMojibake(sanitizedUpdates.title);
     if (sanitizedUpdates.estimatedEffort) {
       sanitizedUpdates.estimatedEffort = normalizeDashesAndMojibake(sanitizedUpdates.estimatedEffort);
@@ -3047,13 +3117,21 @@ ${input.summary || 'Summary to be defined.'}
 
     assertProjectCompatible(resolved.loc.project, { operation: 'write', feature: 'ticket-leases' });
 
+    let worktree = input.worktree?.trim();
+    if (!worktree) {
+      const projectRepoRoot = this.getProjectRepoRoot(resolved.project);
+      if (projectRepoRoot && !isPathInside(process.cwd(), projectRepoRoot)) {
+        worktree = projectRepoRoot;
+      }
+    }
+
     const identity = resolveWorkerIdentity({
       holder: input.holder,
       agentType: input.agentType,
       hostname: input.hostname,
       sessionId: input.sessionId,
       branch: input.branch,
-      worktree: input.worktree || this.workspaceRoot,
+      worktree: worktree || this.workspaceRoot,
       configDefaultAuthor: this.config.defaultAuthor,
     });
 

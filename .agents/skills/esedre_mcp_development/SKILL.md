@@ -39,14 +39,14 @@ The server registers the following tools in `tools/list`:
    - Parameters: `{ ticketId: number | string, status?: string, type?: string, priority?: string | null, milestone?: string, title?: string, detail?: string, detailMarkdown?: string, plan?: string, planMarkdown?: string, complexity?: string, effort?: string, inDevelopment?: boolean, featureFlag?: string, lastHash?: string, includeRaw?: boolean }`
    - Modifies ticket attributes, specification detail, and implementation plan with optimistic concurrency control and automatic `detail.md` header reconciliation. By default, omits `detail.raw` unless `includeRaw: true`.
 7. `esedre_claim_ticket`:
-   - Parameters: `{ ticketId: number | string, holder?: string, workerId?: string, system?: string, branch?: string, ttlMinutes?: number, force?: boolean }`
-   - Acquires a TTL-backed lease on a ticket (`In Development`, default 60m TTL) and prevents concurrent edits by other agents (`-32001`).
+   - Parameters: `{ ticketId: number | string, holder?: string, workerId?: string, agentType?: string, system?: string, sessionId?: string, branch?: string, worktree?: string, workspace?: string, ttlMinutes?: number, force?: boolean, project?: string }`
+   - Acquires a TTL-backed lease on a ticket (`In Development`, default 60m TTL) and prevents concurrent edits by other agents (`-32001`). Defaults `lease.worktree` to the resolved project repository root whenever `process.cwd()` is outside the project tree, and automatically detects `branch` from the effective worktree if `branch` is omitted.
 8. `esedre_renew_lease`:
    - Parameters: `{ ticketId: number | string, holder?: string, workerId?: string, system?: string, ttlMinutes?: number }`
    - Extends the expiration timestamp (`expiresAt`) for an active ticket lease.
 9. `esedre_release_ticket`:
    - Parameters: `{ ticketId: number | string, holder?: string, workerId?: string, status?: string, finalStatus?: string, notes?: string, force?: boolean }`
-   - Releases an active ticket lease, optionally transitions ticket status, and optionally records completion notes.
+   - Releases an active ticket lease, optionally transitions ticket status (automatically clearing `isActivePlanning: false` when `finalStatus` is `Completed` or `Rejected`), and optionally records completion notes.
 10. `esedre_list_leases`:
     - Parameters: `{ project?: string }`
     - Lists all active unexpired ticket leases across authorized projects.

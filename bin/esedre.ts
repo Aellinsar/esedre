@@ -1810,7 +1810,7 @@ async function main(): Promise<void> {
             agentType,
             sessionId,
             branch,
-            worktree: discovered.workspaceRoot,
+            worktree: ((flags['worktree'] || flags['workspace']) as string)?.trim() || discovered.workspaceRoot,
             configDefaultAuthor: discovered.config?.defaultAuthor,
           });
           const res = await storage.claimTicket({
@@ -1865,7 +1865,7 @@ async function main(): Promise<void> {
             console.error(`${colors.red}Error: Ticket ID is required (e.g. ese lease release 69)${colors.reset}`);
             process.exit(1);
           }
-          const finalStatus = (flags['status'] as TicketStatus) || undefined;
+          const finalStatus = ((flags['status'] || flags['final-status'] || flags['finalStatus']) as TicketStatus) || undefined;
           const notes = (flags['notes'] as string) || undefined;
           const res = await storage.releaseTicket({
             ticketId: targetArg,
@@ -1873,8 +1873,13 @@ async function main(): Promise<void> {
             force: isForce,
             project,
           });
+          let updatedTicket;
           if (finalStatus) {
-            await storage.updateTicket(res.ticketKey || targetArg, { status: finalStatus });
+            const isTerminalStatus = finalStatus === 'Completed' || finalStatus === 'Rejected';
+            updatedTicket = await storage.updateTicket(res.ticketKey || targetArg, {
+              status: finalStatus,
+              ...(isTerminalStatus ? { isActivePlanning: false } : {}),
+            });
           }
           if (notes) {
             await storage.addComment(res.ticketKey || targetArg, {
@@ -1883,7 +1888,23 @@ async function main(): Promise<void> {
             });
           }
           if (isJson) {
-            console.log(JSON.stringify(res, null, 2));
+            console.log(
+              JSON.stringify(
+                {
+                  ...res,
+                  ...(updatedTicket
+                    ? {
+                        status: updatedTicket.meta.status,
+                        isActivePlanning: Boolean(updatedTicket.meta.isActivePlanning),
+                        ...(updatedTicket.meta.completedAt ? { completedAt: updatedTicket.meta.completedAt } : {}),
+                        sha1: updatedTicket.sha1,
+                      }
+                    : {}),
+                },
+                null,
+                2
+              )
+            );
           } else {
             if (res.released) {
               console.log(

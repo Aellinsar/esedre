@@ -167,7 +167,7 @@ Tickets with uncompleted `blocked-by` links have `isBlocked: true` projected dyn
 2. **Storage Adapter Lease Methods**:
    - `claimTicket(id, input)`: Acquires a lease on a ticket (`In Development`, default 60m TTL). Throws `EsedreLeaseConflictError` if an unexpired lease is held by a different `holder` unless `force: true` is passed. Expired leases (`expiresAt <= now`) are automatically reclaimed.
    - `renewLease(id, input)`: Extends `expiresAt` for the active lease holder.
-   - `releaseTicket(id, input)`: Removes `lease.json`, optionally transitions `status` (`Completed` or `Planned`), and optionally appends completion notes to ticket comments.
+   - `releaseTicket(id, input)`: Removes `lease.json`, optionally transitions `status` (`Completed`, `Rejected`, or `Planned`, automatically clearing `isActivePlanning: false` on `Completed` or `Rejected`), and optionally appends completion notes to ticket comments.
    - `listActiveLeases(project?)`: Returns all unexpired leases across authorized projects.
 
 ## 11. Storage Migration & Multi-Version Compatibility Engine (`src/migrations/`)

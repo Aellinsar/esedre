@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { StorageAdapter } from '../storage/adapter.js';
-import { TicketType, TicketCategory, TicketStatus, TicketPriority, EsedreConflictError, EsedreLeaseConflictError, CURRENT_ESEDRE_VERSION } from '../types.js';
+import { EsedreTicket, TicketType, TicketCategory, TicketStatus, TicketPriority, EsedreConflictError, EsedreLeaseConflictError, CURRENT_ESEDRE_VERSION } from '../types.js';
 import { EsedreVersionError } from '../migrations/index.js';
-import { resolveWorkerIdentity } from '../utils/identity.js';
+import { resolveWorkerIdentity, isPathInside } from '../utils/identity.js';
 import { generateProjectSnapshot } from '../snapshot.js';
 import { findEsedreConfig, readGlobalConfig, expandHome, EsedreConfig } from '../config.js';
 
@@ -412,6 +412,23 @@ export class EsedreMcpServer {
     return uniqueDirs;
   }
 
+  private async resolveProjectRepoRoot(projectCode: string): Promise<string | undefined> {
+    if (!projectCode) return undefined;
+    if (this.storage.getProjectRepoRoot) {
+      try {
+        const root = this.storage.getProjectRepoRoot(projectCode);
+        if (root && fs.existsSync(root)) {
+          return root;
+        }
+      } catch {}
+    }
+    const dirs = await this.resolveTargetDirsForProject(projectCode);
+    if (dirs.length > 0 && fs.existsSync(dirs[0])) {
+      return dirs[0];
+    }
+    return undefined;
+  }
+
   private async refreshProjectSnapshots(projectCodes: (string | undefined | null)[]): Promise<void> {
     const rawCodes = projectCodes.filter((c): c is string => Boolean(c && typeof c === 'string' && c.trim().length > 0));
     if (rawCodes.length === 0) return;
@@ -686,6 +703,8 @@ export class EsedreMcpServer {
             branch: { type: 'string', description: 'Optional Git branch associated with the lease' },
             ttlMinutes: { type: 'number', description: 'Lease time-to-live in minutes (default: 60)' },
             force: { type: 'boolean', description: 'Override an existing active lease held by another worker' },
+            worktree: { type: 'string', description: 'Optional project repository root or Git worktree path (defaults to resolved project repository)' },
+            workspace: { type: 'string', description: 'Alias for worktree: project repository root or Git worktree path' },
             project: { type: 'string', description: 'Optional project code when numeric ticketId is used' },
           },
         },
@@ -718,7 +737,8 @@ export class EsedreMcpServer {
             holder: { type: 'string', description: 'Holder identity verifying lease ownership' },
             workerId: { type: 'string', description: 'Alias for holder: worker identity verifying lease ownership' },
             system: { type: 'string', description: 'Optional system or agent runtime identifier' },
-            finalStatus: { type: 'string', enum: ['Planned', 'In Development', 'Completed', 'Rejected'], description: 'Optional status to transition the ticket to upon release' },
+            finalStatus: { type: 'string', enum: ['Planned', 'In Development', 'Completed', 'Rejected'], description: 'Optional status to transition the ticket to upon release (automatically clears isActivePlanning when Completed or Rejected)' },
+            status: { type: 'string', enum: ['Planned', 'In Development', 'Completed', 'Rejected'], description: 'Alias for finalStatus: optional status to transition the ticket to upon release' },
             notes: { type: 'string', description: 'Optional verification or handoff comment to append upon release' },
             force: { type: 'boolean', description: 'Force release even if held by another identity' },
             project: { type: 'string', description: 'Optional project code' },
@@ -1045,11 +1065,44 @@ export class EsedreMcpServer {
       }
 
       case 'claim_ticket': {
+        const rawTicketArg = args.ticketId ?? args.id;
+        const parsedTicketId = this.parseTicketId(rawTicketArg, 'Ticket ID', args.project);
+
+        let projectCode = args.project?.trim();
+        if (!projectCode) {
+          const rawIdStr = String(rawTicketArg ?? '').trim().replace(/^#/, '');
+          const prefixMatch = rawIdStr.match(/^([a-zA-Z0-9]{1,8})[-_:]/);
+          if (prefixMatch) {
+            projectCode = prefixMatch[1];
+          }
+        }
+        if (!projectCode) {
+          try {
+            const ticket = await this.storage.getTicket(parsedTicketId);
+            if (ticket?.meta?.project) {
+              projectCode = ticket.meta.project;
+            }
+          } catch {}
+        }
+        if (!projectCode) {
+          projectCode = this.options.projectCode || this.options.config?.projectCode;
+        }
+
+        let targetWorktree = (args.worktree || args.workspace)?.trim();
+        if (!targetWorktree && projectCode) {
+          const projectRepoRoot = await this.resolveProjectRepoRoot(projectCode);
+          if (projectRepoRoot) {
+            if (!isPathInside(process.cwd(), projectRepoRoot)) {
+              targetWorktree = projectRepoRoot;
+            }
+          }
+        }
         const identity = resolveWorkerIdentity({
           holder: args.holder || args.workerId,
           agentType: args.agentType || args.system || 'mcp-agent',
           sessionId: args.sessionId,
           branch: args.branch,
+          worktree: targetWorktree,
         });
         const res = await this.storage.claimTicket({
           ticketId: this.parseTicketId(args.ticketId ?? args.id, 'Ticket ID', args.project),
@@ -1063,7 +1116,7 @@ export class EsedreMcpServer {
           force: Boolean(args.force),
           project: args.project,
         });
-        const pCode = res.ticket?.projectDescriptor?.code || res.ticket?.meta?.project || res.lease?.project || args.project;
+        const pCode = res.ticket?.projectDescriptor?.code || res.ticket?.meta?.project || res.lease?.project || args.project || projectCode;
         await this.refreshProjectSnapshots([pCode]);
         return {
           success: true,
@@ -1105,8 +1158,15 @@ export class EsedreMcpServer {
           force: Boolean(args.force),
           project: args.project,
         });
-        if (args.finalStatus) {
-          await this.storage.updateTicket(res.ticketKey || parsedId, { status: args.finalStatus as TicketStatus });
+
+        const finalStatus = (args.finalStatus || args.status) as TicketStatus | undefined;
+        let updatedTicket: EsedreTicket | undefined;
+        if (finalStatus) {
+          const isTerminalStatus = finalStatus === 'Completed' || finalStatus === 'Rejected';
+          updatedTicket = await this.storage.updateTicket(res.ticketKey || parsedId, {
+            status: finalStatus,
+            ...(isTerminalStatus ? { isActivePlanning: false } : {}),
+          });
         }
         if (args.notes) {
           await this.storage.addComment(res.ticketKey || parsedId, {
@@ -1123,13 +1183,21 @@ export class EsedreMcpServer {
           pCode = res.previousLease.project;
         }
         if (!pCode) {
-          const ticket = await this.storage.getTicket(parsedId);
+          const ticket = updatedTicket || (await this.storage.getTicket(parsedId));
           pCode = ticket?.projectDescriptor?.code || ticket?.meta.project;
         }
         await this.refreshProjectSnapshots([pCode]);
         return {
           success: true,
           ...res,
+          ...(updatedTicket
+            ? {
+                status: updatedTicket.meta.status,
+                isActivePlanning: Boolean(updatedTicket.meta.isActivePlanning),
+                ...(updatedTicket.meta.completedAt ? { completedAt: updatedTicket.meta.completedAt } : {}),
+                sha1: updatedTicket.sha1,
+              }
+            : {}),
         };
       }
 

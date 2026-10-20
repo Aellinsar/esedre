@@ -698,7 +698,7 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
 
         if (pathname === '/api/planning/leases/release') {
           invalidateApiCache();
-          const { ticketId, holder, force, project } = body;
+          const { ticketId, holder, force, project, finalStatus, status, notes } = body;
           if (!ticketId) {
             sendJson(res, 400, { error: 'ticketId is required.' });
             return true;
@@ -709,7 +709,33 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
             force: Boolean(force),
             project,
           });
-          sendJson(res, 200, { success: true, ...result });
+          const targetStatus = (finalStatus || status) as any;
+          let updatedTicket;
+          if (targetStatus) {
+            const isTerminalStatus = targetStatus === 'Completed' || targetStatus === 'Rejected';
+            updatedTicket = await reqStorage.updateTicket(result.ticketKey || ticketId, {
+              status: targetStatus,
+              ...(isTerminalStatus ? { isActivePlanning: false } : {}),
+            });
+          }
+          if (notes) {
+            await reqStorage.addComment(result.ticketKey || ticketId, {
+              author: holder || result.previousLease?.holder || 'Developer',
+              text: notes,
+            });
+          }
+          sendJson(res, 200, {
+            success: true,
+            ...result,
+            ...(updatedTicket
+              ? {
+                  status: updatedTicket.meta.status,
+                  isActivePlanning: Boolean(updatedTicket.meta.isActivePlanning),
+                  ...(updatedTicket.meta.completedAt ? { completedAt: updatedTicket.meta.completedAt } : {}),
+                  sha1: updatedTicket.sha1,
+                }
+              : {}),
+          });
           return true;
         }
       }

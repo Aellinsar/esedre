@@ -206,7 +206,7 @@ To connect Esedre to **Google Antigravity**, **Claude Code**, **Cursor**, or any
 - `esedre_get_plan` & `esedre_save_plan`: Inspect and update implementation plans with optimistic concurrency (`lastHash`).
 - `esedre_create_ticket`: Mint new roadmap tickets with project code validation (up to 8 chars), optional priority, optional milestone, and specification detail markdown.
 - `esedre_update_ticket`: Modify status, title, type, priority, milestone, specification detail (`detail`/`detailMarkdown`), complexity, or effort with optimistic concurrency (`lastHash`).
-- `esedre_claim_ticket`: Acquire an exclusive TTL-backed lease on a ticket (`In Development`) with conflict protection (`-32001`).
+- `esedre_claim_ticket`: Acquire an exclusive TTL-backed lease on a ticket (`In Development`) with conflict protection (`-32001`), resolved repository worktree defaulting, and optional worktree overrides.
 - `esedre_renew_lease`: Extend the expiration TTL of an active ticket lease.
 - `esedre_release_ticket`: Release an active ticket lease and optionally transition status (`Completed`, `Planned`, etc.).
 - `esedre_list_leases`: List all active, unexpired ticket leases across authorized projects.
