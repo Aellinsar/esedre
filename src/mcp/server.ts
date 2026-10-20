@@ -299,9 +299,14 @@ export class EsedreMcpServer {
     if (val === undefined || val === null || val === '') {
       throw new Error(`${paramName} is required`);
     }
-    const cleanProject = typeof project === 'string' && project.trim() && project.trim().toLowerCase() !== 'all'
-      ? project.trim()
-      : undefined;
+    const rawProject =
+      typeof project === 'string' && project.trim()
+        ? project.trim()
+        : this.options.projectCode || this.options.config?.projectCode;
+    const cleanProject =
+      typeof rawProject === 'string' && rawProject.trim() && rawProject.trim().toLowerCase() !== 'all'
+        ? rawProject.trim()
+        : undefined;
     if (typeof val === 'number') {
       return cleanProject ? `${cleanProject}-${val}` : val;
     }
@@ -309,11 +314,12 @@ export class EsedreMcpServer {
     if (!str || str === 'undefined' || str === 'null') {
       throw new Error(`${paramName} is required`);
     }
-    if (/^\d+$/.test(str)) {
-      const num = parseInt(str, 10);
+    const withoutHash = str.replace(/^#/, '');
+    if (/^\d+$/.test(withoutHash)) {
+      const num = parseInt(withoutHash, 10);
       return cleanProject ? `${cleanProject}-${num}` : num;
     }
-    return str;
+    return withoutHash;
   }
 
   private async resolveTargetDirsForProject(projectCode: string): Promise<string[]> {
@@ -1046,7 +1052,7 @@ export class EsedreMcpServer {
           branch: args.branch,
         });
         const res = await this.storage.claimTicket({
-          ticketId: this.parseTicketId(args.ticketId ?? args.id),
+          ticketId: this.parseTicketId(args.ticketId ?? args.id, 'Ticket ID', args.project),
           holder: identity.holder,
           agentType: identity.agentType,
           hostname: identity.hostname,
@@ -1076,7 +1082,7 @@ export class EsedreMcpServer {
 
       case 'renew_lease': {
         const lease = await this.storage.renewLease({
-          ticketId: this.parseTicketId(args.ticketId ?? args.id),
+          ticketId: this.parseTicketId(args.ticketId ?? args.id, 'Ticket ID', args.project),
           holder: args.holder || args.workerId,
           ttlMinutes: args.ttlMinutes,
           force: Boolean(args.force),
@@ -1092,7 +1098,7 @@ export class EsedreMcpServer {
 
       case 'release_ticket': {
         const holder = args.holder || args.workerId;
-        const parsedId = this.parseTicketId(args.ticketId ?? args.id);
+        const parsedId = this.parseTicketId(args.ticketId ?? args.id, 'Ticket ID', args.project);
         const res = await this.storage.releaseTicket({
           ticketId: parsedId,
           holder,

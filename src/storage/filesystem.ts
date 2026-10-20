@@ -1379,7 +1379,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     const locations = this.resolveProjectLocations();
     if (locations.length === 0) return null;
 
-    const strId = String(id).trim();
+    const strId = String(id).trim().replace(/^#/, '');
 
     // Check if prefixed with project code (e.g. "Prof-35", "Esedre-1", "Prof_35", "Prof:35")
     const prefixMatch = strId.match(/^([a-zA-Z0-9]{1,8})[-_:](\d+)$/i);
@@ -2731,9 +2731,13 @@ ${input.summary || 'Summary to be defined.'}
     id: number | string,
     defaultProject?: string
   ): { loc: ResolvedProjectLocation; ticketDir: string; id: number; key: string; project: string } | null {
-    const str = String(id).trim();
-    if (!/^([a-zA-Z0-9]{1,8})[-_:](\d+)$/i.test(str) && defaultProject && defaultProject !== 'all') {
-      const candidate = this.findTicketLocation(`${defaultProject}-${str}`);
+    const str = String(id).trim().replace(/^#/, '');
+    const effectiveProject =
+      defaultProject && defaultProject.trim() && defaultProject.trim().toLowerCase() !== 'all'
+        ? defaultProject.trim()
+        : this.config.projectCode;
+    if (!/^([a-zA-Z0-9]{1,8})[-_:](\d+)$/i.test(str) && effectiveProject && effectiveProject.toLowerCase() !== 'all') {
+      const candidate = this.findTicketLocation(`${effectiveProject}-${str}`);
       if (candidate) {
         return {
           ...candidate,
@@ -2741,8 +2745,11 @@ ${input.summary || 'Summary to be defined.'}
           project: candidate.loc.project.code,
         };
       }
+      if (defaultProject && defaultProject.trim() && defaultProject.trim().toLowerCase() !== 'all') {
+        return null;
+      }
     }
-    const loc = this.findTicketLocation(id);
+    const loc = this.findTicketLocation(str);
     if (!loc) return null;
     return {
       ...loc,
@@ -2841,14 +2848,17 @@ ${input.summary || 'Summary to be defined.'}
       );
     }
 
-    const sourceInfo = this.resolveTicketIdentifier(sourceId, options?.project);
+    const sourceInfo = this.resolveTicketIdentifier(sourceId, options?.project || this.config.projectCode);
     if (!sourceInfo) {
       throw new Error(`Source ticket #${sourceId} could not be located.`);
     }
 
     assertProjectCompatible(sourceInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
 
-    const targetInfo = this.resolveTicketIdentifier(targetId, options?.project || sourceInfo.project);
+    const targetInfo = this.resolveTicketIdentifier(
+      targetId,
+      options?.project || sourceInfo.project || this.config.projectCode
+    );
     if (!targetInfo) {
       throw new Error(`Target ticket #${targetId} could not be located.`);
     }
@@ -2938,14 +2948,17 @@ ${input.summary || 'Summary to be defined.'}
     targetId: number | string,
     options?: { relation?: TicketLinkRelation; project?: string }
   ): Promise<{ source: EsedreTicket; target?: EsedreTicket }> {
-    const sourceInfo = this.resolveTicketIdentifier(sourceId, options?.project);
+    const sourceInfo = this.resolveTicketIdentifier(sourceId, options?.project || this.config.projectCode);
     if (!sourceInfo) {
       throw new Error(`Source ticket #${sourceId} could not be located.`);
     }
 
     assertProjectCompatible(sourceInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
 
-    const targetInfo = this.resolveTicketIdentifier(targetId, options?.project || sourceInfo.project);
+    const targetInfo = this.resolveTicketIdentifier(
+      targetId,
+      options?.project || sourceInfo.project || this.config.projectCode
+    );
     if (targetInfo) {
       assertProjectCompatible(targetInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
     }

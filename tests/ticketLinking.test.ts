@@ -619,7 +619,34 @@ describe('Cross-Project Ticket Linking & Dependencies', () => {
       // 3. Unlink numeric 1 -> 2 with project: 'Core' directly via SecurityFilter.removeTicketLink
       const unlinkDirect = await securedStorage.removeTicketLink(1, 2, { project: 'Core' });
       expect(unlinkDirect.source.links).toHaveLength(0);
+
+      // 4. Link numeric 1 -> 2 directly via SecurityFilter.addTicketLink (and #-prefixed strings)
+      const linkDirect = await securedStorage.addTicketLink('#1', 'relates-to', '#2', { project: 'Web' });
+      expect(linkDirect.source.meta.project).toBe('Web');
+      expect(linkDirect.source.links).toHaveLength(1);
+      expect(linkDirect.source.links?.[0].targetKey).toBe('Web-2');
+
+      // 5. MCP server configured with default projectCode resolves numeric IDs even when args.project is omitted
+      const scopedMcp = new EsedreMcpServer(securedStorage, { projectCode: 'Core' });
+      const scopedLinkRes = await (scopedMcp as any).handleRequest({
+        jsonrpc: '2.0',
+        id: 32,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_link_ticket',
+          arguments: {
+            sourceTicketId: 1,
+            relation: 'blocks',
+            targetTicketId: 2,
+          },
+        },
+      });
+      expect(scopedLinkRes.error).toBeUndefined();
+      const scopedOut = JSON.parse(scopedLinkRes.result.content[0].text);
+      expect(scopedOut.sourceKey).toBe('Core-1');
+      expect(scopedOut.targetKey).toBe('Core-2');
     });
   });
 });
+
 

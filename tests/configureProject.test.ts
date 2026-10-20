@@ -766,6 +766,35 @@ describe('Project Registration & Configure Onboarding', () => {
       expect(cfgRaw.projectCode).toBe('EXTPROJ');
       expect(cfgRaw.dataDir).toBeUndefined();
     });
+
+    it('returns skillStatus LATEST (not MISSING) in ese init --json when planting a new SKILL.md and preserves case-remembering projectCode', () => {
+      const cliPath = path.resolve(__dirname, '..', 'dist', 'esedre.mjs');
+      const gardenDir = path.join(tempDir, 'gardening');
+      fs.mkdirSync(gardenDir, { recursive: true });
+
+      const output = execFileSync(
+        process.execPath,
+        [cliPath, 'init', '--project', 'garden', '--name', 'Valencia Terrace & Gardening', '--no-mcp', '--no-proxy', '-y', '--json'],
+        {
+          cwd: gardenDir,
+          encoding: 'utf-8',
+          env: {
+            ...process.env,
+            ESEDRE_GLOBAL_DIR: path.join(tempDir, 'global-store-garden'),
+          },
+        }
+      );
+
+      const parsed = JSON.parse(output.trim());
+      expect(parsed.skillConfigured).toBe(true);
+      expect(parsed.skillStatus).toBe('LATEST');
+      expect(fs.existsSync(path.join(gardenDir, '.agents', 'skills', 'esedre', 'SKILL.md'))).toBe(true);
+
+      const pJson = JSON.parse(fs.readFileSync(path.join(gardenDir, '.esedre', 'project.json'), 'utf-8'));
+      expect(pJson.code).toBe('garden');
+      expect(pJson.name).toBe('Valencia Terrace & Gardening');
+    });
   });
 });
+
 

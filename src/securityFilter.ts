@@ -228,16 +228,28 @@ export class SecurityFilter implements StorageAdapter {
     return this.target.deleteMilestone(id, projectCode);
   }
 
+  private qualifyTicketId(id: number | string, project?: string): number | string {
+    const effectiveProject = project || this.config.projectCode;
+    const clean = String(id).trim().replace(/^#/, '');
+    if (
+      effectiveProject &&
+      effectiveProject.trim() &&
+      effectiveProject.trim().toLowerCase() !== 'all' &&
+      /^\d+$/.test(clean)
+    ) {
+      return `${effectiveProject.trim()}-${clean}`;
+    }
+    return id;
+  }
+
   public async addTicketLink(
     sourceId: number | string,
     relation: TicketLinkRelation,
     targetId: number | string,
     options?: { author?: string; project?: string }
   ): Promise<{ source: EsedreTicket; target?: EsedreTicket }> {
-    const lookupSourceId =
-      options?.project && /^\d+$/.test(String(sourceId).trim())
-        ? `${options.project.trim()}-${String(sourceId).trim()}`
-        : sourceId;
+    const lookupSourceId = this.qualifyTicketId(sourceId, options?.project);
+    const lookupTargetId = this.qualifyTicketId(targetId, options?.project);
     const sourceTicket = await this.target.getTicket(lookupSourceId);
     if (sourceTicket) {
       const code = sourceTicket.projectDescriptor?.code || sourceTicket.meta.project;
@@ -247,7 +259,7 @@ export class SecurityFilter implements StorageAdapter {
     } else if (options?.project && !isProjectAuthorized(options.project, this.config.allowedProjects)) {
       throw new EsedreAuthorizationError(options.project);
     }
-    const result = await this.target.addTicketLink(sourceId, relation, targetId, options);
+    const result = await this.target.addTicketLink(lookupSourceId, relation, lookupTargetId, options);
     return {
       source: this.redactLinks(result.source),
       target: result.target ? this.redactLinks(result.target) : undefined,
@@ -259,10 +271,8 @@ export class SecurityFilter implements StorageAdapter {
     targetId: number | string,
     options?: { relation?: TicketLinkRelation; project?: string }
   ): Promise<{ source: EsedreTicket; target?: EsedreTicket }> {
-    const lookupSourceId =
-      options?.project && /^\d+$/.test(String(sourceId).trim())
-        ? `${options.project.trim()}-${String(sourceId).trim()}`
-        : sourceId;
+    const lookupSourceId = this.qualifyTicketId(sourceId, options?.project);
+    const lookupTargetId = this.qualifyTicketId(targetId, options?.project);
     const sourceTicket = await this.target.getTicket(lookupSourceId);
     if (sourceTicket) {
       const code = sourceTicket.projectDescriptor?.code || sourceTicket.meta.project;
@@ -272,7 +282,7 @@ export class SecurityFilter implements StorageAdapter {
     } else if (options?.project && !isProjectAuthorized(options.project, this.config.allowedProjects)) {
       throw new EsedreAuthorizationError(options.project);
     }
-    const result = await this.target.removeTicketLink(sourceId, targetId, options);
+    const result = await this.target.removeTicketLink(lookupSourceId, lookupTargetId, options);
     return {
       source: this.redactLinks(result.source),
       target: result.target ? this.redactLinks(result.target) : undefined,

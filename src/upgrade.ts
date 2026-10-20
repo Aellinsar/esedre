@@ -604,7 +604,7 @@ export function setupSkill(targetDir: string, options: { force?: boolean } = {})
 
   if (!fs.existsSync(skillFile)) {
     fs.writeFileSync(skillFile, ESEDRE_SKILL_TEMPLATE, 'utf-8');
-    return { status: 'MISSING', updated: true };
+    return { status: 'LATEST', updated: true };
   }
 
   const currentContent = fs.readFileSync(skillFile, 'utf-8');
@@ -852,9 +852,9 @@ export function configureWorkspace(targetDir: string, options: ConfigureOptions 
     if (!fs.existsSync(inRepoPJson)) {
       const projDesc = {
         id: 1,
-        code: projectCode.toUpperCase(),
-        name: projectName || projectCode.toUpperCase(),
-        description: `${projectName || projectCode.toUpperCase()} project`,
+        code: projectCode,
+        name: projectName || projectCode,
+        description: `${projectName || projectCode} project`,
         colors: {
           badge: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300',
           dot: 'bg-cyan-400',
