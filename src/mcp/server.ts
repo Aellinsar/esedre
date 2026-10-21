@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { StorageAdapter } from '../storage/adapter.js';
-import { EsedreTicket, TicketType, TicketCategory, TicketStatus, TicketPriority, EsedreConflictError, EsedreLeaseConflictError, CURRENT_ESEDRE_VERSION } from '../types.js';
+import { EsedreTicket, TicketDetail, TicketType, TicketCategory, TicketStatus, TicketPriority, EsedreConflictError, EsedreLeaseConflictError, CURRENT_ESEDRE_VERSION } from '../types.js';
 import { EsedreVersionError } from '../migrations/index.js';
 import { resolveWorkerIdentity, isPathInside } from '../utils/identity.js';
 import { generateProjectSnapshot } from '../snapshot.js';
@@ -497,6 +497,7 @@ export class EsedreMcpServer {
             ticketId: { type: ['number', 'integer', 'string'], description: 'Numeric ticket ID (e.g. 96, 101) or compound key (e.g. Profe-96)' },
             id: { type: ['number', 'integer', 'string'], description: 'Alias for ticketId: numeric ticket ID or compound key' },
             project: { type: 'string', description: 'Optional project code when numeric ticketId is used' },
+            includeRaw: { type: 'boolean', description: 'When true, always includes raw markdown in ticket.detail.raw; when false, always omits it. Defaults to omitting detail.raw when parsed fields are lossless.' },
           },
         },
       },
@@ -546,7 +547,7 @@ export class EsedreMcpServer {
             planMarkdown: { type: 'string', description: 'Initial implementation plan markdown content (alias for plan)' },
             milestone: { type: 'string', description: 'Assign ticket to milestone' },
             author: { type: 'string', description: 'Submitting author name' },
-            includeRaw: { type: 'boolean', description: 'When true, includes raw unparsed markdown in ticket.detail.raw' },
+            includeRaw: { type: 'boolean', description: 'When true, includes raw unparsed markdown in ticket.detail.raw (default: false)' },
           },
           required: ['title'],
         },
@@ -574,7 +575,7 @@ export class EsedreMcpServer {
             detailMarkdown: { type: 'string', description: 'Updated specification markdown for ticket detail' },
             plan: { type: 'string', description: 'Updated implementation plan markdown content' },
             planMarkdown: { type: 'string', description: 'Updated implementation plan markdown content (alias for plan)' },
-            includeRaw: { type: 'boolean', description: 'When true, includes raw unparsed markdown in ticket.detail.raw' },
+            includeRaw: { type: 'boolean', description: 'When true, includes raw unparsed markdown in ticket.detail.raw (default: false)' },
             lastHash: { type: 'string', description: 'Optimistic concurrency control: last known sha1 hash of the ticket' },
           },
         },
@@ -758,6 +759,144 @@ export class EsedreMcpServer {
     ];
   }
 
+  private isDetailLosslesslyParsed(detail: TicketDetail): boolean {
+    if (!detail || typeof detail.raw !== 'string') return true;
+    const raw = detail.raw.replace(/\r\n/g, '\n').trim();
+    if (!raw) return true;
+
+    const lines = raw.split('\n');
+    let idx = 0;
+
+    // 1. Validate preamble lines before the first section heading
+    while (idx < lines.length) {
+      const line = lines[idx];
+      const trimmed = line.trim();
+      if (/^#{1,6}\s+/.test(trimmed)) {
+        if (idx === 0 && /^#\s+[^\n]+$/.test(trimmed)) {
+          idx++;
+          continue;
+        }
+        break;
+      }
+      if (!trimmed || /^---+\s*$/.test(trimmed)) {
+        idx++;
+        continue;
+      }
+      const isMetaLine =
+        /^[ \t]*(?:[-*•]\s+)?\*\*(?:Type|Category|Priority|Milestone|Complexity|(?:Estimated\s+)?Effort|Status|Feature\s+Flag|Submitted\s+By)\*\*:\s*[^\n]*$/i.test(
+          line
+        );
+      if (!isMetaLine) {
+        return false;
+      }
+      idx++;
+    }
+
+    // 2. Group remaining lines by section heading
+    const seenSections = new Set<string>();
+    let currentSectionType: 'summary' | 'breakdown' | 'combined' | 'tech' | 'questions' | null = null;
+
+    for (; idx < lines.length; idx++) {
+      const line = lines[idx];
+      const trimmed = line.trim();
+      const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+      if (headingMatch) {
+        const hashes = headingMatch[1];
+        const headingTitle = headingMatch[2].trim();
+        if (hashes.length !== 2 && hashes.length !== 3) {
+          return false;
+        }
+
+        if (/^(?:Summary|Rationale)$/i.test(headingTitle)) {
+          currentSectionType = 'summary';
+        } else if (/^(?:Feature|Task|Fix|Implementation)\s+Breakdown$/i.test(headingTitle)) {
+          currentSectionType = 'breakdown';
+        } else if (/^Technical Details?\s*&\s*Open Questions?$/i.test(headingTitle)) {
+          currentSectionType = 'combined';
+        } else if (/^(?:Technical Details?(?!\s*&\s*Open Questions?)(?:\s*&\s*Architecture)?|Architecture)$/i.test(headingTitle)) {
+          currentSectionType = 'tech';
+        } else if (/^(?:Open Questions?(?:\s*&\s*Decisions)?|Decisions)$/i.test(headingTitle)) {
+          currentSectionType = 'questions';
+        } else {
+          return false;
+        }
+
+        if (seenSections.has(currentSectionType)) {
+          return false;
+        }
+        seenSections.add(currentSectionType);
+        continue;
+      }
+
+      if (!trimmed || /^---+\s*$/.test(trimmed)) {
+        continue;
+      }
+
+      if (!currentSectionType) {
+        return false;
+      }
+
+      if (currentSectionType === 'summary') {
+        // Summary captures full multiline text up to next section heading
+        continue;
+      }
+
+      // Fenced code blocks or Markdown tables in bullet-parsed sections are not losslessly structured
+      if (trimmed.startsWith('```') || trimmed.startsWith('|')) {
+        return false;
+      }
+
+      if (currentSectionType === 'breakdown') {
+        const isTopLevelListItem = /^[ \t]{0,1}(?:\d+\.|[-*•])\s+\S/.test(line);
+        if (!isTopLevelListItem) {
+          return false;
+        }
+      } else {
+        // combined, tech, questions only extract top-level single-line list items
+        const isTopLevelListItem = /^[ \t]{0,1}(?:\d+\.|\*|-|•)\s+\S/.test(line);
+        if (!isTopLevelListItem) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  }
+
+  private formatMcpTicketResponse(
+    ticket: EsedreTicket,
+    options: { includeRaw?: boolean; mode: 'get' | 'mutation' }
+  ): EsedreTicket {
+    const { links: _metaLinks, lease: _metaLease, ...cleanMeta } = ticket.meta;
+    const responseTicket: EsedreTicket = {
+      ...ticket,
+      meta: cleanMeta,
+    };
+
+    if (responseTicket.projectDescriptor) {
+      const { colors: _colors, ...cleanDescriptor } = responseTicket.projectDescriptor;
+      responseTicket.projectDescriptor = cleanDescriptor;
+    }
+
+    if (responseTicket.detail) {
+      const shouldIncludeRaw =
+        options.includeRaw !== undefined
+          ? Boolean(options.includeRaw)
+          : options.mode === 'get'
+            ? !this.isDetailLosslesslyParsed(responseTicket.detail)
+            : false;
+
+      if (!shouldIncludeRaw) {
+        const { raw: _raw, ...cleanDetail } = responseTicket.detail;
+        responseTicket.detail = cleanDetail as TicketDetail;
+      } else {
+        responseTicket.detail = { ...responseTicket.detail };
+      }
+    }
+
+    return responseTicket;
+  }
+
   private async executeTool(name: string, args: any): Promise<any> {
     const canonical = name.replace(/^esedre_/, '');
     switch (canonical) {
@@ -817,7 +956,10 @@ export class EsedreMcpServer {
         const id = this.parseTicketId(args.ticketId ?? args.id, 'Ticket ID', args.project);
         const ticket = await this.storage.getTicket(id);
         if (!ticket) throw new Error(`Ticket #${id} not found`);
-        return ticket;
+        return this.formatMcpTicketResponse(ticket, {
+          includeRaw: args.includeRaw,
+          mode: 'get',
+        });
       }
 
       case 'get_plan': {
@@ -860,12 +1002,10 @@ export class EsedreMcpServer {
         const pCode = created.projectDescriptor?.code || created.meta.project || args.project;
         await this.refreshProjectSnapshots([pCode]);
 
-        const responseTicket = { ...created };
-        if (!args.includeRaw && responseTicket.detail) {
-          const { raw, ...cleanDetail } = responseTicket.detail;
-          responseTicket.detail = cleanDetail as any;
-        }
-        return responseTicket;
+        return this.formatMcpTicketResponse(created, {
+          includeRaw: args.includeRaw,
+          mode: 'mutation',
+        });
       }
 
       case 'update_ticket': {
@@ -895,12 +1035,10 @@ export class EsedreMcpServer {
         const pCode = updated.projectDescriptor?.code || updated.meta.project || args.project;
         await this.refreshProjectSnapshots([pCode]);
 
-        const responseTicket = { ...updated };
-        if (!args.includeRaw && responseTicket.detail) {
-          const { raw, ...cleanDetail } = responseTicket.detail;
-          responseTicket.detail = cleanDetail as any;
-        }
-        return responseTicket;
+        return this.formatMcpTicketResponse(updated, {
+          includeRaw: args.includeRaw,
+          mode: 'mutation',
+        });
       }
 
       case 'add_comment': {

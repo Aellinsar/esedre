@@ -1006,6 +1006,181 @@ describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
       expect(saveMissingIdRes.error).toBeDefined();
       expect(saveMissingIdRes.error.message).toContain('Ticket ID is required');
     });
+
+    it('deduplicates meta.links, meta.lease, and projectDescriptor.colors and supports lossless-aware includeRaw on esedre_get_ticket (Ticket #91)', async () => {
+      // 1. Create two standard-template tickets and link them
+      const create1Res = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 600,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: {
+            title: 'Standard Template Ticket',
+            project: 'Conquest',
+            summary: 'Standard summary text.',
+            detail: [
+              '### Summary',
+              'Standard summary text.',
+              '',
+              '### Feature Breakdown',
+              '- **First Item**: First breakdown item.',
+              '- **Second Item**: Second breakdown item.',
+              '',
+              '### Technical Details',
+              '- **Architecture**: Clean modular design.',
+            ].join('\n'),
+          },
+        },
+      });
+      const created1 = JSON.parse(create1Res.result.content[0].text);
+      expect(created1.projectDescriptor?.colors).toBeUndefined();
+
+      await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 601,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: {
+            title: 'Linked Target Ticket',
+            project: 'Conquest',
+          },
+        },
+      });
+
+      await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 602,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_link_ticket',
+          arguments: {
+            sourceTicketId: 1,
+            relation: 'relates-to',
+            targetTicketId: 2,
+            project: 'Conquest',
+          },
+        },
+      });
+
+      await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 603,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_claim_ticket',
+          arguments: {
+            ticketId: 1,
+            project: 'Conquest',
+            holder: 'agent-91',
+          },
+        },
+      });
+
+      // 2. Get standard ticket without includeRaw -> omits detail.raw, meta.links, meta.lease, projectDescriptor.colors
+      const getStandardRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 604,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_get_ticket',
+          arguments: { ticketId: 1, project: 'Conquest' },
+        },
+      });
+      expect(getStandardRes.error).toBeUndefined();
+      const standardFetched = JSON.parse(getStandardRes.result.content[0].text);
+      expect(standardFetched.detail.summary).toBe('Standard summary text.');
+      expect(standardFetched.detail.breakdown).toHaveLength(2);
+      expect(standardFetched.detail.technicalDetails).toHaveLength(1);
+      expect(standardFetched.detail.raw).toBeUndefined();
+      // Top-level enriched links and lease are present, while duplicate meta.links and meta.lease are omitted
+      expect(standardFetched.links).toHaveLength(1);
+      expect(standardFetched.links[0].targetKey).toBe('Conquest-2');
+      expect(standardFetched.links[0].targetTitle).toBe('Linked Target Ticket');
+      expect(standardFetched.meta.links).toBeUndefined();
+      expect(standardFetched.lease?.holder).toBe('agent-91');
+      expect(standardFetched.meta.lease).toBeUndefined();
+      expect(standardFetched.projectDescriptor?.colors).toBeUndefined();
+
+      // Verify underlying storage adapter cache still retains meta.links intact
+      const directFromStorage = await wsAdapter.getTicket('Conquest-1');
+      expect(directFromStorage?.meta.links).toHaveLength(1);
+
+      // 3. Get standard ticket with includeRaw: true -> includes detail.raw
+      const getStandardRawRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 605,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_get_ticket',
+          arguments: { ticketId: 1, project: 'Conquest', includeRaw: true },
+        },
+      });
+      const standardWithRaw = JSON.parse(getStandardRawRes.result.content[0].text);
+      expect(standardWithRaw.detail.raw).toBeDefined();
+      expect(standardWithRaw.detail.raw).toContain('### Feature Breakdown');
+
+      // 4. Update ticket with custom non-standard Markdown headings (like Esedre-84)
+      await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 606,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_update_ticket',
+          arguments: {
+            ticketId: 2,
+            project: 'Conquest',
+            detail: [
+              '# Ticket #2: Custom Freeform Spec',
+              '**Category**: Bug  ',
+              '**Complexity**: Medium  ',
+              '**Estimated Effort**: 2.0 - 4.0 hours  ',
+              '',
+              '### Summary',
+              'Summary for custom heading ticket.',
+              '',
+              '## Overview',
+              'Custom overview prose not captured by standard breakdown arrays.',
+              '',
+              '## Root Cause & Defects',
+              '1. Custom root cause item.',
+            ].join('\n'),
+          },
+        },
+      });
+
+      // 5. Get custom ticket without includeRaw -> automatically preserves detail.raw to prevent data loss
+      const getCustomRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 607,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_get_ticket',
+          arguments: { ticketId: 2, project: 'Conquest' },
+        },
+      });
+      const customFetched = JSON.parse(getCustomRes.result.content[0].text);
+      expect(customFetched.detail.breakdown).toEqual([]);
+      expect(customFetched.detail.raw).toBeDefined();
+      expect(customFetched.detail.raw).toContain('## Overview');
+      expect(customFetched.detail.raw).toContain('## Root Cause & Defects');
+      expect(customFetched.meta.links).toBeUndefined();
+      expect(customFetched.links).toHaveLength(1);
+
+      // 6. Get custom ticket with explicit includeRaw: false -> honors explicit false override
+      const getCustomNoRawRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 608,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_get_ticket',
+          arguments: { ticketId: 2, project: 'Conquest', includeRaw: false },
+        },
+      });
+      const customNoRaw = JSON.parse(getCustomNoRawRes.result.content[0].text);
+      expect(customNoRaw.detail.raw).toBeUndefined();
+    });
   });
 });
 

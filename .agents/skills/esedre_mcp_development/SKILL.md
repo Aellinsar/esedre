@@ -24,8 +24,8 @@ The server registers the following tools in `tools/list`:
    - Parameters: `{ project?: string, status?: string, type?: string, priority?: string, milestone?: string, isBlocked?: boolean, leased?: boolean, leasedBy?: string, linkedTo?: string, search?: string, includePlan?: boolean }`
    - Returns a structured list of roadmap tickets matching filters, including `hasPlan` and `summary`, with optional `planMarkdown` hydration when `includePlan: true`.
 2. `esedre_get_ticket`:
-   - Parameters: `{ ticketId: number | string }`
-   - Returns full metadata, summary, feature/task/fix breakdown, technical details, comments, links, lease state, blocker status, and SHA-1 hash.
+   - Parameters: `{ ticketId: number | string, id?: number | string, project?: string, includeRaw?: boolean }`
+   - Returns full metadata (with `meta.links` and `meta.lease` deduplicated in favor of top-level enriched `links` and `lease`, and UI `projectDescriptor.colors` omitted), summary, feature/task/fix breakdown, technical details, comments, links, lease state, blocker status, and SHA-1 hash. By default, omits `detail.raw` when `detail.md` is losslessly represented by the parsed sections, while automatically preserving `detail.raw` when custom headings, code blocks, or tables exist (or when `includeRaw: true`).
 3. `esedre_get_plan`:
    - Parameters: `{ ticketId: number | string }`
    - Returns implementation plan markdown.
