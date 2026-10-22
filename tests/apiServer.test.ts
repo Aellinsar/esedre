@@ -438,6 +438,78 @@ describe('Esedre REST API Server', () => {
     expect(resFlag.status).toBe(400);
     expect(resFlag.json().error).toContain('ticketId is required');
   });
+
+  it('supports summary-first /api/planning/all?summary=1, revision short-circuiting, ETag 304, and on-demand single-ticket hydration (Ticket #88)', async () => {
+    // Add a plan and comment to ticket #1 first
+    await request(`${baseUrl}/api/planning/plans`, 'POST', {
+      ticketId: 1,
+      planMarkdown: '# Plan for Core-1\n- Step A',
+    });
+    await request(`${baseUrl}/api/planning/comments`, 'POST', {
+      ticketId: 1,
+      text: 'Performance note',
+      author: 'Tester',
+    });
+
+    // 1. Fetch summary payload
+    const summaryRes = await request(`${baseUrl}/api/planning/all?summary=1`, 'GET');
+    expect(summaryRes.status).toBe(200);
+    const summaryData = summaryRes.json();
+    expect(summaryData.success).toBe(true);
+    expect(summaryData.summaryMode).toBe(true);
+    expect(typeof summaryData.revision).toBe('string');
+    expect(summaryData.revision.length).toBeGreaterThan(10);
+    expect(summaryRes.headers['etag']).toBe(`"${summaryData.revision}"`);
+
+    // Summary metas contain prefixedKey with enriched lightweight indicators, without duplicate bare numeric key or heavy markdown maps
+    expect(summaryData.metas['Core-1']).toBeDefined();
+    expect(summaryData.metas['1']).toBeUndefined();
+    expect(summaryData.metas['Core-1'].summary).toBe('Initial summary');
+    expect(summaryData.metas['Core-1'].hasPlan).toBe(true);
+    expect(summaryData.metas['Core-1'].commentCount).toBe(1);
+    expect(summaryData.metas['Core-1'].searchText).toContain('initial test ticket');
+    expect(summaryData.metas['Core-1'].searchText).toContain('initial summary');
+    expect(typeof summaryData.metas['Core-1'].lastUpdatedMs).toBe('number');
+    expect(summaryData.details).toEqual({});
+    expect(summaryData.plans).toEqual({});
+    expect(summaryData.comments).toEqual({});
+
+    // 2. Poll with matching sinceRevision -> returns lightweight unchanged response
+    const pollUnchangedRes = await request(
+      `${baseUrl}/api/planning/all?summary=1&sinceRevision=${summaryData.revision}`,
+      'GET'
+    );
+    expect(pollUnchangedRes.status).toBe(200);
+    const unchangedBody = pollUnchangedRes.json();
+    expect(unchangedBody.unchanged).toBe(true);
+    expect(unchangedBody.revision).toBe(summaryData.revision);
+    expect(unchangedBody.metas).toBeUndefined();
+
+    // 3. Hydrate single ticket on demand when expanded
+    const singleRes = await request(`${baseUrl}/api/planning/ticket/Core-1`, 'GET');
+    expect(singleRes.status).toBe(200);
+    const hydratedTicket = singleRes.json();
+    expect(hydratedTicket.meta.id).toBe(1);
+    expect(hydratedTicket.detail.raw).toContain('Initial summary');
+    expect(hydratedTicket.planMarkdown).toContain('# Plan for Core-1');
+    expect(hydratedTicket.comments).toHaveLength(1);
+
+    // 4. Mutate ticket -> revision updates and sinceRevision poll returns fresh data
+    await request(`${baseUrl}/api/planning/update-meta`, 'POST', {
+      ticketId: 'Core-1',
+      updates: { status: 'In Development' },
+    });
+
+    const pollAfterUpdateRes = await request(
+      `${baseUrl}/api/planning/all?summary=1&sinceRevision=${summaryData.revision}`,
+      'GET'
+    );
+    expect(pollAfterUpdateRes.status).toBe(200);
+    const updatedSummary = pollAfterUpdateRes.json();
+    expect(updatedSummary.unchanged).toBeUndefined();
+    expect(updatedSummary.revision).not.toBe(summaryData.revision);
+    expect(updatedSummary.metas['Core-1'].status).toBe('In Development');
+  });
 });
 
 

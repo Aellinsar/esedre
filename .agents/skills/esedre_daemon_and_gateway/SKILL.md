@@ -52,8 +52,10 @@ The unified gateway at port `5674` coordinates two internal sub-services:
 1. **Compound ID Uniqueness**:
    - In cross-project or portfolio mode (`project=all`), numeric ticket IDs collide across repositories (e.g. `Profe-1` vs `Esedre-1`). All storage lookup maps, URL anchors, and React keys must use the compound key `${projectCode}-${ticketNumber}`.
    - **DOM Anchor Invariant**: Ticket cards and scroll targets must strictly use `id="feature-card-${projectCode}-${number}"`, never bare `id="feature-card-${number}"`, preventing DOM query collisions and broken jump navigation.
-2. **Prohibition of N+1 Hydration Waterfalls**:
-   - Initial UI load must fetch consolidated state in a single HTTP round-trip via `/api/planning/all`.
+2. **Prohibition of N+1 Hydration Waterfalls & Summary-First Hydration (`#Esedre-88`)**:
+   - Initial UI load and background 10-second polling fetch consolidated lightweight summaries in a single HTTP round-trip via `GET /api/planning/all?summary=1` (with `sinceRevision` / `ETag` `304 Not Modified` short-circuiting when `cacheGeneration` is unchanged).
+   - Full heavy markdown and discussion payloads (`detail`, `planMarkdown`, `comments`, `answers`, `inlineComments`) are fetched on demand via `GET /api/planning/ticket/:id` when a user expands a card or opens a deep link, and cached on the client across summary polls while the ticket's `sha1` is unchanged.
+   - The right-hand card grid progressively mounts cards in batches of 30 (`visibleCardLimit`) via `IntersectionObserver` while the left-hand Table of Contents and search filter operate across 100% of matching tickets immediately.
    - Sequential N+1 client fetches across `getMetas()`, `getTicketDetails()`, `getAnswers()`, `getComments()`, and `getPlanHistory()` on initial mount are strictly forbidden.
 3. **Ticket Lease REST Endpoints**:
    - `GET /api/planning/leases`: Returns active unexpired ticket leases across projects with `remainingSeconds`.

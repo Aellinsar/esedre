@@ -40,6 +40,24 @@ export class SecurityFilter implements StorageAdapter {
     return this.target.getWorkspaceRoot ? this.target.getWorkspaceRoot() : undefined;
   }
 
+  public async prewarmCache(options?: { chunkSize?: number }): Promise<void> {
+    if (this.target.prewarmCache) {
+      await this.target.prewarmCache(options);
+    } else {
+      await this.target.listTickets({});
+    }
+  }
+
+  public getCacheGeneration(): number {
+    return this.target.getCacheGeneration ? this.target.getCacheGeneration() : 0;
+  }
+
+  public closeWatchers(): void {
+    if (this.target.closeWatchers) {
+      this.target.closeWatchers();
+    }
+  }
+
   public async getProjects(): Promise<ProjectDescriptor[]> {
     const projs = await this.target.getProjects();
     if (!this.config.allowedProjects || this.config.allowedProjects.length === 0) {

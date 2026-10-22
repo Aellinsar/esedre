@@ -663,5 +663,57 @@ describe('FilesystemStorageAdapter', () => {
     expect(updatedPlan).toContain('# Updated Architecture Plan');
     expect(updatedPlan).toContain('Step 3: Deployment');
   });
+
+  it('prewarms ticket cache in chunks and reconciles concurrent CLI/disk mutations during prewarm (Ticket #88)', async () => {
+    await adapter.createTicket({
+      title: 'Prewarm Ticket One',
+      projectCode: 'Core',
+      summary: 'Initial summary one',
+    });
+    await adapter.createTicket({
+      title: 'Prewarm Ticket Two',
+      projectCode: 'Core',
+      summary: 'Initial summary two',
+    });
+    await adapter.createTicket({
+      title: 'Prewarm Ticket Three',
+      projectCode: 'Core',
+      summary: 'Initial summary three',
+    });
+
+    // Fresh adapter instance simulating daemon startup with cold cache
+    const daemonAdapter = new FilesystemStorageAdapter(tempDir);
+    // Separate adapter instance simulating an external CLI process mutating disk during pre-warming
+    const cliAdapter = new FilesystemStorageAdapter(tempDir);
+
+    let mutatedMidPrewarm = false;
+    await daemonAdapter.prewarmCache({
+      chunkSize: 1,
+      onChunkYield: async (processedCount) => {
+        if (processedCount === 1 && !mutatedMidPrewarm) {
+          mutatedMidPrewarm = true;
+          // Ticket #1 was already scanned in chunk 1; mutate it via CLI adapter while prewarm is scanning chunk 2/3
+          await cliAdapter.updateTicket(1, {
+            title: 'CLI Mutated During Prewarm',
+            status: 'In Development',
+            detail: '# Ticket #1: CLI Mutated During Prewarm\n\n### Summary\nUpdated by CLI mid-prewarm.',
+          });
+        }
+      },
+    });
+
+    expect(mutatedMidPrewarm).toBe(true);
+    const t1 = await daemonAdapter.getTicket(1);
+    expect(t1?.meta.title).toBe('CLI Mutated During Prewarm');
+    expect(t1?.meta.status).toBe('In Development');
+    expect(t1?.detail?.summary).toBe('Updated by CLI mid-prewarm.');
+
+    const allTickets = await daemonAdapter.listTickets();
+    const listedT1 = allTickets.find((t) => t.meta.id === 1);
+    expect(listedT1?.meta.title).toBe('CLI Mutated During Prewarm');
+    expect(listedT1?.meta.status).toBe('In Development');
+
+    daemonAdapter.closeWatchers();
+  });
 });
 

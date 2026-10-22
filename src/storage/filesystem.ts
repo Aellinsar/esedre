@@ -97,6 +97,7 @@ export interface CachedMilestoneRecord {
 export interface CachedTicketRecord {
   ticket: EsedreTicket;
   stats: Record<string, { mtimeMs: number; size: number }>;
+  mutationSeq: number;
 }
 
 export class FilesystemStorageAdapter implements StorageAdapter {
@@ -108,21 +109,214 @@ export class FilesystemStorageAdapter implements StorageAdapter {
   private duplicateProjectWarnings: DuplicateProjectWarning[] = [];
   private milestoneMemoryCache = new Map<string, CachedMilestoneRecord>();
   private ticketMemoryCache = new Map<string, CachedTicketRecord>();
+  private cacheGeneration = 0;
+  private globalInvalidationSeq = 0;
+  private dirMutationSeq = new Map<string, number>();
+  private activeWatchers = new Map<string, fs.FSWatcher>();
+  private dirtyDirsDuringPrewarm = new Set<string>();
+  private isPrewarming = false;
+  private prewarmAborted = false;
+
+  public getCacheGeneration(): number {
+    return this.cacheGeneration;
+  }
 
   public invalidateTicketCache(ticketDir?: string): void {
+    this.cacheGeneration++;
     if (ticketDir) {
-      this.ticketMemoryCache.delete(path.resolve(ticketDir));
+      const resolved = path.resolve(ticketDir);
+      this.dirMutationSeq.set(resolved, (this.dirMutationSeq.get(resolved) ?? 0) + 1);
+      this.ticketMemoryCache.delete(resolved);
+      if (this.isPrewarming) {
+        this.dirtyDirsDuringPrewarm.add(resolved);
+      }
     } else {
+      this.globalInvalidationSeq++;
       this.ticketMemoryCache.clear();
     }
   }
 
   public invalidateMilestoneCache(loc?: ResolvedProjectLocation): void {
+    this.cacheGeneration++;
     if (loc) {
       const mPath = path.resolve(this.getMilestonesPath(loc));
       this.milestoneMemoryCache.delete(mPath);
     } else {
       this.milestoneMemoryCache.clear();
+    }
+  }
+
+  public ensureTicketWatchers(): void {
+    let locations: ResolvedProjectLocation[] = [];
+    try {
+      locations = this.resolveProjectLocations();
+    } catch {
+      return;
+    }
+
+    for (const loc of locations) {
+      if (!loc.ticketsDir || !fs.existsSync(loc.ticketsDir)) continue;
+      const resolvedTicketsDir = path.resolve(loc.ticketsDir);
+      if (this.activeWatchers.has(resolvedTicketsDir)) continue;
+
+      const onFsEvent = (_eventType: string, filename: string | Buffer | null) => {
+        if (!filename) {
+          this.invalidateTicketCache();
+          return;
+        }
+        const rel = String(filename).trim();
+        const firstSeg = rel.split(/[\\/]/)[0];
+        if (firstSeg && /^\d+$/.test(firstSeg)) {
+          this.invalidateTicketCache(path.join(resolvedTicketsDir, firstSeg));
+        } else {
+          this.invalidateTicketCache();
+        }
+      };
+
+      try {
+        const watcher = fs.watch(resolvedTicketsDir, { persistent: false, recursive: true }, onFsEvent);
+        watcher.on('error', () => {
+          try { watcher.close(); } catch {}
+          this.activeWatchers.delete(resolvedTicketsDir);
+        });
+        if (typeof (watcher as any).unref === 'function') {
+          (watcher as any).unref();
+        }
+        this.activeWatchers.set(resolvedTicketsDir, watcher);
+      } catch {
+        try {
+          const fallbackWatcher = fs.watch(resolvedTicketsDir, { persistent: false }, onFsEvent);
+          fallbackWatcher.on('error', () => {
+            try { fallbackWatcher.close(); } catch {}
+            this.activeWatchers.delete(resolvedTicketsDir);
+          });
+          if (typeof (fallbackWatcher as any).unref === 'function') {
+            (fallbackWatcher as any).unref();
+          }
+          this.activeWatchers.set(resolvedTicketsDir, fallbackWatcher);
+        } catch {}
+      }
+    }
+  }
+
+  public closeWatchers(): void {
+    this.prewarmAborted = true;
+    for (const watcher of this.activeWatchers.values()) {
+      try {
+        watcher.close();
+      } catch {}
+    }
+    this.activeWatchers.clear();
+  }
+
+  public async prewarmCache(options?: {
+    chunkSize?: number;
+    onChunkYield?: (processedCount: number, totalCount: number) => void | Promise<void>;
+  }): Promise<void> {
+    this.prewarmAborted = false;
+    const chunkSize = Math.max(1, options?.chunkSize ?? 25);
+    this.ensureTicketWatchers();
+
+    let locations: ResolvedProjectLocation[] = [];
+    try {
+      locations = this.resolveProjectLocations();
+    } catch {
+      return;
+    }
+
+    const codeToDescriptor = new Map<string, ProjectDescriptor>();
+    const idToDescriptor = new Map<number | string, ProjectDescriptor>();
+    for (const l of locations) {
+      codeToDescriptor.set(l.project.code.toLowerCase(), l.project);
+      if (l.project.id !== undefined) {
+        idToDescriptor.set(l.project.id, l.project);
+        idToDescriptor.set(String(l.project.id), l.project);
+      }
+    }
+
+    const workItems: Array<{ ticketDir: string; num: number; loc: ResolvedProjectLocation }> = [];
+    const processedSharedTickets = new Set<string>();
+
+    for (const loc of locations) {
+      if (!fs.existsSync(loc.ticketsDir)) continue;
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(loc.ticketsDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const num = parseInt(entry.name, 10);
+        if (isNaN(num)) continue;
+        if (loc.isSharedDir) {
+          const key = `${loc.ticketsDir}:${entry.name}`;
+          if (processedSharedTickets.has(key)) continue;
+          processedSharedTickets.add(key);
+        }
+        workItems.push({
+          ticketDir: path.join(loc.ticketsDir, entry.name),
+          num,
+          loc,
+        });
+      }
+    }
+
+    this.isPrewarming = true;
+    this.dirtyDirsDuringPrewarm.clear();
+    const genAtStart = this.cacheGeneration;
+
+    try {
+      for (let i = 0; i < workItems.length; i++) {
+        if (this.prewarmAborted) return;
+        const item = workItems[i];
+        this.readTicketFromDir(
+          item.ticketDir,
+          item.num,
+          item.loc,
+          locations,
+          codeToDescriptor,
+          idToDescriptor
+        );
+
+        if ((i + 1) % chunkSize === 0 && i + 1 < workItems.length) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          if (this.prewarmAborted) return;
+          if (options?.onChunkYield) {
+            await options.onChunkYield(i + 1, workItems.length);
+          }
+        }
+      }
+
+      if (this.prewarmAborted) return;
+
+      // Re-validate any tickets dirtied or created during yielded pre-warming
+      if (this.dirtyDirsDuringPrewarm.size > 0 || this.cacheGeneration !== genAtStart) {
+        const dirtySnapshot = Array.from(this.dirtyDirsDuringPrewarm);
+        this.dirtyDirsDuringPrewarm.clear();
+        for (const dirtyDir of dirtySnapshot) {
+          if (this.prewarmAborted) return;
+          const num = parseInt(path.basename(dirtyDir), 10);
+          if (isNaN(num)) continue;
+          const parentTicketsDir = path.dirname(dirtyDir);
+          const matchingLoc = locations.find(
+            (l) => path.resolve(l.ticketsDir) === path.resolve(parentTicketsDir)
+          );
+          if (matchingLoc) {
+            this.readTicketFromDir(
+              dirtyDir,
+              num,
+              matchingLoc,
+              locations,
+              codeToDescriptor,
+              idToDescriptor
+            );
+          }
+        }
+      }
+    } finally {
+      this.isPrewarming = false;
+      this.dirtyDirsDuringPrewarm.clear();
     }
   }
 
@@ -1439,8 +1633,11 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     return false;
   }
 
-  private findTicketLocation(id: number | string): { loc: ResolvedProjectLocation; ticketDir: string; id: number } | null {
-    const locations = this.resolveProjectLocations();
+  private findTicketLocation(
+    id: number | string,
+    preResolvedLocations?: ResolvedProjectLocation[]
+  ): { loc: ResolvedProjectLocation; ticketDir: string; id: number } | null {
+    const locations = preResolvedLocations ?? this.resolveProjectLocations();
     if (locations.length === 0) return null;
 
     const strId = String(id).trim().replace(/^#/, '');
@@ -1546,195 +1743,235 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       'lease.json',
     ];
 
-    const currentStats: Record<string, { mtimeMs: number; size: number }> = {};
-    for (const f of filesToCheck) {
-      const p = path.join(ticketDir, f);
-      try {
-        const st = fs.statSync(p);
-        currentStats[f] = { mtimeMs: st.mtimeMs, size: st.size };
-      } catch {}
-    }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const seqBefore = (this.dirMutationSeq.get(resolvedTicketDir) ?? 0) + this.globalInvalidationSeq;
+      const currentStats: Record<string, { mtimeMs: number; size: number }> = {};
+      for (const f of filesToCheck) {
+        const p = path.join(ticketDir, f);
+        try {
+          const st = fs.statSync(p);
+          currentStats[f] = { mtimeMs: st.mtimeMs, size: st.size };
+        } catch {}
+      }
 
-    if (!currentStats['meta.json']) return null;
+      if (!currentStats['meta.json']) return null;
 
-    const cached = this.ticketMemoryCache.get(resolvedTicketDir);
-    if (cached) {
-      const cachedKeys = Object.keys(cached.stats);
-      const currentKeys = Object.keys(currentStats);
-      if (cachedKeys.length === currentKeys.length) {
-        let match = true;
-        for (const key of currentKeys) {
-          const c = cached.stats[key];
-          const s = currentStats[key];
-          if (!c || c.mtimeMs !== s.mtimeMs || c.size !== s.size) {
-            match = false;
-            break;
+      const cached = this.ticketMemoryCache.get(resolvedTicketDir);
+      if (cached) {
+        const cachedKeys = Object.keys(cached.stats);
+        const currentKeys = Object.keys(currentStats);
+        if (cachedKeys.length === currentKeys.length) {
+          let match = true;
+          for (const key of currentKeys) {
+            const c = cached.stats[key];
+            const s = currentStats[key];
+            if (!c || c.mtimeMs !== s.mtimeMs || c.size !== s.size) {
+              match = false;
+              break;
+            }
           }
-        }
-        if (match) {
-          let ticket = cached.ticket;
-          if (ticket.lease) {
-            const expMs = Date.parse(ticket.lease.expiresAt);
-            if (!isNaN(expMs) && expMs <= Date.now()) {
-              try { fs.unlinkSync(path.join(ticketDir, 'lease.json')); } catch {}
-              this.ticketMemoryCache.delete(resolvedTicketDir);
+          if (match) {
+            let ticket = cached.ticket;
+            if (ticket.lease) {
+              const expMs = Date.parse(ticket.lease.expiresAt);
+              if (!isNaN(expMs) && expMs <= Date.now()) {
+                try { fs.unlinkSync(path.join(ticketDir, 'lease.json')); } catch {}
+                this.ticketMemoryCache.delete(resolvedTicketDir);
+              } else {
+                if (ticket.meta.links && ticket.meta.links.length > 0) {
+                  ticket = {
+                    ...ticket,
+                    meta: { ...ticket.meta, links: ticket.meta.links.map((l) => ({ ...l })) },
+                  };
+                  this.enrichTicketLinks(ticket, locations);
+                }
+                return ticket;
+              }
             } else {
               if (ticket.meta.links && ticket.meta.links.length > 0) {
                 ticket = {
                   ...ticket,
                   meta: { ...ticket.meta, links: ticket.meta.links.map((l) => ({ ...l })) },
                 };
-                this.enrichTicketLinks(ticket);
+                this.enrichTicketLinks(ticket, locations);
               }
               return ticket;
             }
-          } else {
-            if (ticket.meta.links && ticket.meta.links.length > 0) {
-              ticket = {
-                ...ticket,
-                meta: { ...ticket.meta, links: ticket.meta.links.map((l) => ({ ...l })) },
-              };
-              this.enrichTicketLinks(ticket);
+          }
+        }
+      }
+
+      try {
+        const metaPath = path.join(ticketDir, 'meta.json');
+        const metaRaw = fs.readFileSync(metaPath, 'utf-8');
+        const meta: TicketMeta = JSON.parse(metaRaw);
+        meta.id = meta.id ?? num;
+        meta.type = meta.type || meta.category || 'Feature';
+        meta.category = meta.type;
+        if (meta.priority) {
+          meta.priority = normalizePriority(meta.priority);
+        }
+
+        let effectiveLoc = loc;
+        if (loc.isSharedDir) {
+          let found: ResolvedProjectLocation | undefined;
+          if (idToDescriptor && codeToDescriptor) {
+            const desc = (meta.projectId !== undefined ? idToDescriptor.get(meta.projectId) : undefined)
+              || (meta.project ? codeToDescriptor.get(meta.project.toLowerCase()) : undefined);
+            if (desc) {
+              found = locations.find((l) => l.project.code.toLowerCase() === desc.code.toLowerCase());
             }
-            return ticket;
-          }
-        }
-      }
-    }
-
-    try {
-      const metaPath = path.join(ticketDir, 'meta.json');
-      const metaRaw = fs.readFileSync(metaPath, 'utf-8');
-      const meta: TicketMeta = JSON.parse(metaRaw);
-      meta.id = meta.id ?? num;
-      meta.type = meta.type || meta.category || 'Feature';
-      meta.category = meta.type;
-      if (meta.priority) {
-        meta.priority = normalizePriority(meta.priority);
-      }
-
-      let effectiveLoc = loc;
-      if (loc.isSharedDir) {
-        let found: ResolvedProjectLocation | undefined;
-        if (idToDescriptor && codeToDescriptor) {
-          const desc = (meta.projectId !== undefined ? idToDescriptor.get(meta.projectId) : undefined)
-            || (meta.project ? codeToDescriptor.get(meta.project.toLowerCase()) : undefined);
-          if (desc) {
-            found = locations.find((l) => l.project.code.toLowerCase() === desc.code.toLowerCase());
-          }
-        } else {
-          found = locations.find(
-            (l) =>
-              (meta.projectId !== undefined && l.project.id === meta.projectId) ||
-              (meta.project && l.project.code.toLowerCase() === meta.project.toLowerCase())
-          );
-        }
-        if (found) effectiveLoc = found;
-      }
-
-      meta.project = effectiveLoc.project.code;
-      meta.projectId = effectiveLoc.project.id;
-
-      if (meta.milestone) {
-        meta.milestone = normalizeDashesAndMojibake(meta.milestone);
-        const mMatch = this.resolveMilestone(meta.milestone, effectiveLoc);
-        if (mMatch?.featureFlag) {
-          meta.inheritedFeatureFlag = mMatch.featureFlag;
-          if (!meta.featureFlag) {
-            meta.featureFlag = mMatch.featureFlag;
-          }
-        }
-      }
-
-      let detail: TicketDetail | undefined;
-      const detailPath = path.join(ticketDir, 'detail.md');
-      if (currentStats['detail.md']) {
-        const raw = fs.readFileSync(detailPath, 'utf-8');
-        detail = this.parseDetailMarkdown(raw);
-      }
-
-      let planMarkdown: string | undefined;
-      const planPath = path.join(ticketDir, 'implementation_plan.md');
-      if (currentStats['implementation_plan.md']) {
-        planMarkdown = fs.readFileSync(planPath, 'utf-8');
-      }
-
-      let comments: TicketComment[] = [];
-      const commentsPath = path.join(ticketDir, 'comments.json');
-      if (currentStats['comments.json']) {
-        try {
-          comments = JSON.parse(fs.readFileSync(commentsPath, 'utf-8'));
-        } catch {}
-      }
-
-      let answers: Record<string, string> | undefined;
-      const answersPath = path.join(ticketDir, 'answers.json');
-      if (currentStats['answers.json']) {
-        try {
-          answers = JSON.parse(fs.readFileSync(answersPath, 'utf-8'));
-        } catch {}
-      }
-
-      let inlineComments: any[] | undefined;
-      const inlinesPath = path.join(ticketDir, 'inline-comments.json');
-      if (currentStats['inline-comments.json']) {
-        try {
-          inlineComments = JSON.parse(fs.readFileSync(inlinesPath, 'utf-8'));
-        } catch {}
-      }
-
-      let lease: TicketLease | null = null;
-      const leasePath = path.join(ticketDir, 'lease.json');
-      if (currentStats['lease.json']) {
-        try {
-          const parsedLease: TicketLease = JSON.parse(fs.readFileSync(leasePath, 'utf-8'));
-          const expMs = Date.parse(parsedLease.expiresAt);
-          if (!isNaN(expMs) && expMs <= Date.now()) {
-            try {
-              fs.unlinkSync(leasePath);
-              delete currentStats['lease.json'];
-            } catch {}
           } else {
-            parsedLease.project = effectiveLoc.project.code;
-            parsedLease.ticketId = meta.id;
-            parsedLease.ticketKey = `${effectiveLoc.project.code}-${meta.id}`;
-            lease = parsedLease;
+            found = locations.find(
+              (l) =>
+                (meta.projectId !== undefined && l.project.id === meta.projectId) ||
+                (meta.project && l.project.code.toLowerCase() === meta.project.toLowerCase())
+            );
           }
-        } catch {}
-      }
-      if (lease) {
-        meta.lease = lease;
-      } else {
-        delete meta.lease;
-      }
+          if (found) effectiveLoc = found;
+        }
 
-      const ticketObj: EsedreTicket = {
-        meta,
-        detail,
-        planMarkdown,
-        comments,
-        answers,
-        inlineComments,
-        lease,
-        projectDescriptor: effectiveLoc.project,
-      };
-      normalizeTicketFields(ticketObj);
-      if (!ticketObj.meta.estimatedEffort) {
-        ticketObj.meta.estimatedEffort = '2.0 - 4.0 hours';
+        meta.project = effectiveLoc.project.code;
+        meta.projectId = effectiveLoc.project.id;
+
+        if (meta.milestone) {
+          meta.milestone = normalizeDashesAndMojibake(meta.milestone);
+          const mMatch = this.resolveMilestone(meta.milestone, effectiveLoc);
+          if (mMatch?.featureFlag) {
+            meta.inheritedFeatureFlag = mMatch.featureFlag;
+            if (!meta.featureFlag) {
+              meta.featureFlag = mMatch.featureFlag;
+            }
+          }
+        }
+
+        let detail: TicketDetail | undefined;
+        const detailPath = path.join(ticketDir, 'detail.md');
+        if (currentStats['detail.md']) {
+          const raw = fs.readFileSync(detailPath, 'utf-8');
+          detail = this.parseDetailMarkdown(raw);
+        }
+
+        let planMarkdown: string | undefined;
+        const planPath = path.join(ticketDir, 'implementation_plan.md');
+        if (currentStats['implementation_plan.md']) {
+          planMarkdown = fs.readFileSync(planPath, 'utf-8');
+        }
+
+        let comments: TicketComment[] = [];
+        const commentsPath = path.join(ticketDir, 'comments.json');
+        if (currentStats['comments.json']) {
+          try {
+            comments = JSON.parse(fs.readFileSync(commentsPath, 'utf-8'));
+          } catch {}
+        }
+
+        let answers: Record<string, string> | undefined;
+        const answersPath = path.join(ticketDir, 'answers.json');
+        if (currentStats['answers.json']) {
+          try {
+            answers = JSON.parse(fs.readFileSync(answersPath, 'utf-8'));
+          } catch {}
+        }
+
+        let inlineComments: any[] | undefined;
+        const inlinesPath = path.join(ticketDir, 'inline-comments.json');
+        if (currentStats['inline-comments.json']) {
+          try {
+            inlineComments = JSON.parse(fs.readFileSync(inlinesPath, 'utf-8'));
+          } catch {}
+        }
+
+        let lease: TicketLease | null = null;
+        const leasePath = path.join(ticketDir, 'lease.json');
+        if (currentStats['lease.json']) {
+          try {
+            const parsedLease: TicketLease = JSON.parse(fs.readFileSync(leasePath, 'utf-8'));
+            const expMs = Date.parse(parsedLease.expiresAt);
+            if (!isNaN(expMs) && expMs <= Date.now()) {
+              try {
+                fs.unlinkSync(leasePath);
+                delete currentStats['lease.json'];
+              } catch {}
+            } else {
+              parsedLease.project = effectiveLoc.project.code;
+              parsedLease.ticketId = meta.id;
+              parsedLease.ticketKey = `${effectiveLoc.project.code}-${meta.id}`;
+              lease = parsedLease;
+            }
+          } catch {}
+        }
+        if (lease) {
+          meta.lease = lease;
+        } else {
+          delete meta.lease;
+        }
+
+        // Verify no concurrent CLI/API write modified files in this directory mid-read
+        const seqAfter = (this.dirMutationSeq.get(resolvedTicketDir) ?? 0) + this.globalInvalidationSeq;
+        if (seqAfter !== seqBefore && attempt < 2) {
+          continue;
+        }
+        let changedDuringRead = false;
+        const postCheckFiles = currentStats['detail.md'] ? ['meta.json', 'detail.md'] : ['meta.json'];
+        for (const f of postCheckFiles) {
+          const p = path.join(ticketDir, f);
+          let postStat: { mtimeMs: number; size: number } | undefined;
+          try {
+            const st = fs.statSync(p);
+            postStat = { mtimeMs: st.mtimeMs, size: st.size };
+          } catch {}
+          const preStat = currentStats[f];
+          if (Boolean(preStat) !== Boolean(postStat)) {
+            changedDuringRead = true;
+            break;
+          }
+          if (preStat && postStat && (preStat.mtimeMs !== postStat.mtimeMs || preStat.size !== postStat.size)) {
+            changedDuringRead = true;
+            break;
+          }
+        }
+        if (changedDuringRead && attempt < 2) {
+          continue;
+        }
+
+        const ticketObj: EsedreTicket = {
+          meta,
+          detail,
+          planMarkdown,
+          comments,
+          answers,
+          inlineComments,
+          lease,
+          projectDescriptor: effectiveLoc.project,
+        };
+        normalizeTicketFields(ticketObj);
+        if (!ticketObj.meta.estimatedEffort) {
+          ticketObj.meta.estimatedEffort = '2.0 - 4.0 hours';
+        }
+        this.enrichTicketLinks(ticketObj, locations);
+        ticketObj.sha1 = computeTicketHash(ticketObj);
+        ticketObj.lastHash = ticketObj.sha1;
+
+        const existingCached = this.ticketMemoryCache.get(resolvedTicketDir);
+        if (existingCached && existingCached.mutationSeq > seqAfter) {
+          return existingCached.ticket;
+        }
+
+        this.ticketMemoryCache.set(resolvedTicketDir, {
+          ticket: ticketObj,
+          stats: currentStats,
+          mutationSeq: seqAfter,
+        });
+
+        return ticketObj;
+      } catch {
+        if (attempt < 2) continue;
+        return null;
       }
-      this.enrichTicketLinks(ticketObj);
-      ticketObj.sha1 = computeTicketHash(ticketObj);
-      ticketObj.lastHash = ticketObj.sha1;
-
-      this.ticketMemoryCache.set(resolvedTicketDir, {
-        ticket: ticketObj,
-        stats: currentStats,
-      });
-
-      return ticketObj;
-    } catch {
-      return null;
     }
+
+    return null;
   }
 
   public async listTickets(filter?: ListTicketsFilter): Promise<EsedreTicket[]> {
@@ -2866,37 +3103,58 @@ ${input.summary || 'Summary to be defined.'}
     return false;
   }
 
-  public enrichTicketLinks(ticket: EsedreTicket): void {
+  public enrichTicketLinks(
+    ticket: EsedreTicket,
+    preResolvedLocations?: ResolvedProjectLocation[]
+  ): void {
     if (!ticket.meta.links || ticket.meta.links.length === 0) {
       ticket.links = [];
       ticket.isBlocked = false;
       return;
     }
 
+    const locations = preResolvedLocations ?? this.resolveProjectLocations();
     const enriched: EnrichedTicketLink[] = [];
     let isBlocked = false;
 
     for (const link of ticket.meta.links) {
       const enrichedLink: EnrichedTicketLink = { ...link, isResolved: false };
-      const targetLoc = this.findTicketLocation(link.targetKey);
+      const targetLoc = this.findTicketLocation(link.targetKey, locations);
       if (targetLoc) {
-        const targetMetaPath = path.join(targetLoc.ticketDir, 'meta.json');
-        if (fs.existsSync(targetMetaPath)) {
-          try {
-            const targetMeta: TicketMeta = JSON.parse(fs.readFileSync(targetMetaPath, 'utf-8'));
-            enrichedLink.targetTitle = targetMeta.title;
-            enrichedLink.targetType = targetMeta.type || targetMeta.category || 'Feature';
-            enrichedLink.targetStatus = targetMeta.status || 'Planned';
-            enrichedLink.isTargetCompleted = targetMeta.status === 'Completed';
-            if (targetMeta.priority) {
-              enrichedLink.targetPriority = normalizePriority(targetMeta.priority);
-            }
-            enrichedLink.isResolved = true;
-            if (link.relation === 'blocked-by' && targetMeta.status !== 'Completed') {
-              enrichedLink.isBlockedByUncompleted = true;
-              isBlocked = true;
-            }
-          } catch {}
+        const cachedTarget = this.ticketMemoryCache.get(path.resolve(targetLoc.ticketDir));
+        if (cachedTarget) {
+          const targetMeta = cachedTarget.ticket.meta;
+          enrichedLink.targetTitle = targetMeta.title;
+          enrichedLink.targetType = targetMeta.type || targetMeta.category || 'Feature';
+          enrichedLink.targetStatus = targetMeta.status || 'Planned';
+          enrichedLink.isTargetCompleted = targetMeta.status === 'Completed';
+          if (targetMeta.priority) {
+            enrichedLink.targetPriority = normalizePriority(targetMeta.priority);
+          }
+          enrichedLink.isResolved = true;
+          if (link.relation === 'blocked-by' && targetMeta.status !== 'Completed') {
+            enrichedLink.isBlockedByUncompleted = true;
+            isBlocked = true;
+          }
+        } else {
+          const targetMetaPath = path.join(targetLoc.ticketDir, 'meta.json');
+          if (fs.existsSync(targetMetaPath)) {
+            try {
+              const targetMeta: TicketMeta = JSON.parse(fs.readFileSync(targetMetaPath, 'utf-8'));
+              enrichedLink.targetTitle = targetMeta.title;
+              enrichedLink.targetType = targetMeta.type || targetMeta.category || 'Feature';
+              enrichedLink.targetStatus = targetMeta.status || 'Planned';
+              enrichedLink.isTargetCompleted = targetMeta.status === 'Completed';
+              if (targetMeta.priority) {
+                enrichedLink.targetPriority = normalizePriority(targetMeta.priority);
+              }
+              enrichedLink.isResolved = true;
+              if (link.relation === 'blocked-by' && targetMeta.status !== 'Completed') {
+                enrichedLink.isBlockedByUncompleted = true;
+                isBlocked = true;
+              }
+            } catch {}
+          }
         }
       }
       enriched.push(enrichedLink);

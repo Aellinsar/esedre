@@ -58,7 +58,8 @@ export interface PlanningServiceProvider {
   renewLease?(ticketId: string | number, options?: { holder?: string; ttlMinutes?: number; force?: boolean; project?: string }): Promise<any>;
   releaseLease?(ticketId: string | number, options?: { holder?: string; force?: boolean; project?: string }): Promise<any>;
   getProjects?(): Promise<ProjectDescriptor[]>;
-  getAll?(): Promise<any>;
+  getTicket?(ticketId: string | number): Promise<any>;
+  getAll?(options?: { summary?: boolean; sinceRevision?: string }): Promise<any>;
 }
 
 function getApiBaseUrl(): string {
@@ -79,9 +80,18 @@ export class EsedreHttpPlanningProvider implements PlanningServiceProvider {
     this.baseUrl = (baseUrl || getApiBaseUrl()).replace(/\/+$/, '');
   }
 
-  async getAll(): Promise<any> {
+  async getTicket(ticketId: string | number): Promise<any> {
+    const cleanId = String(ticketId).replace(/^feature-/, '');
+    return await this.request(`/planning/ticket/${encodeURIComponent(cleanId)}`);
+  }
+
+  async getAll(options?: { summary?: boolean; sinceRevision?: string }): Promise<any> {
     try {
-      return (await this.request('/planning/all')) || {};
+      const params = new URLSearchParams();
+      if (options?.summary) params.set('summary', '1');
+      if (options?.sinceRevision) params.set('sinceRevision', options.sinceRevision);
+      const qs = params.toString();
+      return (await this.request(`/planning/all${qs ? `?${qs}` : ''}`)) || {};
     } catch {
       return {};
     }

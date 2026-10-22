@@ -40,6 +40,9 @@ All storage engines implement the `StorageAdapter` contract defined in `src/stor
 - `saveInlineComment(id: number | string, selectedText: string, comment: string, author?: string): Promise<any[]>`
 - `saveAttachment(id: number | string, filename: string, buffer: Buffer): Promise<{ filename: string; relativePath: string }>`
 - `getAttachmentPath(id: number | string, filename: string): string | null`
+- `prewarmCache?(options?: { chunkSize?: number; onChunkYield?: (processedCount: number, totalCount: number) => void | Promise<void> }): Promise<void>`
+- `getCacheGeneration?(): number`
+- `closeWatchers?(): void`
 
 Methods accept both numeric IDs (`96`) and compound project keys (`Profe-96`, `Esedre-1`).
 

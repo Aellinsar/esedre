@@ -1,6 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { StorageAdapter } from '../storage/adapter.js';
 import { SecurityFilter } from '../securityFilter.js';
 import { generateProjectSnapshot } from '../snapshot.js';
@@ -32,26 +33,210 @@ function readJsonBody(req: http.IncomingMessage): Promise<any> {
   });
 }
 
-function sendJson(res: http.ServerResponse, status: number, data: any) {
+function sendJson(res: http.ServerResponse, status: number, data: any, extraHeaders?: Record<string, string>) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-esedre-allowed-projects',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-esedre-allowed-projects, If-None-Match',
+    'Access-Control-Expose-Headers': 'ETag',
+    ...(extraHeaders || {}),
   });
   res.end(JSON.stringify(data));
 }
 
 interface CacheEntry {
   data: any;
+  revision: string;
   timestamp: number;
+  storageGeneration: number;
+  apiGeneration: number;
 }
 const cachedAllData = new Map<string, CacheEntry>();
+let apiCacheGeneration = 0;
 const CACHE_TTL_MS = 5000;
 const MAX_CACHE_ENTRIES = 30;
 
 export function invalidateApiCache(): void {
+  apiCacheGeneration++;
   cachedAllData.clear();
+}
+
+async function buildPlanningAllPayload(
+  reqStorage: StorageAdapter,
+  baseCacheKey: string,
+  isSummary: boolean
+): Promise<CacheEntry> {
+  const fullCacheKey = `${baseCacheKey}:${isSummary ? 'summary' : 'full'}`;
+  const now = Date.now();
+  const currentStorageGen = reqStorage.getCacheGeneration ? reqStorage.getCacheGeneration() : 0;
+  const cached = cachedAllData.get(fullCacheKey);
+  if (
+    cached &&
+    now - cached.timestamp < CACHE_TTL_MS &&
+    cached.storageGeneration === currentStorageGen &&
+    cached.apiGeneration === apiCacheGeneration
+  ) {
+    return cached;
+  }
+
+  const apiGenBefore = apiCacheGeneration;
+  const storageGenBefore = currentStorageGen;
+
+  const tickets = await reqStorage.listTickets({});
+  const projects = await reqStorage.getProjects();
+
+  const metasMap: Record<string, any> = {};
+  const detailsMap: Record<string, string> = {};
+  const plansMap: Record<string, string> = {};
+  const commentsMap: Record<string, any[]> = {};
+  const answersMap: Record<string, Record<string, string>> = {};
+  const inlineCommentsMap: Record<string, any[]> = {};
+
+  const revHash = crypto.createHash('sha1');
+  revHash.update(isSummary ? 'mode:summary\n' : 'mode:full\n');
+  for (const p of projects) {
+    revHash.update(
+      `proj:${p.id}:${p.code}:${p.name}:${p.description || ''}:${p.colors?.badge || ''}:${p.guidelinesRef || ''}\n`
+    );
+  }
+
+  for (const t of tickets) {
+    const numKey = String(t.meta.id);
+    const code = t.projectDescriptor?.code || t.meta.project || 'Profe';
+    const prefixedKey = `${code}-${t.meta.id}`;
+
+    const summaryText = t.detail?.summary || '';
+    const breakdownList = t.detail?.breakdown || [];
+    const techList = t.detail?.technicalDetails || [];
+    const openQuestionsList = t.detail?.openQuestions || [];
+    const searchText = [t.meta.title || '', summaryText, ...breakdownList, ...techList]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    let lastUpdatedMs = 0;
+    for (const ts of [t.meta.updatedAt, t.meta.timestamp, t.meta.createdAt]) {
+      if (ts) {
+        const parsed = Date.parse(ts);
+        if (!isNaN(parsed) && parsed > lastUpdatedMs) lastUpdatedMs = parsed;
+      }
+    }
+    if (t.comments) {
+      for (const c of t.comments) {
+        if (c.timestamp) {
+          const parsed = Date.parse(c.timestamp);
+          if (!isNaN(parsed) && parsed > lastUpdatedMs) lastUpdatedMs = parsed;
+        }
+      }
+    }
+    if (t.inlineComments) {
+      for (const ic of t.inlineComments) {
+        if (ic.timestamp) {
+          const parsed = Date.parse(ic.timestamp);
+          if (!isNaN(parsed) && parsed > lastUpdatedMs) lastUpdatedMs = parsed;
+        }
+      }
+    }
+
+    const linksList = t.links || t.meta.links || [];
+    const activeLease = t.lease || t.meta.lease || null;
+    const hasPlan = Boolean(t.planMarkdown && t.planMarkdown.trim().length > 0);
+    const commentCount = (t.comments?.length || 0) + (t.inlineComments?.length || 0);
+
+    const metaWithLinks = {
+      ...t.meta,
+      links: linksList,
+      isBlocked: t.isBlocked,
+      lease: activeLease,
+      sha1: t.sha1,
+      summary: summaryText,
+      hasPlan,
+      commentCount,
+      openQuestionCount: openQuestionsList.length,
+      searchText,
+      lastUpdatedMs: lastUpdatedMs || t.meta.id,
+    };
+
+    const linkSig = linksList
+      .map((l: any) => `${l.relation}:${l.targetKey || l.targetId}:${l.targetStatus || ''}:${l.isBlockedByUncompleted ? 1 : 0}`)
+      .join(',');
+    revHash.update(
+      `t:${prefixedKey}:${t.sha1 || ''}:${t.isBlocked ? 1 : 0}:${activeLease?.expiresAt || ''}:${t.meta.inheritedFeatureFlag || ''}:${linkSig}\n`
+    );
+
+    metasMap[prefixedKey] = metaWithLinks;
+    if (!isSummary) {
+      if (!metasMap[numKey] || code.toUpperCase() === 'PROF') {
+        metasMap[numKey] = metaWithLinks;
+      }
+      commentsMap[prefixedKey] = t.comments || [];
+      if (!commentsMap[numKey] || code.toUpperCase() === 'PROF') {
+        commentsMap[numKey] = t.comments || [];
+      }
+
+      if (t.detail?.raw) {
+        detailsMap[prefixedKey] = t.detail.raw;
+        if (!detailsMap[numKey] || code.toUpperCase() === 'PROF') {
+          detailsMap[numKey] = t.detail.raw;
+        }
+      }
+      if (t.planMarkdown) {
+        plansMap[prefixedKey] = t.planMarkdown;
+        if (!plansMap[numKey] || code.toUpperCase() === 'PROF') {
+          plansMap[numKey] = t.planMarkdown;
+        }
+      }
+      if (t.answers && Object.keys(t.answers).length > 0) {
+        answersMap[prefixedKey] = t.answers;
+        if (!answersMap[numKey] || code.toUpperCase() === 'PROF') {
+          answersMap[numKey] = t.answers;
+        }
+      }
+      if (t.inlineComments && t.inlineComments.length > 0) {
+        inlineCommentsMap[prefixedKey] = t.inlineComments;
+        if (!inlineCommentsMap[numKey] || code.toUpperCase() === 'PROF') {
+          inlineCommentsMap[numKey] = t.inlineComments;
+        }
+      }
+    }
+  }
+
+  const revision = revHash.digest('hex');
+  const responsePayload = {
+    success: true,
+    summaryMode: isSummary,
+    revision,
+    projects,
+    metas: metasMap,
+    details: detailsMap,
+    plans: plansMap,
+    comments: commentsMap,
+    answers: answersMap,
+    inlineComments: inlineCommentsMap,
+    planHistory: {},
+    ticketHistory: {},
+  };
+
+  const storageGenAfter = reqStorage.getCacheGeneration ? reqStorage.getCacheGeneration() : 0;
+  const entry: CacheEntry = {
+    data: responsePayload,
+    revision,
+    timestamp: Date.now(),
+    storageGeneration: storageGenAfter,
+    apiGeneration: apiCacheGeneration,
+  };
+
+  // Only commit to cache if no mutation invalidated state while building the payload
+  if (apiCacheGeneration === apiGenBefore && storageGenAfter === storageGenBefore) {
+    if (cachedAllData.size >= MAX_CACHE_ENTRIES) {
+      const oldestKey = cachedAllData.keys().next().value;
+      if (oldestKey) cachedAllData.delete(oldestKey);
+    }
+    cachedAllData.set(fullCacheKey, entry);
+  }
+
+  return entry;
 }
 
 function getRequestStorage(baseStorage: StorageAdapter, req: http.IncomingMessage, url: URL): { storage: StorageAdapter; cacheKey: string } {
@@ -137,8 +322,12 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
         }
 
         if (pathname.startsWith('/api/planning/ticket/')) {
-          const idStr = pathname.slice('/api/planning/ticket/'.length);
-          if (!idStr || !/^([a-zA-Z0-9]{1,8}-)?\d+$/.test(idStr)) {
+          const rawIdStr = pathname.slice('/api/planning/ticket/'.length);
+          let idStr = rawIdStr;
+          try {
+            idStr = decodeURIComponent(rawIdStr);
+          } catch {}
+          if (!idStr || !/^([a-zA-Z0-9_-]{1,24}-)?\d+$/.test(idStr)) {
             sendJson(res, 400, { error: 'Invalid ticket ID' });
             return true;
           }
@@ -152,82 +341,44 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
         }
 
         if (pathname === '/api/planning/all') {
-          const now = Date.now();
-          const cached = cachedAllData.get(cacheKey);
-          if (cached && now - cached.timestamp < CACHE_TTL_MS) {
-            sendJson(res, 200, cached.data);
+          const summaryParam = url.searchParams.get('summary');
+          const modeParam = url.searchParams.get('mode');
+          const isSummary = summaryParam === '1' || summaryParam === 'true' || modeParam === 'summary';
+          const sinceRevision = url.searchParams.get('sinceRevision')?.trim();
+          const rawIfNoneMatch = req.headers['if-none-match'];
+          const ifNoneMatch =
+            typeof rawIfNoneMatch === 'string'
+              ? rawIfNoneMatch.replace(/^W\/|^"|"$/g, '').trim()
+              : '';
+
+          const entry = await buildPlanningAllPayload(reqStorage, cacheKey, isSummary);
+
+          if (sinceRevision && sinceRevision === entry.revision) {
+            sendJson(
+              res,
+              200,
+              {
+                success: true,
+                unchanged: true,
+                revision: entry.revision,
+                summaryMode: isSummary,
+              },
+              { ETag: `"${entry.revision}"` }
+            );
             return true;
           }
 
-          const tickets = await reqStorage.listTickets({});
-          const metasMap: Record<string, any> = {};
-          const detailsMap: Record<string, string> = {};
-          const plansMap: Record<string, string> = {};
-          const commentsMap: Record<string, any[]> = {};
-          const answersMap: Record<string, Record<string, string>> = {};
-          const inlineCommentsMap: Record<string, any[]> = {};
-
-          for (const t of tickets) {
-            const numKey = String(t.meta.id);
-            const code = t.projectDescriptor?.code || t.meta.project || 'Profe';
-            const prefixedKey = `${code}-${t.meta.id}`;
-
-            const metaWithLinks = { ...t.meta, links: t.links || t.meta.links || [], isBlocked: t.isBlocked, lease: t.lease || t.meta.lease || null };
-            metasMap[prefixedKey] = metaWithLinks;
-            if (!metasMap[numKey] || code.toUpperCase() === 'PROF') {
-              metasMap[numKey] = metaWithLinks;
-            }
-            commentsMap[prefixedKey] = t.comments || [];
-            if (!commentsMap[numKey] || code.toUpperCase() === 'PROF') {
-              commentsMap[numKey] = t.comments || [];
-            }
-
-            if (t.detail?.raw) {
-              detailsMap[prefixedKey] = t.detail.raw;
-              if (!detailsMap[numKey] || code.toUpperCase() === 'PROF') {
-                detailsMap[numKey] = t.detail.raw;
-              }
-            }
-            if (t.planMarkdown) {
-              plansMap[prefixedKey] = t.planMarkdown;
-              if (!plansMap[numKey] || code.toUpperCase() === 'PROF') {
-                plansMap[numKey] = t.planMarkdown;
-              }
-            }
-            if (t.answers && Object.keys(t.answers).length > 0) {
-              answersMap[prefixedKey] = t.answers;
-              if (!answersMap[numKey] || code.toUpperCase() === 'PROF') {
-                answersMap[numKey] = t.answers;
-              }
-            }
-            if (t.inlineComments && t.inlineComments.length > 0) {
-              inlineCommentsMap[prefixedKey] = t.inlineComments;
-              if (!inlineCommentsMap[numKey] || code.toUpperCase() === 'PROF') {
-                inlineCommentsMap[numKey] = t.inlineComments;
-              }
-            }
+          if (!sinceRevision && ifNoneMatch && ifNoneMatch === entry.revision) {
+            res.writeHead(304, {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Expose-Headers': 'ETag',
+              ETag: `"${entry.revision}"`,
+            });
+            res.end();
+            return true;
           }
 
-          const projects = await reqStorage.getProjects();
-          const responsePayload = {
-            success: true,
-            projects,
-            metas: metasMap,
-            details: detailsMap,
-            plans: plansMap,
-            comments: commentsMap,
-            answers: answersMap,
-            inlineComments: inlineCommentsMap,
-            planHistory: {},
-            ticketHistory: {},
-          };
-
-          if (cachedAllData.size >= MAX_CACHE_ENTRIES) {
-            const oldestKey = cachedAllData.keys().next().value;
-            if (oldestKey) cachedAllData.delete(oldestKey);
-          }
-          cachedAllData.set(cacheKey, { data: responsePayload, timestamp: now });
-          sendJson(res, 200, responsePayload);
+          sendJson(res, 200, entry.data, { ETag: `"${entry.revision}"` });
           return true;
         }
 
@@ -779,8 +930,38 @@ export function startApiServer(port: number, storage: StorageAdapter, workspaceR
     }
   });
 
+  let prewarmTimer: ReturnType<typeof setTimeout> | null = null;
+
   server.listen(port, '127.0.0.1', () => {
-    // Listening
+    // Asynchronously pre-warm storage and summary/full API caches on startup
+    prewarmTimer = setTimeout(async () => {
+      prewarmTimer = null;
+      if (!server.listening) return;
+      try {
+        if (storage.prewarmCache) {
+          await storage.prewarmCache();
+        } else {
+          await storage.listTickets({});
+        }
+        if (!server.listening) return;
+        await buildPlanningAllPayload(storage, '*', true);
+      } catch {
+        // Ignore errors if workspace directory is torn down during server startup/teardown
+      }
+    }, 250);
+    if (typeof prewarmTimer.unref === 'function') {
+      prewarmTimer.unref();
+    }
+  });
+
+  server.on('close', () => {
+    if (prewarmTimer) {
+      clearTimeout(prewarmTimer);
+      prewarmTimer = null;
+    }
+    if (storage.closeWatchers) {
+      storage.closeWatchers();
+    }
   });
 
   server.on('error', (err: any) => {

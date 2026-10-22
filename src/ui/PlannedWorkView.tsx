@@ -1030,8 +1030,96 @@ export function PlannedWorkView({
   };
 
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const handleRefresh = useCallback(() => setRefreshTrigger((v) => v + 1), []);
+  const lastRevisionRef = useRef<string | undefined>(undefined);
+  const hydratedHashesRef = useRef<Record<string, string>>({});
+  const hydratingTicketsRef = useRef<Set<string>>(new Set());
+  const [hydratingTicketIds, setHydratingTicketIds] = useState<Record<string, boolean>>({});
+
+  const handleRefresh = useCallback(() => {
+    lastRevisionRef.current = undefined;
+    setRefreshTrigger((v) => v + 1);
+  }, []);
   const requestIdRef = useRef(0);
+
+  const hydrateTicket = useCallback(
+    async (ticketKey: string, force = false) => {
+      if (!ticketKey || !activePlanningProvider.getTicket) return;
+      const cleanKey = ticketKey.replace(/^feature-/, '');
+      const meta = (metasMap[ticketKey] || metasMap[cleanKey]) as any;
+      const currentSha1 = meta?.sha1 as string | undefined;
+
+      if (
+        !force &&
+        currentSha1 &&
+        hydratedHashesRef.current[cleanKey] === currentSha1 &&
+        detailsMap[cleanKey] !== undefined
+      ) {
+        return;
+      }
+      if (hydratingTicketsRef.current.has(cleanKey) && !force) return;
+
+      hydratingTicketsRef.current.add(cleanKey);
+      setHydratingTicketIds((prev) => ({ ...prev, [ticketKey]: true, [cleanKey]: true }));
+      try {
+        const ticket = await activePlanningProvider.getTicket(cleanKey);
+        if (ticket && ticket.meta) {
+          const code = ticket.projectDescriptor?.code || ticket.meta.project || 'Profe';
+          const prefixedKey = `${code}-${ticket.meta.id}`;
+          const resolvedSha1 = ticket.sha1 || currentSha1 || 'loaded';
+          hydratedHashesRef.current[cleanKey] = resolvedSha1;
+          hydratedHashesRef.current[prefixedKey] = resolvedSha1;
+          hydratedHashesRef.current[ticketKey] = resolvedSha1;
+
+          const rawDetail = ticket.detail?.raw || '';
+          setDetailsMap((prev) => ({
+            ...prev,
+            [ticketKey]: rawDetail,
+            [cleanKey]: rawDetail,
+            [prefixedKey]: rawDetail,
+          }));
+          const planMd = ticket.planMarkdown || '';
+          setPlansMap((prev) => ({
+            ...prev,
+            [ticketKey]: planMd,
+            [cleanKey]: planMd,
+            [prefixedKey]: planMd,
+          }));
+          const commentsList = ticket.comments || [];
+          setCommentsMap((prev) => ({
+            ...prev,
+            [ticketKey]: commentsList,
+            [cleanKey]: commentsList,
+            [prefixedKey]: commentsList,
+          }));
+          const answersObj = ticket.answers || {};
+          setAnswersMap((prev) => ({
+            ...prev,
+            [ticketKey]: answersObj,
+            [cleanKey]: answersObj,
+            [prefixedKey]: answersObj,
+          }));
+          const inlinesList = ticket.inlineComments || [];
+          setInlineCommentsMap((prev) => ({
+            ...prev,
+            [ticketKey]: inlinesList,
+            [cleanKey]: inlinesList,
+            [prefixedKey]: inlinesList,
+          }));
+        }
+      } catch (err) {
+        console.warn(`[Esedre UI] Failed to hydrate ticket ${cleanKey}:`, err);
+      } finally {
+        hydratingTicketsRef.current.delete(cleanKey);
+        setHydratingTicketIds((prev) => {
+          const next = { ...prev };
+          delete next[ticketKey];
+          delete next[cleanKey];
+          return next;
+        });
+      }
+    },
+    [metasMap, detailsMap]
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -1039,26 +1127,61 @@ export function PlannedWorkView({
       const currentRequestId = ++requestIdRef.current;
       try {
         if (activePlanningProvider.getAll) {
-          const allData = await activePlanningProvider.getAll();
+          const allData = await activePlanningProvider.getAll({
+            summary: true,
+            sinceRevision: lastRevisionRef.current,
+          });
           if (!isMounted || currentRequestId !== requestIdRef.current) return;
+          if (allData && allData.unchanged) {
+            if (allData.revision) {
+              lastRevisionRef.current = allData.revision;
+            }
+            setIsInitialLoading(false);
+            return;
+          }
           if (allData && allData.success) {
-            if (allData.answers) setAnswersMap(allData.answers);
-            if (allData.plans) setPlansMap(allData.plans);
-            if (allData.comments) setCommentsMap(allData.comments);
+            if (allData.revision) {
+              lastRevisionRef.current = allData.revision;
+            }
             if (allData.metas) setMetasMap(allData.metas);
-            if (allData.inlineComments) setInlineCommentsMap(allData.inlineComments);
-            if (allData.planHistory) setPlanHistoryMap(allData.planHistory);
-            if (allData.details) setDetailsMap(allData.details);
-            if (allData.ticketHistory) setTicketHistoryMap(allData.ticketHistory);
-            savePlanningClientCache({
-              metas: allData.metas,
-              details: allData.details,
-              plans: allData.plans,
-              comments: allData.comments,
-              answers: allData.answers,
-              inlineComments: allData.inlineComments,
-              projects: allData.projects,
-            });
+            if (allData.summaryMode) {
+              if (allData.details && Object.keys(allData.details).length > 0) {
+                setDetailsMap((prev) => ({ ...prev, ...allData.details }));
+              }
+              if (allData.plans && Object.keys(allData.plans).length > 0) {
+                setPlansMap((prev) => ({ ...prev, ...allData.plans }));
+              }
+              if (allData.comments && Object.keys(allData.comments).length > 0) {
+                setCommentsMap((prev) => ({ ...prev, ...allData.comments }));
+              }
+              if (allData.answers && Object.keys(allData.answers).length > 0) {
+                setAnswersMap((prev) => ({ ...prev, ...allData.answers }));
+              }
+              if (allData.inlineComments && Object.keys(allData.inlineComments).length > 0) {
+                setInlineCommentsMap((prev) => ({ ...prev, ...allData.inlineComments }));
+              }
+              savePlanningClientCache({
+                metas: allData.metas,
+                projects: allData.projects,
+              });
+            } else {
+              if (allData.answers) setAnswersMap(allData.answers);
+              if (allData.plans) setPlansMap(allData.plans);
+              if (allData.comments) setCommentsMap(allData.comments);
+              if (allData.inlineComments) setInlineCommentsMap(allData.inlineComments);
+              if (allData.planHistory) setPlanHistoryMap(allData.planHistory);
+              if (allData.details) setDetailsMap(allData.details);
+              if (allData.ticketHistory) setTicketHistoryMap(allData.ticketHistory);
+              savePlanningClientCache({
+                metas: allData.metas,
+                details: allData.details,
+                plans: allData.plans,
+                comments: allData.comments,
+                answers: allData.answers,
+                inlineComments: allData.inlineComments,
+                projects: allData.projects,
+              });
+            }
             setIsInitialLoading(false);
             const areProjectsEqual = (a: ProjectDescriptor[], b: ProjectDescriptor[]) =>
               a.length === b.length &&
@@ -1897,9 +2020,24 @@ export function PlannedWorkView({
     [metasMap]
   );
 
+  const CARD_PAGE_SIZE = 30;
+  const [visibleCardLimit, setVisibleCardLimit] = useState<number>(CARD_PAGE_SIZE);
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+
   const handleJumpToFeature = (featId: string, featNum: number) => {
     setExpandedFeatureId(featId);
     setMobileView('detail');
+    const cleanTarget = featId.replace(/^feature-/, '').toLowerCase();
+    hydrateTicket(featId);
+    const idxInSorted = sortedFeatures.findIndex(
+      (f) =>
+        f.id.toLowerCase() === featId.toLowerCase() ||
+        f.ticketId.toLowerCase() === cleanTarget ||
+        f.number === featNum
+    );
+    if (idxInSorted >= visibleCardLimit) {
+      setVisibleCardLimit(Math.min(sortedFeatures.length, idxInSorted + 15));
+    }
     let attempts = 0;
     const maxAttempts = 15;
     const tryScroll = () => {
@@ -2075,12 +2213,15 @@ export function PlannedWorkView({
 
   const filteredFeatures = currentTabFeatures.filter((f) => {
     const safeTitle = f.title || '';
-    const safeSearchQuery = searchQuery || '';
-    
+    const safeSearchQuery = (searchQuery || '').toLowerCase();
+    const metaSearchText = (metasMap[f.ticketId] as any)?.searchText as string | undefined;
+
     const matchesSearch =
-      safeTitle.toLowerCase().includes(safeSearchQuery.toLowerCase()) ||
-      (f.rationale && f.rationale.toLowerCase().includes(safeSearchQuery.toLowerCase())) ||
-      (f.breakdown || []).some((b) => b && b.toLowerCase().includes(safeSearchQuery.toLowerCase()));
+      !safeSearchQuery ||
+      safeTitle.toLowerCase().includes(safeSearchQuery) ||
+      (metaSearchText ? metaSearchText.includes(safeSearchQuery) : false) ||
+      (f.rationale && f.rationale.toLowerCase().includes(safeSearchQuery)) ||
+      (f.breakdown || []).some((b) => b && b.toLowerCase().includes(safeSearchQuery));
 
     const safeComplexity = f.complexity || '';
     const matchesComplexity =
@@ -2138,6 +2279,17 @@ export function PlannedWorkView({
   const getLastUpdated = React.useCallback(
     (feat: PlannedFeature): number => {
       let latest = 0;
+
+      // 0. Server-precomputed lastUpdatedMs or updatedAt
+      const precomputedMs = (metasMap[feat.ticketId] as any)?.lastUpdatedMs;
+      if (typeof precomputedMs === 'number' && precomputedMs > latest) {
+        latest = precomputedMs;
+      }
+      const updatedAtTime = (metasMap[feat.ticketId] as any)?.updatedAt;
+      if (updatedAtTime) {
+        const t = new Date(updatedAtTime).getTime();
+        if (!isNaN(t) && t > latest) latest = t;
+      }
 
       // 1. Meta timestamp
       const metaTime = metasMap[feat.ticketId]?.timestamp;
@@ -2197,6 +2349,75 @@ export function PlannedWorkView({
       return sortOrder === 'asc' ? comparison : -comparison;
     });
   }, [filteredFeatures, sortBy, sortOrder, getLastUpdated]);
+
+  // Reset DOM window limit when filters or sorting change, keeping any expanded card in view
+  useEffect(() => {
+    if (expandedFeatureId) {
+      const idx = sortedFeatures.findIndex(
+        (f) => f.id.toLowerCase() === expandedFeatureId.toLowerCase()
+      );
+      if (idx >= CARD_PAGE_SIZE) {
+        setVisibleCardLimit(Math.min(sortedFeatures.length, idx + 15));
+        return;
+      }
+    }
+    setVisibleCardLimit(CARD_PAGE_SIZE);
+  }, [
+    activeTab,
+    projectFilter,
+    searchQuery,
+    typeFilter,
+    complexityFilter,
+    priorityFilter,
+    milestoneFilter,
+    inDevOnly,
+    sortBy,
+    sortOrder,
+  ]);
+
+  // Hydrate full detail/plan/comments on demand whenever a card is expanded or its sha1 changes
+  useEffect(() => {
+    if (!expandedFeatureId) return;
+    const targetFeat = parsedData.plannedFeatures.find(
+      (f) => f.id.toLowerCase() === expandedFeatureId.toLowerCase()
+    );
+    const keyToHydrate = targetFeat ? targetFeat.ticketId : expandedFeatureId.replace(/^feature-/, '');
+    hydrateTicket(keyToHydrate);
+
+    const idxInSorted = sortedFeatures.findIndex(
+      (f) => f.id.toLowerCase() === expandedFeatureId.toLowerCase()
+    );
+    if (idxInSorted >= visibleCardLimit) {
+      setVisibleCardLimit(Math.min(sortedFeatures.length, idxInSorted + 15));
+    }
+  }, [expandedFeatureId, metasMap, parsedData.plannedFeatures, sortedFeatures, visibleCardLimit, hydrateTicket]);
+
+  const visibleFeatures = React.useMemo(() => {
+    return sortedFeatures.slice(0, visibleCardLimit);
+  }, [sortedFeatures, visibleCardLimit]);
+
+  // Progressive infinite scroll observer for the right-hand card grid
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof IntersectionObserver === 'undefined') return;
+    if (visibleCardLimit >= sortedFeatures.length) return;
+    const sentinel = loadMoreSentinelRef.current;
+    if (!sentinel) return;
+    const rootEl = document.getElementById('planned-work-cards-scroll-container');
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setVisibleCardLimit((prev) => Math.min(sortedFeatures.length, prev + CARD_PAGE_SIZE));
+        }
+      },
+      {
+        root: rootEl || null,
+        rootMargin: '400px 0px',
+      }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [visibleCardLimit, sortedFeatures.length, activeTab, mobileView]);
 
   const maxTicketLabelLen = React.useMemo(() => {
     if (sortedFeatures.length === 0) return 6;
@@ -2885,7 +3106,8 @@ export function PlannedWorkView({
                       )}
                     </div>
                   ) : (
-                    sortedFeatures.map((feat) => {
+                    <>
+                    {visibleFeatures.map((feat) => {
                     const isExpanded = expandedFeatureId === feat.id;
                     return (
                       <div
@@ -3387,7 +3609,11 @@ export function PlannedWorkView({
                           >
                             {(() => {
                               const currentCardTab = cardSubTabs[feat.ticketId] || 'spec';
-                              const notesCount = (commentsMap[feat.ticketId]?.length || 0) + (inlineCommentsMap[feat.ticketId]?.length || 0);
+                              const hasHydratedComments = commentsMap[feat.ticketId] !== undefined || inlineCommentsMap[feat.ticketId] !== undefined;
+                              const notesCount = hasHydratedComments
+                                ? (commentsMap[feat.ticketId]?.length || 0) + (inlineCommentsMap[feat.ticketId]?.length || 0)
+                                : ((metasMap[feat.ticketId] as any)?.commentCount || 0);
+                              const hasActivePlan = Boolean(plansMap[feat.ticketId] || (metasMap[feat.ticketId] as any)?.hasPlan);
                               const rawSnapshots = ticketHistoryMap[feat.ticketId] || [];
                               const totalRevisionsCount = rawSnapshots.length + 1;
 
@@ -3423,11 +3649,11 @@ export function PlannedWorkView({
                                         <CheckCircle2 size={12} />
                                         <span>Plan</span>
                                         <span className={`text-[9px] px-1.5 py-0.2 rounded-full font-mono ${
-                                          plansMap[feat.ticketId]
+                                          hasActivePlan
                                             ? (currentCardTab === 'plan' ? 'bg-emerald-100 text-emerald-800 dark:bg-indigo-700 dark:text-indigo-100' : 'bg-emerald-50 text-emerald-800 border border-emerald-200 dark:bg-emerald-500/20 dark:text-emerald-300 dark:border-emerald-500/30')
                                             : (currentCardTab === 'plan' ? 'bg-[var(--bg-surface)] text-[var(--text-muted)] border border-[var(--border-subtle)]' : 'bg-[var(--bg-surface)] text-[var(--text-muted)] border border-[var(--border-subtle)]')
                                         }`}>
-                                          {plansMap[feat.ticketId] ? 'Active' : 'Draft'}
+                                          {hasActivePlan ? 'Active' : 'Draft'}
                                         </span>
                                       </button>
 
@@ -3654,6 +3880,12 @@ export function PlannedWorkView({
                                         </div>
                                       ) : (
                                         <div className="space-y-3 animate-fade-in">
+                                          {hydratingTicketIds[feat.ticketId] && detailsMap[feat.ticketId] === undefined && (
+                                            <div className="flex items-center gap-2 px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-xl text-[var(--text-muted)] text-xs">
+                                              <Loader2 size={13} className="animate-spin text-[var(--accent-primary)] shrink-0" />
+                                              <span>Loading full specification...</span>
+                                            </div>
+                                          )}
                                           {/* Summary / Specification */}
                                           {(feat.rationale || feat.rawDetail) && (
                                             <div className="p-3 bg-[var(--accent-bg-subtle)] border border-[var(--accent-border-subtle)] rounded-xl text-[var(--text-primary)]">
@@ -4380,7 +4612,28 @@ export function PlannedWorkView({
                         )}
                       </div>
                     );
-                  })
+                  })}
+                  {visibleCardLimit < sortedFeatures.length && (
+                    <div
+                      ref={loadMoreSentinelRef}
+                      className="py-3 flex items-center justify-center"
+                    >
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setVisibleCardLimit((prev) =>
+                            Math.min(sortedFeatures.length, prev + CARD_PAGE_SIZE)
+                          )
+                        }
+                        className="px-3.5 py-1.5 rounded-xl bg-[var(--bg-surface)] hover:bg-[var(--accent-bg-subtle)] border border-[var(--border-subtle)] text-xs font-mono text-[var(--text-muted)] hover:text-[var(--text-primary)] flex items-center gap-2 transition-colors cursor-pointer shadow-2xs"
+                      >
+                        <span>
+                          Showing {visibleFeatures.length} of {sortedFeatures.length} tickets (scroll or click for more)
+                        </span>
+                      </button>
+                    </div>
+                  )}
+                  </>
                 )}
                 </div>
               </div>

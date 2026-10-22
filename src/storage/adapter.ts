@@ -137,6 +137,9 @@ export interface StorageAdapter {
   getDuplicateProjectWarnings?(): DuplicateProjectWarning[];
   getWorkspaceRoot?(): string | undefined;
   getProjectRepoRoot?(projectCode: string): string | undefined;
+  prewarmCache?(options?: { chunkSize?: number }): Promise<void>;
+  getCacheGeneration?(): number;
+  closeWatchers?(): void;
 
   claimTicket(input: ClaimLeaseInput): Promise<ClaimLeaseResult>;
   renewLease(input: RenewLeaseInput): Promise<TicketLease>;

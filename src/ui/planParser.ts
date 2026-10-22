@@ -242,11 +242,14 @@ export function parsePlannedWorkMarkdown(
         }
       }
 
+      const metaSummary = typeof (meta as any).summary === 'string' && (meta as any).summary.trim()
+        ? (meta as any).summary.trim()
+        : undefined;
       const effectiveRationale = rationaleMatch
         ? rationaleMatch[1].trim()
         : (!bdMatch && !techMatch && !standaloneTechMatch && !standaloneOqMatch && detailRaw)
         ? detailRaw.trim()
-        : undefined;
+        : metaSummary;
 
       const projDesc =
         getProjectDescriptor(meta.projectId ?? (meta.project as string | number)) ||
