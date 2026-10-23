@@ -348,10 +348,13 @@ describe('Ticket Leases (Esedre-69) & Rule Size Warnings (Esedre-68)', () => {
     expect(claimResp?.error).toBeUndefined();
     const claimPayload = JSON.parse(claimResp!.result.content[0].text);
     expect(claimPayload.success).toBe(true);
-    expect(claimPayload.lease.worktree).toBe(path.resolve(sleepRepoDir));
+    expect(claimPayload.lease.worktree).toBeUndefined();
     expect(claimPayload.lease.ticketKey).toBe(`Sleep-${sleepTicket.meta.id}`);
 
-    // 4. Passing an explicit secondary worktree should be honored
+    const storedClaimLease = await multiStorage.getTicketLease(`Sleep-${sleepTicket.meta.id}`);
+    expect(storedClaimLease?.worktree).toBe(path.resolve(sleepRepoDir));
+
+    // 4. Passing an explicit secondary worktree should be honored in storage while omitted from MCP response
     const secondaryWorktree = path.join(tempDir, 'lab151-sleep-feature-branch');
     fs.mkdirSync(secondaryWorktree, { recursive: true });
     try {
@@ -377,8 +380,11 @@ describe('Ticket Leases (Esedre-69) & Rule Size Warnings (Esedre-68)', () => {
     expect(explicitResp?.error).toBeUndefined();
     const explicitPayload = JSON.parse(explicitResp!.result.content[0].text);
     expect(explicitPayload.success).toBe(true);
-    expect(explicitPayload.lease.worktree).toBe(path.resolve(secondaryWorktree));
+    expect(explicitPayload.lease.worktree).toBeUndefined();
     expect(explicitPayload.lease.branch).toBe('fix/sleep-branch-test');
+
+    const storedExplicitLease = await multiStorage.getTicketLease(`Sleep-${sleepTicket.meta.id}`);
+    expect(storedExplicitLease?.worktree).toBe(path.resolve(secondaryWorktree));
 
     // 5. Calling storage.claimTicket directly without worktree also defaults to resolved repo root
     const directClaim = await multiStorage.claimTicket({

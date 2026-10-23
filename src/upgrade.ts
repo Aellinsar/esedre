@@ -12,7 +12,10 @@ import {
   readGlobalConfig,
   findEsedreConfig,
   expandHome,
+  addLocationToGlobalConfig,
+  getGlobalConfigDir,
 } from './config.js';
+import { ensureAntigravityPreToolHookScript } from './mcp/antigravityHook.js';
 import { generateProjectSnapshot } from './snapshot.js';
 import { FilesystemStorageAdapter } from './storage/filesystem.js';
 import { SecurityFilter } from './securityFilter.js';
@@ -494,7 +497,7 @@ export function plantWrappers(targetDir: string): void {
   }
 }
 
-export function setupGlobalAntigravityMcpConfig(options: { geminiDir?: string } = {}): boolean {
+export function setupGlobalAntigravityMcpConfig(options: { geminiDir?: string; globalDir?: string } = {}): boolean {
   const geminiDir =
     options.geminiDir ||
     process.env.ESEDRE_GEMINI_DIR ||
@@ -551,6 +554,35 @@ export function setupGlobalAntigravityMcpConfig(options: { geminiDir?: string } 
       }
       fs.writeFileSync(mcpConfigPath, JSON.stringify(configObj, null, 2) + '\n', 'utf-8');
     }
+
+    const hookScriptPath = ensureAntigravityPreToolHookScript(options.globalDir || getGlobalConfigDir());
+    const hooksConfigPath = path.join(configDir, 'hooks.json');
+    let hooksObj: Record<string, any> = {};
+    if (fs.existsSync(hooksConfigPath)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(hooksConfigPath, 'utf-8'));
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          hooksObj = parsed;
+        }
+      } catch {
+        hooksObj = {};
+      }
+    }
+    hooksObj['esedre-isolation'] = {
+      PreToolUse: [
+        {
+          matcher: 'call_mcp_tool|list_resources|read_resource|.*esedre.*',
+          hooks: [
+            {
+              type: 'command',
+              command: `node "${hookScriptPath.replace(/\\/g, '/')}"`,
+              timeout: 5,
+            },
+          ],
+        },
+      ],
+    };
+    fs.writeFileSync(hooksConfigPath, JSON.stringify(hooksObj, null, 2) + '\n', 'utf-8');
     return true;
   } catch {
     return false;
@@ -874,6 +906,10 @@ export function configureWorkspace(targetDir: string, options: ConfigureOptions 
         }
       } catch {}
     }
+
+    try {
+      addLocationToGlobalConfig(targetDir);
+    } catch {}
   }
 
   // 2. Wrappers (.esedre/esedre.* and .esedre/ese.*)
@@ -897,6 +933,9 @@ export function configureWorkspace(targetDir: string, options: ConfigureOptions 
 
   // 7. Global store check & pre-creation (resilient, never crashes configure)
   const globalStoreRes = ensureGlobalEsedreStore();
+  try {
+    ensureAntigravityPreToolHookScript();
+  } catch {}
   if (!globalStoreRes.ok) {
     console.warn(`\x1b[33m⚠️ Warning: Could not initialize global store at ${globalStoreRes.path}: ${globalStoreRes.error}\x1b[0m`);
   }

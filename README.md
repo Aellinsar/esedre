@@ -139,6 +139,7 @@ Manage the local web dashboard and API server:
 | `status` | `ese status [--port <n>]` | Check health, uptime, and diagnostics of the running server. |
 | `logs` | `ese logs [--port <n>] [--lines <n>]` | Tail recent server output logs. |
 | `mcp` | `ese mcp` | Launch the Model Context Protocol stdio server for LLM agents. |
+| `hook` | `ese hook agy-pre-tool` | Evaluate Antigravity `PreToolUse` isolation hook and synchronize active MCP workspace context. |
 
 ### Developer Administration (Human Machine Setup)
 
@@ -150,7 +151,7 @@ Commands for repository onboarding, central machine linking, and maintenance:
 | `configure` | `ese configure [add <path> \| remove <code\|path> \| set <k> <v>]` | Inspect or mutate central configuration (`~/.esedre/config.json`). Link external project repositories or data hubs. |
 | `rename-project` | `ese rename-project <oldCode> <newCode> [--name "<name>"]` | Rename a project code across directory storage paths, manifests, and tickets. |
 | `project set` | `ese project set <code> [--name "<name>"]` | Update metadata for an existing project (e.g. display name). |
-| `upgrade` | `ese upgrade [<path>] [-p\|--project <code>] [--all \| -a] [--force \| -f]` | Upgrade workspace configuration schema, project data schema versions (`project.json` and ticket `meta.json` with atomic backups in `~/.esedre/backups/`), in-repo wrappers, workspace and global Antigravity MCP configs, and agent skills across current, target project, or all registered workspaces, with 24 KB rule size checks. |
+| `upgrade` | `ese upgrade [<path>] [-p\|--project <code>] [--all \| -a] [--force \| -f]` | Upgrade workspace configuration schema, project data schema versions (`project.json` and ticket `meta.json` with atomic backups in `~/.esedre/backups/`), in-repo wrappers, workspace and global Antigravity MCP configs (including `PreToolUse` isolation hooks), and agent skills across current, target project, or all registered workspaces, with automatic `~/.esedre/config.json` registration and 24 KB rule size checks. |
 
 > **Human vs LLM Agent Workflows**: Developer Administration commands (`init`, `configure`, `upgrade`) manage system-level repository linking and central machine configuration. They are intended for human developers during initial setup. Autonomous LLM coding partners operate within the authorized workspace scope using Roadmap and Service Daemon commands (`list`, `get`, `plan`, `create`, `update`, `lease`, `comment`, `snapshot`, `start`, `status`).
 
@@ -166,6 +167,7 @@ Esedre employs a two-tier configuration model that cleanly isolates machine-spec
 * **Central Machine Configuration (`~/.esedre/config.json`)**: Configured via `ese configure`, this file holds user-level settings for your machine: registered ticket data hubs (`dataDir`, such as `../esedre-data`), linked external repository paths (`projects`), and the default server port.
 * **Workspace Repository Configuration (`.esedre/esedre.json`)**: Project code repositories only need a lightweight descriptor declaring their `projectCode` and authorized `allowedProjects` scope.
 * **Smart Data Hub Inheritance**: When `dataDir` is omitted from `.esedre/esedre.json`, Esedre automatically checks if your central data hub in `~/.esedre/config.json` contains the project. If found, it inherits the hub path seamlessly. Different developers collaborating on the same codebase can maintain their ticket hubs in different filesystem locations without committing machine-specific relative paths to version control.
+* **Scoped Repository Mapping Inheritance**: Both `ese init` and `ese upgrade` automatically register project repositories in `~/.esedre/config.json`'s `projects` map using canonical `projectCode` casing. At runtime, workspaces inherit only `allowedProjects`-authorized repository paths from `~/.esedre/config.json` (allowing `ese lease claim`, `ese snapshot --project <Code>`, and MCP snapshot refreshes to locate authorized sibling git repositories without manual path duplication), while keeping unauthorized repositories unmapped and isolated.
 * **Subdirectory Guard in `ese init`**: Initializing a repository via `ese init` does not write `dataDir` to `.esedre/esedre.json` when the configured data hub is located outside the repository. A `dataDir` property is only written to `.esedre/esedre.json` if `dataDir` is a subdirectory within the project's repository (such as a monorepo subfolder or in-repo ticket directory), or if explicitly specified via `--data-dir`.
 * **Local In-Repo Overrides**: If a repository explicitly specifies `dataDir` in its `.esedre/esedre.json`, the local configuration takes full precedence, ensuring standalone in-repo ticket stores remain completely independent.
 
@@ -202,13 +204,13 @@ To connect Esedre to **Google Antigravity**, **Claude Code**, **Cursor**, or any
 
 ### Registered Tools
 - `esedre_list_tickets`: List tickets with optional project, status, type, priority, milestone, isBlocked, leased, leasedBy, linkedTo, search, or includePlan filter.
-- `esedre_get_ticket`: Retrieve full specification, summary, comments, revision, links, active lease, blocker status, and content hash (`sha1`).
+- `esedre_get_ticket`: Retrieve full specification, summary, comments, revision, links, active lease, blocker status, and content hash (`sha1`). Deduplicates `meta` fields and omits `detail.raw` by default when `detail.md` is losslessly represented by parsed sections (pass `includeRaw: true` to force raw markdown).
 - `esedre_get_plan` & `esedre_save_plan`: Inspect and update implementation plans with optimistic concurrency (`lastHash`).
 - `esedre_create_ticket`: Mint new roadmap tickets with project code validation (up to 8 chars), optional priority, optional milestone, and specification detail markdown.
 - `esedre_update_ticket`: Modify status, title, type, priority, milestone, specification detail (`detail`/`detailMarkdown`), complexity, or effort with optimistic concurrency (`lastHash`).
-- `esedre_claim_ticket`: Acquire an exclusive TTL-backed lease on a ticket (`In Development`) with conflict protection (`-32001`), resolved repository worktree defaulting, and optional worktree overrides.
+- `esedre_claim_ticket`: Acquire an exclusive TTL-backed lease on a ticket (`In Development`) with conflict protection (`-32001`). Resolves the project repository's worktree internally from `~/.esedre/config.json` for Git branch detection while omitting `worktree` from agent-facing MCP payloads.
 - `esedre_renew_lease`: Extend the expiration TTL of an active ticket lease.
-- `esedre_release_ticket`: Release an active ticket lease and optionally transition status (`Completed`, `Planned`, etc.).
+- `esedre_release_ticket`: Release an active ticket lease and optionally transition status (`Completed`, `Planned`, etc., automatically clearing `isActivePlanning` when `Completed` or `Rejected`).
 - `esedre_list_leases`: List all active, unexpired ticket leases across authorized projects.
 - `esedre_link_ticket`: Establish a bi-directional link between two tickets (`relates-to`, `blocks`, `parent-of`, `duplicates`).
 - `esedre_unlink_ticket`: Remove a bi-directional relationship between two tickets.
@@ -325,7 +327,9 @@ The planner UI is styled entirely using CSS custom properties. When embedding in
 
 Esedre enforces clean project isolation so each LLM agent is informed only of the projects it is authorized to access:
 - **Upward Discovery**: When invoked in any subdirectory, Esedre climbs upward until it encounters the nearest `.esedre/esedre.json` or `esedre.json`, binding its execution to that repository's scope.
-- **Scoped Project Awareness**: Storage operations and tools only inform and expose projects declared in `allowedProjects`. LLM agents cannot query, list, or mutate tickets outside their authorized scope.
+- **Scoped Project Awareness & Directional Hierarchies**: Storage operations and tools only inform and expose projects declared in `allowedProjects`. Umbrella workspaces can coordinate across sub-projects (e.g. `"allowedProjects": ["lab151", "lab151-tcg"]`), while leaf sub-projects (`"allowedProjects": ["lab151-tcg"]`) remain isolated from parent and sibling tickets.
+- **Antigravity Global MCP Isolation Hook (`PreToolUse`)**: In environments where the MCP server runs as a global background process (such as Google Antigravity's `language_server.exe`), `ese init` and `ese upgrade` automatically install a `PreToolUse` hook (`~/.gemini/config/hooks.json` -> `~/.esedre/agy-pre-tool-hook.mjs`) that evaluates the active session's `workspace_roots`, blocks unauthorized project requests before execution, and synchronizes per-request `SecurityFilter` scope (`~/.esedre/mcp-active-context.json`).
+- **Zero Host Filesystem Path Leakage**: External repository paths (`lease.worktree`) are omitted from `.esedre/snapshot.json`, redacted in `SecurityFilter`, and stripped from MCP tool responses and `stderr` diagnostics so agents cannot discover sibling or unauthorized directories on disk.
 - Unauthorized requests throw `EsedreAuthorizationError`:
   - **CLI**: Prints `Access Denied: ...` and exits with status code 1.
   - **MCP**: Responds with standard JSON-RPC error `-32603`.

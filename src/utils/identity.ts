@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
@@ -65,6 +66,33 @@ export function isPathInside(childPath: string, parentPath: string): boolean {
   return !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
+export function isWorkspaceOrGitDir(dirPath: string): boolean {
+  if (!dirPath || typeof dirPath !== 'string' || !dirPath.trim()) {
+    return false;
+  }
+  let current = path.resolve(dirPath.trim());
+  while (true) {
+    const markers = [
+      path.join(current, '.git'),
+      path.join(current, '.esedre', 'esedre.json'),
+      path.join(current, 'esedre.json'),
+      path.join(current, '.esedre', 'project.json'),
+      path.join(current, 'project.json'),
+      path.join(current, 'projects.json'),
+      path.join(current, 'src', 'data', 'planning', 'projects.json'),
+    ];
+    if (markers.some((m) => fs.existsSync(m))) {
+      return true;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+  return false;
+}
+
 export function resolveWorkerIdentity(input?: WorkerIdentityInput): ResolvedWorkerIdentity {
   let hostname = input?.hostname?.trim() || '';
   if (!hostname) {
@@ -105,8 +133,13 @@ export function resolveWorkerIdentity(input?: WorkerIdentityInput): ResolvedWork
     process.env.AGY_CONVERSATION_ID?.trim() ||
     undefined;
 
-  const worktree = input?.worktree?.trim() || process.cwd();
-  const branch = input?.branch?.trim() || detectGitBranch(worktree);
+  const explicitWorktree = input?.worktree?.trim();
+  const worktree = explicitWorktree
+    ? path.resolve(explicitWorktree)
+    : isWorkspaceOrGitDir(process.cwd())
+      ? process.cwd()
+      : undefined;
+  const branch = input?.branch?.trim() || (worktree ? detectGitBranch(worktree) : undefined);
 
   return {
     holder,

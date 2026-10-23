@@ -142,6 +142,12 @@ export async function generateProjectSnapshot(
     }
 
     const sha1 = computeTicketHash(ticketObj);
+    const sanitizedLease = ticketObj.lease
+      ? (() => {
+          const { worktree: _worktree, ...cleanLease } = ticketObj.lease;
+          return cleanLease;
+        })()
+      : undefined;
     entries.push({
       id: ticketObj.meta.id,
       ticketKey,
@@ -159,7 +165,7 @@ export async function generateProjectSnapshot(
       inheritedFeatureFlag: ticketObj.meta.inheritedFeatureFlag,
       links: ticketObj.meta.links || [],
       isBlocked: ticketObj.isBlocked || false,
-      ...(ticketObj.lease ? { lease: ticketObj.lease } : {}),
+      ...(sanitizedLease ? { lease: sanitizedLease } : {}),
       hasPlan: Boolean(plan && plan.trim().length > 0),
       planMarkdown: plan && plan.trim().length > 0 ? plan : undefined,
       createdAt,

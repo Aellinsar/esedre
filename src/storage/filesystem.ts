@@ -45,7 +45,7 @@ import {
   assertProjectCompatible,
   getProjectSchemaVersion,
 } from '../migrations/index.js';
-import { resolveWorkerIdentity, isPathInside } from '../utils/identity.js';
+import { resolveWorkerIdentity, isPathInside, isWorkspaceOrGitDir } from '../utils/identity.js';
 import { StorageAdapter, CreateTicketInput, UpdateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './adapter.js';
 import { EsedreConfig, findEsedreConfig, readGlobalConfig, expandHome, validateProjectCode, validateProjectName } from '../config.js';
 import { computeTicketHash, verifyTicketHash } from '../snapshot.js';
@@ -670,8 +670,9 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         }
 
         const codeKey = desc.code.toLowerCase();
+        const cfgCodeKey = code.trim().toLowerCase();
         const sourceName = projectDir;
-        if (!seenCodes.has(codeKey)) {
+        if (!seenCodes.has(codeKey) && !seenCodes.has(cfgCodeKey)) {
           seenCodes.add(codeKey);
           codeToSource.set(codeKey, sourceName);
           locations.push({
@@ -681,7 +682,14 @@ export class FilesystemStorageAdapter implements StorageAdapter {
             projectDir,
           });
         } else {
-          const firstSource = codeToSource.get(codeKey) || 'configured location';
+          const existingLoc = locations.find(
+            (l) => l.project.code.toLowerCase() === codeKey || l.project.code.toLowerCase() === cfgCodeKey
+          );
+          if (existingLoc && existingLoc.sourceType === 'hub') {
+            existingLoc.projectDir = projectDir;
+            continue;
+          }
+          const firstSource = codeToSource.get(codeKey) || codeToSource.get(cfgCodeKey) || 'configured location';
           if (firstSource.toLowerCase() !== sourceName.toLowerCase()) {
             if (!this.duplicateProjectWarnings.some((w) => w.code.toLowerCase() === codeKey && w.duplicateHub.toLowerCase() === sourceName.toLowerCase())) {
               this.duplicateProjectWarnings.push({
@@ -3375,11 +3383,18 @@ ${input.summary || 'Summary to be defined.'}
 
     assertProjectCompatible(resolved.loc.project, { operation: 'write', feature: 'ticket-leases' });
 
-    let worktree = input.worktree?.trim();
-    if (!worktree) {
+    let effectiveWorktree: string | undefined;
+    if (input.worktree?.trim()) {
+      effectiveWorktree = path.resolve(input.worktree.trim());
+    } else {
       const projectRepoRoot = this.getProjectRepoRoot(resolved.project);
-      if (projectRepoRoot && !isPathInside(process.cwd(), projectRepoRoot)) {
-        worktree = projectRepoRoot;
+      if (projectRepoRoot) {
+        effectiveWorktree =
+          isPathInside(process.cwd(), projectRepoRoot) && isWorkspaceOrGitDir(process.cwd())
+            ? process.cwd()
+            : projectRepoRoot;
+      } else if (isWorkspaceOrGitDir(this.workspaceRoot)) {
+        effectiveWorktree = this.workspaceRoot;
       }
     }
 
@@ -3389,7 +3404,7 @@ ${input.summary || 'Summary to be defined.'}
       hostname: input.hostname,
       sessionId: input.sessionId,
       branch: input.branch,
-      worktree: worktree || this.workspaceRoot,
+      worktree: effectiveWorktree,
       configDefaultAuthor: this.config.defaultAuthor,
     });
 

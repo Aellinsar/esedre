@@ -7,6 +7,7 @@ import { StorageAdapter } from '../src/storage/adapter.js';
 import { SecurityFilter } from '../src/securityFilter.js';
 import { formatTicketListTable, formatTicketDetail, formatMilestoneListTable, formatLeaseListTable, colors, normalizeDashesAndMojibake, normalizePriority } from '../src/utils/formatter.js';
 import { EsedreMcpServer } from '../src/mcp/server.js';
+import { handleAntigravityPreToolHookCli } from '../src/mcp/antigravityHook.js';
 import { TicketType, TicketCategory, TicketStatus, TicketPriority, Milestone, MilestoneStatus, ProjectDescriptor, EsedreConflictError, EsedreLeaseConflictError, TicketLinkRelation } from '../src/types.js';
 import { resolveWorkerIdentity } from '../src/utils/identity.js';
 import { initLogger } from '../src/utils/logger.js';
@@ -126,6 +127,9 @@ ${colors.bold}SERVICE DAEMON COMMANDS:${colors.reset}
 
   ${colors.bold}mcp${colors.reset}         Start the Model Context Protocol (MCP) JSON-RPC 2.0 stdio server for autonomous LLM coding agents.
 
+  ${colors.bold}hook${colors.reset}        [agy-pre-tool]
+               Evaluate Antigravity PreToolUse isolation hook and synchronize active MCP workspace context.
+
 ${colors.bold}DEVELOPER ADMINISTRATION (Human Setup & Configuration):${colors.reset}
   ${colors.bold}init${colors.reset}        [<path>] [--project <code>] [-n|--name <name>] [--hub <name|path>] [--allow <c1,c2>] [--port <n>] [-y|--yes] [--json]
                Bring a project repository online (.esedre footprint, wrappers, snapshot), bootstrap a data hub (--hub), or register a project directly into an Esedre ticket data hub (--project <code>).
@@ -139,7 +143,7 @@ ${colors.bold}DEVELOPER ADMINISTRATION (Human Setup & Configuration):${colors.re
                • set <key> <val>  Update a central configuration setting
 
   ${colors.bold}upgrade${colors.reset}     [<path>] [-p|--project <code>] [--all|-a] [--force|-f] [--json]
-               Upgrade workspace configuration schema, wrappers, agent skills, and project data schema. Refreshes snapshot.
+               Upgrade workspace configuration schema, wrappers, MCP isolation hooks, agent skills, and project data schema. Registers workspace in ~/.esedre/config.json and refreshes snapshot.
                Pass --project (-p) <code> to run storage schema migrations on a specific project.
                Pass --all (-a) to upgrade all registered workspaces and project schemas in central ~/.esedre/config.json.
                Pass --force to overwrite customized skills with the latest official template.
@@ -796,11 +800,13 @@ async function main(): Promise<void> {
           }
           const migration = await upgradeProjectData(rawStorage, cleanCode);
           let snapshotTickets: number | undefined;
-          if (
+          const targetSnapshotDir =
             discovered.config?.projectCode &&
             discovered.config.projectCode.toLowerCase() === migration.projectCode.toLowerCase()
-          ) {
-            const snap = await generateProjectSnapshot(storage, migration.projectCode, discovered.workspaceRoot);
+              ? discovered.workspaceRoot
+              : storage.getProjectRepoRoot?.(migration.projectCode);
+          if (targetSnapshotDir) {
+            const snap = await generateProjectSnapshot(storage, migration.projectCode, targetSnapshotDir);
             snapshotTickets = snap.totalTickets;
           }
           if (isJson) {
@@ -913,7 +919,12 @@ async function main(): Promise<void> {
           console.error(`${colors.red}Error: Project code is required (--project <code> or configure projectCode in esedre.json).${colors.reset}`);
           process.exit(1);
         }
-        const snapshot = await generateProjectSnapshot(storage, projectCode, discovered.workspaceRoot);
+        const targetOutputDir =
+          (discovered.config?.projectCode &&
+          discovered.config.projectCode.toLowerCase() === projectCode.toLowerCase()
+            ? discovered.workspaceRoot
+            : storage.getProjectRepoRoot?.(projectCode)) || discovered.workspaceRoot;
+        const snapshot = await generateProjectSnapshot(storage, projectCode, targetOutputDir);
         if (isJson) {
           console.log(JSON.stringify(snapshot, null, 2));
         } else {
@@ -930,8 +941,15 @@ async function main(): Promise<void> {
           workspaceRoot: discovered.workspaceRoot,
           config: discovered.config,
           projectCode: discovered.config?.projectCode,
+          useGlobalContextBridge: Boolean(discovered.isGlobalFallback),
         });
         mcpServer.start();
+        return;
+      }
+
+      case 'hook': {
+        const res = await handleAntigravityPreToolHookCli();
+        process.stdout.write(JSON.stringify(res) + '\n');
         return;
       }
 

@@ -2,16 +2,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { StorageAdapter } from '../storage/adapter.js';
-import { EsedreTicket, TicketDetail, TicketType, TicketCategory, TicketStatus, TicketPriority, EsedreConflictError, EsedreLeaseConflictError, CURRENT_ESEDRE_VERSION } from '../types.js';
+import { EsedreTicket, TicketDetail, TicketLease, TicketType, TicketCategory, TicketStatus, TicketPriority, EsedreConflictError, EsedreLeaseConflictError, CURRENT_ESEDRE_VERSION } from '../types.js';
 import { EsedreVersionError } from '../migrations/index.js';
-import { resolveWorkerIdentity, isPathInside } from '../utils/identity.js';
+import { resolveWorkerIdentity, isPathInside, isWorkspaceOrGitDir } from '../utils/identity.js';
 import { generateProjectSnapshot } from '../snapshot.js';
 import { findEsedreConfig, readGlobalConfig, expandHome, EsedreConfig } from '../config.js';
+import { SecurityFilter } from '../securityFilter.js';
+import { readActiveMcpContext } from './antigravityHook.js';
 
 export interface EsedreMcpServerOptions {
   workspaceRoot?: string;
   projectCode?: string;
   config?: EsedreConfig | null;
+  useGlobalContextBridge?: boolean;
 }
 
 interface JsonRpcRequest {
@@ -33,14 +36,51 @@ interface JsonRpcResponse {
 }
 
 export class EsedreMcpServer {
+  private baseStorage: StorageAdapter;
+  private rawStorage: StorageAdapter;
   private storage: StorageAdapter;
   private options: EsedreMcpServerOptions;
+  private activeWorkspaceRoot?: string;
+  private activeProjectCode?: string;
+  private activeConfig?: EsedreConfig | null;
   private requestQueue: Promise<void> = Promise.resolve();
   private snapshotLocks = new Map<string, Promise<void>>();
 
   constructor(storage: StorageAdapter, options: EsedreMcpServerOptions = {}) {
+    this.baseStorage = storage;
+    this.rawStorage = (storage as any).getTargetStorage ? (storage as any).getTargetStorage() : storage;
     this.storage = storage;
     this.options = options;
+    this.activeWorkspaceRoot = options.workspaceRoot;
+    this.activeProjectCode = options.projectCode || options.config?.projectCode;
+    this.activeConfig = options.config;
+  }
+
+  private applyRequestContext(): void {
+    this.storage = this.baseStorage;
+    this.activeWorkspaceRoot = this.options.workspaceRoot;
+    this.activeProjectCode = this.options.projectCode || this.options.config?.projectCode;
+    this.activeConfig = this.options.config;
+
+    if (this.options.useGlobalContextBridge) {
+      const ctx = readActiveMcpContext();
+      if (ctx) {
+        this.activeWorkspaceRoot = ctx.workspaceRoot || this.activeWorkspaceRoot;
+        this.activeProjectCode = ctx.projectCode || this.activeProjectCode;
+        this.activeConfig = {
+          ...(this.options.config || {}),
+          ...(ctx.projectCode ? { projectCode: ctx.projectCode } : {}),
+          ...(ctx.allowedProjects ? { allowedProjects: ctx.allowedProjects } : {}),
+        };
+        this.storage = new SecurityFilter(this.rawStorage, this.activeConfig);
+      }
+    }
+  }
+
+  private sanitizeMcpLease(lease?: TicketLease | null): Omit<TicketLease, 'worktree'> | undefined {
+    if (!lease) return undefined;
+    const { worktree: _worktree, ...clean } = lease;
+    return clean;
   }
 
   public start(): void {
@@ -96,6 +136,7 @@ export class EsedreMcpServer {
 
   private async dispatchRequest(req: JsonRpcRequest): Promise<JsonRpcResponse | null> {
     const id = req.id ?? null;
+    this.applyRequestContext();
 
     switch (req.method) {
       case 'initialize': {
@@ -180,7 +221,7 @@ export class EsedreMcpServer {
                 message: err.message,
                 data: {
                   ticketKey: err.ticketKey,
-                  activeLease: err.activeLease,
+                  activeLease: this.sanitizeMcpLease(err.activeLease),
                 },
               },
             };
@@ -302,7 +343,7 @@ export class EsedreMcpServer {
     const rawProject =
       typeof project === 'string' && project.trim()
         ? project.trim()
-        : this.options.projectCode || this.options.config?.projectCode;
+        : this.activeProjectCode || this.options.projectCode || this.activeConfig?.projectCode || this.options.config?.projectCode;
     const cleanProject =
       typeof rawProject === 'string' && rawProject.trim() && rawProject.trim().toLowerCase() !== 'all'
         ? rawProject.trim()
@@ -327,8 +368,8 @@ export class EsedreMcpServer {
     const normalizedCode = projectCode.trim().toLowerCase();
 
     // 1. Resolve active workspace root
-    let activeWorkspaceRoot = this.options.workspaceRoot;
-    let activeConfig = this.options.config;
+    let activeWorkspaceRoot = this.activeWorkspaceRoot || this.options.workspaceRoot;
+    let activeConfig = this.activeConfig || this.options.config;
 
     if (!activeWorkspaceRoot && this.storage.getWorkspaceRoot) {
       activeWorkspaceRoot = this.storage.getWorkspaceRoot();
@@ -348,7 +389,7 @@ export class EsedreMcpServer {
 
     // Determine if active workspace corresponds to this projectCode
     let matchesActive = false;
-    const configuredProjectCode = this.options.projectCode || activeConfig?.projectCode;
+    const configuredProjectCode = this.activeProjectCode || this.options.projectCode || activeConfig?.projectCode;
 
     if (configuredProjectCode) {
       if (configuredProjectCode.trim().toLowerCase() === normalizedCode) {
@@ -383,7 +424,28 @@ export class EsedreMcpServer {
       targetDirs.push(activeWorkspaceRoot);
     }
 
-    // 2. Check globally registered project repos in ~/.esedre/config.json
+    // 2. Check storage-resolved project repo root and activeConfig.projects
+    if (this.storage.getProjectRepoRoot) {
+      try {
+        const repoRoot = this.storage.getProjectRepoRoot(projectCode);
+        if (repoRoot && fs.existsSync(repoRoot)) {
+          targetDirs.push(path.resolve(repoRoot));
+        }
+      } catch {}
+    }
+
+    if (activeConfig?.projects) {
+      for (const [codeKey, repoPath] of Object.entries(activeConfig.projects)) {
+        if (codeKey.trim().toLowerCase() === normalizedCode && typeof repoPath === 'string') {
+          const resolvedPath = path.resolve(activeWorkspaceRoot, expandHome(repoPath));
+          if (fs.existsSync(resolvedPath)) {
+            targetDirs.push(resolvedPath);
+          }
+        }
+      }
+    }
+
+    // 3. Check globally registered project repos in ~/.esedre/config.json
     try {
       const globalConfig = readGlobalConfig();
       if (globalConfig?.projects) {
@@ -453,9 +515,13 @@ export class EsedreMcpServer {
           const nextLock = currentLock.then(async () => {
             try {
               await generateProjectSnapshot(this.storage, code, targetDir);
-              process.stderr.write(`[Esedre MCP] Refreshed snapshot for project '${code}' at ${path.join(targetDir, '.esedre', 'snapshot.json')}\n`);
+              process.stderr.write(`[Esedre MCP] Refreshed snapshot for project '${code}'\n`);
             } catch (err: any) {
-              process.stderr.write(`[Esedre MCP] Failed to refresh snapshot for project '${code}' in '${targetDir}': ${err.message}\n`);
+              const safeReason = String(err?.message || err?.code || 'write error').replace(
+                /,\s*(?:open|stat|mkdir|rename|unlink|scandir)\s+'[^']*'(?:\s*->\s*'[^']*')?/gi,
+                ''
+              );
+              process.stderr.write(`[Esedre MCP] Failed to refresh snapshot for project '${code}': ${safeReason}\n`);
             }
           }).catch(() => {});
           this.snapshotLocks.set(lockKey, nextLock);
@@ -871,6 +937,7 @@ export class EsedreMcpServer {
     const responseTicket: EsedreTicket = {
       ...ticket,
       meta: cleanMeta,
+      ...(ticket.lease ? { lease: this.sanitizeMcpLease(ticket.lease) as TicketLease } : {}),
     };
 
     if (responseTicket.projectDescriptor) {
@@ -1045,7 +1112,8 @@ export class EsedreMcpServer {
         const id = this.parseTicketId(args.ticketId ?? args.id, 'Ticket ID', args.project);
         let text = args.text;
         if (!text && args.file) {
-          const resolvedPath = path.resolve(process.cwd(), args.file);
+          const baseDir = this.activeWorkspaceRoot || this.options.workspaceRoot || process.cwd();
+          const resolvedPath = path.resolve(baseDir, args.file);
           if (!fs.existsSync(resolvedPath)) {
             throw new Error(`File not found: ${args.file}`);
           }
@@ -1223,16 +1291,23 @@ export class EsedreMcpServer {
           } catch {}
         }
         if (!projectCode) {
-          projectCode = this.options.projectCode || this.options.config?.projectCode;
+          projectCode = this.activeProjectCode || this.options.projectCode || this.activeConfig?.projectCode || this.options.config?.projectCode;
         }
 
         let targetWorktree = (args.worktree || args.workspace)?.trim();
         if (!targetWorktree && projectCode) {
           const projectRepoRoot = await this.resolveProjectRepoRoot(projectCode);
           if (projectRepoRoot) {
-            if (!isPathInside(process.cwd(), projectRepoRoot)) {
-              targetWorktree = projectRepoRoot;
-            }
+            targetWorktree =
+              isPathInside(process.cwd(), projectRepoRoot) && isWorkspaceOrGitDir(process.cwd())
+                ? process.cwd()
+                : projectRepoRoot;
+          }
+        }
+        if (!targetWorktree) {
+          const wsRoot = this.activeWorkspaceRoot || this.options.workspaceRoot;
+          if (wsRoot && isWorkspaceOrGitDir(wsRoot)) {
+            targetWorktree = wsRoot;
           }
         }
         const identity = resolveWorkerIdentity({
@@ -1243,7 +1318,7 @@ export class EsedreMcpServer {
           worktree: targetWorktree,
         });
         const res = await this.storage.claimTicket({
-          ticketId: this.parseTicketId(args.ticketId ?? args.id, 'Ticket ID', args.project),
+          ticketId: parsedTicketId,
           holder: identity.holder,
           agentType: identity.agentType,
           hostname: identity.hostname,
@@ -1260,7 +1335,7 @@ export class EsedreMcpServer {
           success: true,
           renewed: res.renewed,
           overridden: res.overridden || false,
-          lease: res.lease,
+          lease: this.sanitizeMcpLease(res.lease),
           ticket: {
             id: res.ticket.meta.id,
             project: res.ticket.meta.project,
@@ -1283,7 +1358,7 @@ export class EsedreMcpServer {
         await this.refreshProjectSnapshots([pCode]);
         return {
           success: true,
-          lease,
+          lease: this.sanitizeMcpLease(lease),
         };
       }
 
@@ -1328,6 +1403,7 @@ export class EsedreMcpServer {
         return {
           success: true,
           ...res,
+          ...(res.previousLease ? { previousLease: this.sanitizeMcpLease(res.previousLease) } : {}),
           ...(updatedTicket
             ? {
                 status: updatedTicket.meta.status,
@@ -1343,7 +1419,7 @@ export class EsedreMcpServer {
         const leases = await this.storage.listLeases(args.project);
         return {
           total: leases.length,
-          leases,
+          leases: leases.map((l) => this.sanitizeMcpLease(l)),
         };
       }
 

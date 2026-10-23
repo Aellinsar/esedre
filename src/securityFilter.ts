@@ -15,15 +15,25 @@ import {
   RenewLeaseInput,
   ReleaseLeaseInput,
   ClaimLeaseResult,
+  EsedreLeaseConflictError,
 } from './types.js';
 import { StorageAdapter, CreateTicketInput, UpdateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './storage/adapter.js';
 import { EsedreConfig, isProjectAuthorized, EsedreAuthorizationError } from './config.js';
+import { isPathInside } from './utils/identity.js';
 
 export class SecurityFilter implements StorageAdapter {
   constructor(
     private readonly target: StorageAdapter,
     private readonly config: EsedreConfig = {}
   ) {}
+
+  public getTargetStorage(): StorageAdapter {
+    return this.target;
+  }
+
+  public getConfig(): EsedreConfig {
+    return this.config;
+  }
 
   public getDuplicateProjectWarnings(): DuplicateProjectWarning[] {
     return this.target.getDuplicateProjectWarnings ? this.target.getDuplicateProjectWarnings() : [];
@@ -99,22 +109,51 @@ export class SecurityFilter implements StorageAdapter {
     return result;
   }
 
+  private redactLease(lease?: TicketLease | null): TicketLease | undefined {
+    if (!lease) return undefined;
+    if (!lease.worktree) return { ...lease };
+    const wsRoot = this.getWorkspaceRoot();
+    if (wsRoot && isPathInside(lease.worktree, wsRoot)) {
+      return { ...lease };
+    }
+    const { worktree: _worktree, ...clean } = lease;
+    return clean;
+  }
+
   private redactLinks(ticket: EsedreTicket): EsedreTicket {
-    if (!ticket.links || ticket.links.length === 0) return ticket;
+    let clonedTicket: EsedreTicket = ticket;
+    if (ticket.lease || ticket.meta?.lease) {
+      const redactedTopLease = this.redactLease(ticket.lease);
+      const redactedMetaLease = this.redactLease(ticket.meta?.lease);
+      clonedTicket = {
+        ...ticket,
+        ...(redactedTopLease ? { lease: redactedTopLease } : {}),
+        meta: {
+          ...ticket.meta,
+          ...(redactedMetaLease ? { lease: redactedMetaLease } : {}),
+        },
+      };
+    }
+
+    if (!clonedTicket.links || clonedTicket.links.length === 0) return clonedTicket;
     if (!this.config.allowedProjects || this.config.allowedProjects.includes('*')) {
-      return ticket;
+      return clonedTicket;
     }
-    for (const link of ticket.links) {
+    const redactedLinks = clonedTicket.links.map((link) => {
       if (link.targetProject && !isProjectAuthorized(link.targetProject, this.config.allowedProjects)) {
-        link.targetTitle = '[Restricted Project]';
-        delete link.targetType;
-        delete link.targetStatus;
-        delete link.targetPriority;
-        delete link.isBlockedByUncompleted;
-        link.isResolved = false;
+        const copy = { ...link, targetTitle: '[Restricted Project]', isResolved: false };
+        delete copy.targetType;
+        delete copy.targetStatus;
+        delete copy.targetPriority;
+        delete copy.isBlockedByUncompleted;
+        return copy;
       }
-    }
-    return ticket;
+      return link;
+    });
+    return {
+      ...clonedTicket,
+      links: redactedLinks,
+    };
   }
 
   public async listTickets(filter?: ListTicketsFilter): Promise<EsedreTicket[]> {
@@ -134,8 +173,41 @@ export class SecurityFilter implements StorageAdapter {
       .map((t) => this.redactLinks(t));
   }
 
+  private async resolveTicketLookup(
+    id: number | string,
+    project?: string
+  ): Promise<{ lookupId: number | string; ticket: EsedreTicket | null }> {
+    if (project && project.trim() && project.trim().toLowerCase() !== 'all') {
+      const qualified = this.qualifyTicketId(id, project);
+      const ticket = await this.target.getTicket(qualified);
+      return { lookupId: qualified, ticket };
+    }
+    try {
+      const ticket = await this.target.getTicket(id);
+      if (ticket) {
+        return { lookupId: id, ticket };
+      }
+    } catch (err: any) {
+      if (this.config.projectCode && /Ambiguous ticket/i.test(String(err?.message || ''))) {
+        const qualified = this.qualifyTicketId(id);
+        const ticket = await this.target.getTicket(qualified);
+        return { lookupId: qualified, ticket };
+      }
+      throw err;
+    }
+
+    const qualified = this.qualifyTicketId(id);
+    if (qualified !== id) {
+      const ticket = await this.target.getTicket(qualified);
+      if (ticket) {
+        return { lookupId: qualified, ticket };
+      }
+    }
+    return { lookupId: id, ticket: null };
+  }
+
   public async getTicket(id: number | string): Promise<EsedreTicket | null> {
-    const ticket = await this.target.getTicket(id);
+    const { ticket } = await this.resolveTicketLookup(id);
     if (!ticket) return null;
     const code = ticket.projectDescriptor?.code || ticket.meta.project;
     if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
@@ -149,11 +221,15 @@ export class SecurityFilter implements StorageAdapter {
     if (targetCode && !isProjectAuthorized(targetCode, this.config.allowedProjects)) {
       throw new EsedreAuthorizationError(targetCode);
     }
-    return this.target.createTicket(input);
+    const created = await this.target.createTicket({
+      ...input,
+      ...(targetCode ? { projectCode: targetCode } : {}),
+    });
+    return this.redactLinks(created);
   }
 
   public async updateTicket(id: number | string, updates: UpdateTicketInput, lastHash?: string): Promise<EsedreTicket> {
-    const existing = await this.target.getTicket(id);
+    const { lookupId, ticket: existing } = await this.resolveTicketLookup(id, updates.project);
     if (existing) {
       const code = existing.projectDescriptor?.code || existing.meta.project;
       if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
@@ -163,40 +239,41 @@ export class SecurityFilter implements StorageAdapter {
     if (updates.project && !isProjectAuthorized(updates.project, this.config.allowedProjects)) {
       throw new EsedreAuthorizationError(updates.project);
     }
-    return this.target.updateTicket(id, updates, lastHash);
+    const updated = await this.target.updateTicket(lookupId, updates, lastHash);
+    return this.redactLinks(updated);
   }
 
   public async getPlan(id: number | string): Promise<string | null> {
-    const ticket = await this.target.getTicket(id);
+    const { lookupId, ticket } = await this.resolveTicketLookup(id);
     if (ticket) {
       const code = ticket.projectDescriptor?.code || ticket.meta.project;
       if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
         throw new EsedreAuthorizationError(code);
       }
     }
-    return this.target.getPlan(id);
+    return this.target.getPlan(lookupId);
   }
 
   public async savePlan(id: number | string, planMarkdown: string, lastHash?: string): Promise<void> {
-    const ticket = await this.target.getTicket(id);
+    const { lookupId, ticket } = await this.resolveTicketLookup(id);
     if (ticket) {
       const code = ticket.projectDescriptor?.code || ticket.meta.project;
       if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
         throw new EsedreAuthorizationError(code);
       }
     }
-    return this.target.savePlan(id, planMarkdown, lastHash);
+    return this.target.savePlan(lookupId, planMarkdown, lastHash);
   }
 
   public async addComment(id: number | string, comment: { author: string; text: string }): Promise<TicketComment> {
-    const ticket = await this.target.getTicket(id);
+    const { lookupId, ticket } = await this.resolveTicketLookup(id);
     if (ticket) {
       const code = ticket.projectDescriptor?.code || ticket.meta.project;
       if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
         throw new EsedreAuthorizationError(code);
       }
     }
-    return this.target.addComment(id, comment);
+    return this.target.addComment(lookupId, comment);
   }
 
   public async listMilestones(projectCode?: string): Promise<Milestone[]> {
@@ -217,7 +294,7 @@ export class SecurityFilter implements StorageAdapter {
     if (projectCode && projectCode !== 'all' && !isProjectAuthorized(projectCode, this.config.allowedProjects)) {
       throw new EsedreAuthorizationError(projectCode);
     }
-    const milestone = await this.target.getMilestone(id, projectCode);
+    const milestone = await this.target.getMilestone(id, projectCode || this.config.projectCode);
     if (!milestone) return null;
     if (milestone.project && !isProjectAuthorized(milestone.project, this.config.allowedProjects)) {
       throw new EsedreAuthorizationError(milestone.project);
@@ -230,27 +307,32 @@ export class SecurityFilter implements StorageAdapter {
     if (targetCode && !isProjectAuthorized(targetCode, this.config.allowedProjects)) {
       throw new EsedreAuthorizationError(targetCode);
     }
-    return this.target.createMilestone(input);
+    return this.target.createMilestone({
+      ...input,
+      ...(targetCode ? { projectCode: targetCode } : {}),
+    });
   }
 
   public async updateMilestone(id: number | string, input: UpdateMilestoneInput, projectCode?: string): Promise<Milestone> {
-    const existing = await this.target.getMilestone(id, projectCode);
+    const effectiveProject = projectCode || this.config.projectCode;
+    const existing = await this.target.getMilestone(id, effectiveProject);
     if (existing) {
       if (existing.project && !isProjectAuthorized(existing.project, this.config.allowedProjects)) {
         throw new EsedreAuthorizationError(existing.project);
       }
     }
-    return this.target.updateMilestone(id, input, projectCode);
+    return this.target.updateMilestone(id, input, effectiveProject);
   }
 
   public async deleteMilestone(id: number | string, projectCode?: string): Promise<boolean> {
-    const existing = await this.target.getMilestone(id, projectCode);
+    const effectiveProject = projectCode || this.config.projectCode;
+    const existing = await this.target.getMilestone(id, effectiveProject);
     if (existing) {
       if (existing.project && !isProjectAuthorized(existing.project, this.config.allowedProjects)) {
         throw new EsedreAuthorizationError(existing.project);
       }
     }
-    return this.target.deleteMilestone(id, projectCode);
+    return this.target.deleteMilestone(id, effectiveProject);
   }
 
   private qualifyTicketId(id: number | string, project?: string): number | string {
@@ -315,25 +397,25 @@ export class SecurityFilter implements StorageAdapter {
   }
 
   public async getAnswers(id: number | string): Promise<Record<string, string>> {
-    const ticket = await this.target.getTicket(id);
+    const { lookupId, ticket } = await this.resolveTicketLookup(id);
     if (ticket) {
       const code = ticket.projectDescriptor?.code || ticket.meta.project;
       if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
         throw new EsedreAuthorizationError(code);
       }
     }
-    return this.target.getAnswers(id);
+    return this.target.getAnswers(lookupId);
   }
 
   public async saveAnswer(id: number | string, questionIndex: number, answer: string): Promise<Record<string, string>> {
-    const ticket = await this.target.getTicket(id);
+    const { lookupId, ticket } = await this.resolveTicketLookup(id);
     if (ticket) {
       const code = ticket.projectDescriptor?.code || ticket.meta.project;
       if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
         throw new EsedreAuthorizationError(code);
       }
     }
-    return this.target.saveAnswer(id, questionIndex, answer);
+    return this.target.saveAnswer(lookupId, questionIndex, answer);
   }
 
   public async saveDetail(
@@ -341,25 +423,25 @@ export class SecurityFilter implements StorageAdapter {
     detailMarkdown: string,
     metaUpdates?: Partial<TicketMeta>
   ): Promise<{ success: boolean; meta?: TicketMeta; detail?: string }> {
-    const ticket = await this.target.getTicket(id);
+    const { lookupId, ticket } = await this.resolveTicketLookup(id);
     if (ticket) {
       const code = ticket.projectDescriptor?.code || ticket.meta.project;
       if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
         throw new EsedreAuthorizationError(code);
       }
     }
-    return this.target.saveDetail(id, detailMarkdown, metaUpdates);
+    return this.target.saveDetail(lookupId, detailMarkdown, metaUpdates);
   }
 
   public async getInlineComments(id: number | string): Promise<any[]> {
-    const ticket = await this.target.getTicket(id);
+    const { lookupId, ticket } = await this.resolveTicketLookup(id);
     if (ticket) {
       const code = ticket.projectDescriptor?.code || ticket.meta.project;
       if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
         throw new EsedreAuthorizationError(code);
       }
     }
-    return this.target.getInlineComments ? this.target.getInlineComments(id) : [];
+    return this.target.getInlineComments ? this.target.getInlineComments(lookupId) : [];
   }
 
   public async saveInlineComment(
@@ -368,14 +450,14 @@ export class SecurityFilter implements StorageAdapter {
     comment: string,
     author?: string
   ): Promise<any[]> {
-    const ticket = await this.target.getTicket(id);
+    const { lookupId, ticket } = await this.resolveTicketLookup(id);
     if (ticket) {
       const code = ticket.projectDescriptor?.code || ticket.meta.project;
       if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
         throw new EsedreAuthorizationError(code);
       }
     }
-    return this.target.saveInlineComment ? this.target.saveInlineComment(id, selectedText, comment, author) : [];
+    return this.target.saveInlineComment ? this.target.saveInlineComment(lookupId, selectedText, comment, author) : [];
   }
 
   public async saveAttachment(
@@ -383,7 +465,7 @@ export class SecurityFilter implements StorageAdapter {
     filename: string,
     buffer: Buffer
   ): Promise<{ filename: string; relativePath: string }> {
-    const ticket = await this.target.getTicket(id);
+    const { lookupId, ticket } = await this.resolveTicketLookup(id);
     if (ticket) {
       const code = ticket.projectDescriptor?.code || ticket.meta.project;
       if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
@@ -393,12 +475,14 @@ export class SecurityFilter implements StorageAdapter {
     if (!this.target.saveAttachment) {
       throw new Error('Attachments are not supported by target storage adapter.');
     }
-    return this.target.saveAttachment(id, filename, buffer);
+    return this.target.saveAttachment(lookupId, filename, buffer);
   }
 
   public getAttachmentPath(id: number | string, filename: string): string | null {
     if ((this.target as any).findTicketLocation) {
-      const locInfo = (this.target as any).findTicketLocation(id);
+      const locInfo =
+        (this.target as any).findTicketLocation(id) ||
+        (this.target as any).findTicketLocation(this.qualifyTicketId(id));
       if (locInfo) {
         const code = locInfo.loc?.project?.code;
         if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
@@ -413,30 +497,51 @@ export class SecurityFilter implements StorageAdapter {
     if (input.project && !isProjectAuthorized(input.project, this.config.allowedProjects)) {
       throw new EsedreAuthorizationError(input.project);
     }
-    const ticket = await this.getTicket(
-      input.project && /^\d+$/.test(String(input.ticketId).trim())
-        ? `${input.project}-${input.ticketId}`
-        : input.ticketId
-    );
+    const { lookupId, ticket } = await this.resolveTicketLookup(input.ticketId, input.project);
     if (!ticket) {
       throw new Error(`Ticket #${input.ticketId} not found`);
     }
-    return this.target.claimTicket(input);
+    const code = ticket.projectDescriptor?.code || ticket.meta.project;
+    if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(code);
+    }
+    try {
+      const res = await this.target.claimTicket({
+        ...input,
+        ticketId: lookupId,
+        project: input.project || code || this.config.projectCode,
+      });
+      return {
+        ...res,
+        lease: this.redactLease(res.lease)!,
+        ticket: this.redactLinks(res.ticket),
+      };
+    } catch (err: any) {
+      if (err instanceof EsedreLeaseConflictError) {
+        throw new EsedreLeaseConflictError(err.ticketKey, this.redactLease(err.activeLease)!);
+      }
+      throw err;
+    }
   }
 
   public async renewLease(input: RenewLeaseInput): Promise<TicketLease> {
     if (input.project && !isProjectAuthorized(input.project, this.config.allowedProjects)) {
       throw new EsedreAuthorizationError(input.project);
     }
-    const ticket = await this.getTicket(
-      input.project && /^\d+$/.test(String(input.ticketId).trim())
-        ? `${input.project}-${input.ticketId}`
-        : input.ticketId
-    );
+    const { lookupId, ticket } = await this.resolveTicketLookup(input.ticketId, input.project);
     if (!ticket) {
       throw new Error(`Ticket #${input.ticketId} not found`);
     }
-    return this.target.renewLease(input);
+    const code = ticket.projectDescriptor?.code || ticket.meta.project;
+    if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(code);
+    }
+    const lease = await this.target.renewLease({
+      ...input,
+      ticketId: lookupId,
+      project: input.project || code || this.config.projectCode,
+    });
+    return this.redactLease(lease)!;
   }
 
   public async releaseTicket(
@@ -445,26 +550,37 @@ export class SecurityFilter implements StorageAdapter {
     if (input.project && !isProjectAuthorized(input.project, this.config.allowedProjects)) {
       throw new EsedreAuthorizationError(input.project);
     }
-    const ticket = await this.getTicket(
-      input.project && /^\d+$/.test(String(input.ticketId).trim())
-        ? `${input.project}-${input.ticketId}`
-        : input.ticketId
-    );
+    const { lookupId, ticket } = await this.resolveTicketLookup(input.ticketId, input.project);
     if (!ticket) {
       throw new Error(`Ticket #${input.ticketId} not found`);
     }
-    return this.target.releaseTicket(input);
+    const code = ticket.projectDescriptor?.code || ticket.meta.project;
+    if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(code);
+    }
+    const res = await this.target.releaseTicket({
+      ...input,
+      ticketId: lookupId,
+      project: input.project || code || this.config.projectCode,
+    });
+    return {
+      ...res,
+      ...(res.previousLease ? { previousLease: this.redactLease(res.previousLease) } : {}),
+    };
   }
 
   public async getTicketLease(id: number | string, projectCode?: string): Promise<TicketLease | null> {
     if (projectCode && !isProjectAuthorized(projectCode, this.config.allowedProjects)) {
       throw new EsedreAuthorizationError(projectCode);
     }
-    const ticket = await this.getTicket(
-      projectCode && /^\d+$/.test(String(id).trim()) ? `${projectCode}-${id}` : id
-    );
+    const { lookupId, ticket } = await this.resolveTicketLookup(id, projectCode);
     if (!ticket) return null;
-    return this.target.getTicketLease(id, projectCode);
+    const code = ticket.projectDescriptor?.code || ticket.meta.project;
+    if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(code);
+    }
+    const lease = await this.target.getTicketLease(lookupId, projectCode || code || this.config.projectCode);
+    return this.redactLease(lease) || null;
   }
 
   public async listLeases(projectCode?: string): Promise<TicketLease[]> {
@@ -472,6 +588,8 @@ export class SecurityFilter implements StorageAdapter {
       throw new EsedreAuthorizationError(projectCode);
     }
     const allLeases = await this.target.listLeases(projectCode);
-    return allLeases.filter((l) => isProjectAuthorized(l.project, this.config.allowedProjects));
+    return allLeases
+      .filter((l) => isProjectAuthorized(l.project, this.config.allowedProjects))
+      .map((l) => this.redactLease(l)!);
   }
 }

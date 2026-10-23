@@ -14,7 +14,8 @@ This skill details how the Esedre Model Context Protocol (MCP) server is structu
   - Output: The server responds with newline-delimited JSON-RPC 2.0 messages via `stdout`.
   - **Diagnostic Invariant**: All server logs, heartbeat diagnostics, and stack traces MUST strictly be written to `stderr` (`process.stderr.write`). Writing non-JSON text to `stdout` corrupts the stdio JSON-RPC stream.
 - **Specification Version**: Compatible with the MCP protocol specification (`2024-11-05`).
-- **Workspace & Global Antigravity Discovery**: `setupMcpConfig` writes `.agents/mcp.json`, `.agents/mcp_config.json`, and registers `esedre` in the user's global `~/.gemini/config/mcp_config.json` (used by Antigravity 2.x standalone `language_server.exe` hub daemon) with a resilient launcher that prefers `.esedre\esedre.cmd` when inside an initialized workspace and falls back to global `ese mcp`.
+- **Workspace & Global Antigravity Discovery**: `setupMcpConfig` writes `.agents/mcp.json`, `.agents/mcp_config.json`, registers `esedre` in the user's global `~/.gemini/config/mcp_config.json` (used by Antigravity 2.x standalone `language_server.exe` hub daemon), and installs the `PreToolUse` isolation hook (`~/.gemini/config/hooks.json` -> `~/.esedre/agy-pre-tool-hook.mjs`) which enforces per-session `workspace_roots` authorization and writes `~/.esedre/mcp-active-context.json` so global MCP daemons dynamically scope `SecurityFilter` and `projectCode` on every tool request.
+- **Host Path Redaction Invariant**: Agent-facing MCP tool responses (`esedre_get_ticket`, `esedre_claim_ticket`, `esedre_renew_lease`, `esedre_release_ticket`, `esedre_list_leases`, and `-32001` conflict errors) and `stderr` snapshot logs MUST strip host filesystem paths (`lease.worktree` and local repository paths) so agents cannot discover external directories on disk.
 
 ## 2. Standard Tools Specification
 

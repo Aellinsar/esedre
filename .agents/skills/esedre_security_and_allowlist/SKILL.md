@@ -61,3 +61,16 @@ The allow-list isolation is enforced by `SecurityFilter` across every operation:
 - **Server Decoupling from Launch Directory**: The background daemon and gateway server (`ese start`) instantiate unconstrained portfolio storage. This guarantees the developer Web UI has complete visibility across all registered data hubs and projects, regardless of which workspace directory the server was launched from.
 - **Server-Side Request Filtering**: HTTP clients and autonomous agents requesting `/api/*` endpoints can pass an `x-esedre-allowed-projects` header or `?allowedProjects=<codes>` query parameter. The API server dynamically wraps storage in a request-scoped `SecurityFilter`, isolating results to authorized projects and returning HTTP 403 on unauthorized requests.
 - **CLI and MCP Local Isolation**: Local agent CLI executions and MCP sessions directly bind to the active workspace's `allowedProjects`, guaranteeing strict containment for autonomous LLM coding agents.
+
+## 6. Scoped Global `projects` Inheritance, Zero Host Path Leakage & Antigravity `PreToolUse` Hook Bridge (`Esedre-92`)
+
+- **Scoped `globalConfig.projects` Inheritance**:
+  - When `findEsedreConfig()` discovers a workspace config (`.esedre/esedre.json`), it inherits only `allowedProjects`-authorized repository mappings from `~/.esedre/config.json` (`projects`) and binds `projectDir` onto hub `ResolvedProjectLocation` entries without emitting false `duplicateProjectWarnings`.
+  - Running `ese init`, `ese upgrade`, or `ese configure add` automatically registers workspaces in `~/.esedre/config.json` (`projects`) while preserving canonical `projectCode` casing.
+- **Zero Host Filesystem Path Leakage**:
+  - Host filesystem paths (`lease.worktree`) are retained internally in storage (`lease.json`) for Git branch auto-detection and local CLI inspection, but are strictly omitted from MCP tool responses, `-32001` lease conflict error payloads, `.esedre/snapshot.json` projections, and cross-repository `SecurityFilter` outputs.
+  - MCP `stderr` snapshot logs report only the project code (`[Esedre MCP] Refreshed snapshot for project '<Code>'`), never host filesystem paths.
+- **Antigravity Global MCP Isolation (`PreToolUse` Hook & Active Context Bridge)**:
+  - `setupGlobalAntigravityMcpConfig()` installs a self-contained hook script (`~/.esedre/agy-pre-tool-hook.mjs`) and registers an `esedre-isolation` `PreToolUse` hook in `~/.gemini/config/hooks.json`.
+  - Before any Esedre MCP call (both lazy `call_mcp_tool` and eager `mcp_esedre_*`), the hook resolves `.esedre/esedre.json` from `workspacePaths`, denies unauthorized explicit project or ticket-prefix calls (`{"decision": "deny"}`), and writes the active workspace scope to `~/.esedre/mcp-active-context.json`.
+  - When `EsedreMcpServer` runs in global fallback mode (`useGlobalContextBridge: true`), each JSON-RPC request dynamically reads `~/.esedre/mcp-active-context.json` to enforce a request-scoped `SecurityFilter` and qualify bare numeric ticket IDs to the active workspace's `projectCode`.

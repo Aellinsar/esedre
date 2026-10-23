@@ -131,7 +131,7 @@ export function getGlobalConfigDir(): string {
     return process.env.ESEDRE_GLOBAL_DIR;
   }
   if (process.env.VITEST) {
-    const testGlobalDir = path.join(os.tmpdir(), 'esedre-vitest-global');
+    const testGlobalDir = path.join(os.tmpdir(), `esedre-vitest-global-${process.pid}`);
     if (!fs.existsSync(testGlobalDir)) {
       try {
         fs.mkdirSync(testGlobalDir, { recursive: true });
@@ -249,10 +249,36 @@ export function addLocationToGlobalConfig(targetPath: string): AddLocationResult
 
   const current = readGlobalConfig() || { version: CURRENT_ESEDRE_VERSION, port: DEFAULT_ESEDRE_PORT };
 
-  // 1. Check if it is a data hub: has projects/ subfolder or projects.json
+  // 1. Inspect workspace/project descriptors first so a project repo with a 'projects/' folder is not misclassified as a data hub
+  const inRepoConfig = path.join(resolved, '.esedre', 'esedre.json');
+  const inRepoRootConfig = path.join(resolved, 'esedre.json');
+  const inRepoProjectJson = path.join(resolved, '.esedre', 'project.json');
+  const inRepoRootProjectJson = path.join(resolved, 'project.json');
+
+  let code: string | undefined;
+  let name: string | undefined;
+  let hasWorkspaceProjectCode = false;
+
+  for (const cand of [inRepoConfig, inRepoRootConfig, inRepoProjectJson, inRepoRootProjectJson]) {
+    if (fs.existsSync(cand)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(cand, 'utf-8'));
+        if (parsed.projectCode) {
+          code = String(parsed.projectCode).trim();
+          hasWorkspaceProjectCode = true;
+        }
+        if (parsed.code && !code) code = String(parsed.code).trim();
+        if (parsed.projectName) name = parsed.projectName;
+        if (parsed.name && !name) name = parsed.name;
+        if (code) break;
+      } catch {}
+    }
+  }
+
+  // 2. Check if it is a data hub: has projects.json, or has projects/ subfolder without a workspace projectCode
   const hasProjectsDir = fs.existsSync(path.join(resolved, 'projects'));
   const hasProjectsJson = fs.existsSync(path.join(resolved, 'projects.json'));
-  if (hasProjectsDir || hasProjectsJson) {
+  if (hasProjectsJson || (hasProjectsDir && !hasWorkspaceProjectCode)) {
     let projectCount = 0;
     if (hasProjectsJson) {
       try {
@@ -286,40 +312,24 @@ export function addLocationToGlobalConfig(targetPath: string): AddLocationResult
     return { type: 'hub', path: normalizedResolved, projectCount };
   }
 
-  // 2. Check if it is an initialized project repo: has .esedre/esedre.json or project.json
-  const inRepoConfig = path.join(resolved, '.esedre', 'esedre.json');
-  const inRepoRootConfig = path.join(resolved, 'esedre.json');
-  const inRepoProjectJson = path.join(resolved, '.esedre', 'project.json');
-  const inRepoRootProjectJson = path.join(resolved, 'project.json');
-
-  let code: string | undefined;
-  let name: string | undefined;
-
-  for (const cand of [inRepoConfig, inRepoRootConfig, inRepoProjectJson, inRepoRootProjectJson]) {
-    if (fs.existsSync(cand)) {
-      try {
-        const parsed = JSON.parse(fs.readFileSync(cand, 'utf-8'));
-        if (parsed.projectCode) code = parsed.projectCode;
-        if (parsed.code && !code) code = parsed.code;
-        if (parsed.projectName) name = parsed.projectName;
-        if (parsed.name && !name) name = parsed.name;
-        if (code) break;
-      } catch {}
-    }
-  }
-
+  // 3. Register as an initialized project repo if code was discovered
   if (code) {
-    const normalizedCode = code.toUpperCase();
+    const canonicalCode = code.trim();
     const normalizedResolved = resolved.replace(/\\/g, '/');
     if (!current.projects) {
       current.projects = {};
     }
-    current.projects[normalizedCode] = normalizedResolved;
+    for (const existingKey of Object.keys(current.projects)) {
+      if (existingKey.toLowerCase() === canonicalCode.toLowerCase() && existingKey !== canonicalCode) {
+        delete current.projects[existingKey];
+      }
+    }
+    current.projects[canonicalCode] = normalizedResolved;
     writeGlobalConfig(current);
-    return { type: 'project', code: normalizedCode, name, path: normalizedResolved };
+    return { type: 'project', code: canonicalCode, name, path: normalizedResolved };
   }
 
-  // 3. Uninitialized directory
+  // 4. Uninitialized directory
   return { type: 'uninitialized', path: resolved.replace(/\\/g, '/') };
 }
 
@@ -328,17 +338,21 @@ export function removeLocationFromGlobalConfig(identifier: string): { removed: b
   if (!current) return { removed: false };
 
   const trimmed = identifier.trim();
-  const normalizedId = trimmed.toUpperCase();
 
-  // Check projects map by code
-  if (current.projects && current.projects[normalizedId]) {
-    const target = current.projects[normalizedId];
-    delete current.projects[normalizedId];
-    if (Object.keys(current.projects).length === 0) {
-      delete current.projects;
+  // Check projects map by code (case-insensitive)
+  if (current.projects) {
+    const matchedKey = Object.keys(current.projects).find(
+      (k) => k.toLowerCase() === trimmed.toLowerCase()
+    );
+    if (matchedKey) {
+      const target = current.projects[matchedKey];
+      delete current.projects[matchedKey];
+      if (Object.keys(current.projects).length === 0) {
+        delete current.projects;
+      }
+      writeGlobalConfig(current);
+      return { removed: true, type: 'project', target };
     }
-    writeGlobalConfig(current);
-    return { removed: true, type: 'project', target };
   }
 
   // Check projects map by path
@@ -417,6 +431,7 @@ export interface DiscoveredConfig {
   config: EsedreConfig;
   configPath?: string | null;
   workspaceRoot: string;
+  isGlobalFallback?: boolean;
 }
 
 export interface FindConfigOptions {
@@ -480,10 +495,57 @@ export function findEsedreConfig(startDir?: string, options?: FindConfigOptions)
       }
     }
 
-    // Local workspace configuration takes precedence; only inherit machine defaults (port/ports) or matching central dataDir
+    const effectiveAllowed =
+      Array.isArray(localConfig.allowedProjects) && localConfig.allowedProjects.length > 0
+        ? localConfig.allowedProjects
+        : localConfig.projectCode
+          ? [localConfig.projectCode]
+          : undefined;
+
+    const hasExternalAllowedProjects = Boolean(
+      effectiveAllowed &&
+        effectiveAllowed.some(
+          (code) =>
+            code === '*' ||
+            !localConfig?.projectCode ||
+            code.trim().toLowerCase() !== localConfig.projectCode.trim().toLowerCase()
+        )
+    );
+
+    let inheritedProjects = localConfig.projects;
+    if (
+      (inheritedDataDir !== undefined || hasExternalAllowedProjects) &&
+      globalConfig?.projects &&
+      typeof globalConfig.projects === 'object'
+    ) {
+      const filteredGlobal: Record<string, string> = {};
+      for (const [code, rawPath] of Object.entries(globalConfig.projects)) {
+        if (!code || typeof rawPath !== 'string' || !rawPath.trim()) continue;
+        if (!isProjectAuthorized(code, effectiveAllowed)) continue;
+        const resolvedRepoPath = path.resolve(expandHome(rawPath));
+        if (!fs.existsSync(resolvedRepoPath)) continue;
+        filteredGlobal[code] = rawPath;
+      }
+      if (localConfig.projects && typeof localConfig.projects === 'object') {
+        for (const [localCode, localPath] of Object.entries(localConfig.projects)) {
+          for (const existingKey of Object.keys(filteredGlobal)) {
+            if (existingKey.toLowerCase() === localCode.toLowerCase() && existingKey !== localCode) {
+              delete filteredGlobal[existingKey];
+            }
+          }
+          filteredGlobal[localCode] = localPath;
+        }
+      }
+      if (Object.keys(filteredGlobal).length > 0) {
+        inheritedProjects = filteredGlobal;
+      }
+    }
+
+    // Local workspace configuration takes precedence; only inherit machine defaults (port/ports), matching central dataDir, or authorized global projects
     const merged: EsedreConfig = {
       ...localConfig,
       dataDir: inheritedDataDir,
+      projects: inheritedProjects,
       port: localConfig.port !== undefined ? localConfig.port : (globalConfig?.port || DEFAULT_ESEDRE_PORT),
       ports: localConfig.ports || globalConfig?.ports,
     };
@@ -491,6 +553,7 @@ export function findEsedreConfig(startDir?: string, options?: FindConfigOptions)
       config: merged,
       configPath: localConfigPath,
       workspaceRoot: localWorkspaceRoot,
+      isGlobalFallback: false,
     };
   }
 
@@ -527,6 +590,7 @@ export function findEsedreConfig(startDir?: string, options?: FindConfigOptions)
         config: globalConfig,
         configPath: getGlobalConfigPath(),
         workspaceRoot: process.cwd(),
+        isGlobalFallback: true,
       };
     }
   }
@@ -535,6 +599,7 @@ export function findEsedreConfig(startDir?: string, options?: FindConfigOptions)
     config: {},
     configPath: null,
     workspaceRoot: process.cwd(),
+    isGlobalFallback: true,
   };
 }
 

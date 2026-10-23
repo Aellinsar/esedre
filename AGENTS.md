@@ -90,11 +90,11 @@
 1. **Two-Tier Configuration Hierarchy**:
    - **Central Global Config (`~/.esedre/config.json`)**: Portfolio hubs (`dataDir`), linked repositories (`projects`), and default port (`5674`), managed via `ese configure`.
    - **Workspace Local Config (`.esedre/esedre.json`)**: Local `projectCode` and `allowedProjects`, initialized via `ese init`.
-   - **Smart `dataDir` Hoisting**: When `dataDir` is omitted locally, the loader checks whether `~/.esedre/config.json`'s `dataDir` contains the workspace's project (`hubContainsProject`) before inheriting it, keeping machine paths out of repo configs while preserving standalone in-repo projects.
+   - **Smart `dataDir` & Scoped `projects` Hoisting**: When `dataDir` is omitted locally, the loader checks whether `~/.esedre/config.json`'s `dataDir` contains the workspace's project (`hubContainsProject`) before inheriting it, and inherits only `allowedProjects`-authorized repository paths from `globalConfig.projects` (keeping standalone and unauthorized repos isolated).
 2. **Configuration & Upgrade Commands**:
    - `ese init [path]`: Initializes a workspace, data hub (`--hub`), or hub project (`--project <Code> [--name <Name>] [--hub <hub>]`).
    - `ese configure`: Manages `~/.esedre/config.json` (`add`, `remove`, `set`).
-   - `ese upgrade [<path>] [-p|--project <Code>] [--all|-a] [--force|-f]`: Upgrades workspace config schema, project storage schema versions (`schemaVersion` / `esedreVersion` with pre-migration backups in `~/.esedre/backups/`), wrappers, MCP config, and `.agents/skills/esedre/SKILL.md` (with warnings if `AGENTS.md` or `GEMINI.md` exceeds 24,000 bytes).
+   - `ese upgrade [<path>] [-p|--project <Code>] [--all|-a] [--force|-f]`: Upgrades workspace config schema, project storage schema versions (`schemaVersion` / `esedreVersion` with pre-migration backups in `~/.esedre/backups/`), wrappers, MCP config (including the Antigravity `PreToolUse` isolation hook), and `.agents/skills/esedre/SKILL.md`, while registering the workspace in `~/.esedre/config.json` (with warnings if `AGENTS.md` or `GEMINI.md` exceeds 24,000 bytes).
    - `ese rename-project <oldCode> <newCode> [--name "<name>"]` and `ese project set <code> [--name "<name>"]`.
 3. **Multi-Project Agent Isolation (`allowedProjects`)**:
    - Agents are strictly scoped to projects in `.esedre/esedre.json`'s `allowedProjects` (or `"*"` for umbrella workspaces).

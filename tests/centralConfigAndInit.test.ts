@@ -249,6 +249,84 @@ describe('Central Configuration & Init Engine', () => {
     expect(parsed.config.port).toBe(5690);
     expect(parsed.configPath).toBeTruthy();
   });
+
+  it('preserves canonical projectCode casing, heals legacy uppercase keys, and does not misclassify project repos containing a projects/ folder (Esedre-92)', () => {
+    const repoDir = path.join(tempRoot, 'esedre-repo');
+    // Create a source folder named 'projects' inside the project repo
+    fs.mkdirSync(path.join(repoDir, 'projects'), { recursive: true });
+
+    writeGlobalConfig({
+      version: CURRENT_ESEDRE_VERSION,
+      projects: {
+        ESEDRE: 'C:/old/path/to/esedre',
+      },
+    });
+
+    initWorkspace(repoDir, {
+      projectCode: 'Esedre',
+      projectName: 'Esedre Engine',
+    });
+
+    const globalCfg = readGlobalConfig();
+    expect(globalCfg?.projects?.['Esedre']).toBe(path.resolve(repoDir).replace(/\\/g, '/'));
+    expect(globalCfg?.projects?.['ESEDRE']).toBeUndefined();
+    expect(globalCfg?.dataDir).toBeUndefined();
+
+    const rmRes = removeLocationFromGlobalConfig('esedre');
+    expect(rmRes.removed).toBe(true);
+    expect(readGlobalConfig()?.projects?.['Esedre']).toBeUndefined();
+  });
+
+  it('inherits only allowedProjects-authorized global projects and binds projectDir to hub locations without duplicate warnings (Esedre-92)', async () => {
+    const { FilesystemStorageAdapter } = await import('../src/storage/filesystem.js');
+
+    const hubDir = path.join(tempRoot, 'esedre-data');
+    initHub(hubDir);
+
+    const labRepo = path.join(tempRoot, 'lab151');
+    const tcgRepo = path.join(tempRoot, 'lab151-tcg');
+    const personalRepo = path.join(tempRoot, 'personal-notes');
+    fs.mkdirSync(labRepo, { recursive: true });
+    fs.mkdirSync(tcgRepo, { recursive: true });
+    fs.mkdirSync(personalRepo, { recursive: true });
+
+    const hubStorage = new FilesystemStorageAdapter(hubDir, { dataDir: hubDir });
+    await hubStorage.registerProject({ code: 'Lab151', name: 'Lab 151 Umbrella' });
+    await hubStorage.registerProject({ code: 'TCG', name: 'Lab 151 TCG' });
+    await hubStorage.registerProject({ code: 'Personal', name: 'Personal' });
+
+    addLocationToGlobalConfig(hubDir);
+    initWorkspace(labRepo, {
+      projectCode: 'Lab151',
+      allowedProjects: ['Lab151', 'TCG'],
+    });
+    initWorkspace(tcgRepo, {
+      projectCode: 'TCG',
+      allowedProjects: ['TCG'],
+    });
+    initWorkspace(personalRepo, {
+      projectCode: 'Personal',
+      allowedProjects: ['Personal'],
+    });
+
+    // 1. Umbrella workspace (lab151) inherits Lab151 and TCG repo paths, but NOT Personal
+    const labDiscovered = findEsedreConfig(labRepo);
+    expect(labDiscovered.config.projects?.['Lab151']).toBe(path.resolve(labRepo).replace(/\\/g, '/'));
+    expect(labDiscovered.config.projects?.['TCG']).toBe(path.resolve(tcgRepo).replace(/\\/g, '/'));
+    expect(labDiscovered.config.projects?.['Personal']).toBeUndefined();
+
+    // 2. Child workspace (lab151-tcg) inherits ONLY TCG, NOT Lab151 or Personal
+    const tcgDiscovered = findEsedreConfig(tcgRepo);
+    expect(tcgDiscovered.config.projects?.['TCG']).toBe(path.resolve(tcgRepo).replace(/\\/g, '/'));
+    expect(tcgDiscovered.config.projects?.['Lab151']).toBeUndefined();
+    expect(tcgDiscovered.config.projects?.['Personal']).toBeUndefined();
+
+    // 3. FilesystemStorageAdapter binds projectDir onto hub locations with zero duplicate warnings
+    const labAdapter = new FilesystemStorageAdapter(labDiscovered.workspaceRoot, labDiscovered.config);
+    expect(labAdapter.getDuplicateProjectWarnings()).toEqual([]);
+    expect(labAdapter.getProjectRepoRoot('TCG')).toBe(path.resolve(tcgRepo));
+    expect(labAdapter.getProjectRepoRoot('Lab151')).toBe(path.resolve(labRepo));
+  });
 });
 
 

@@ -50,6 +50,7 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 | `snapshot`, `refresh` | `esedre snapshot [--project <code>]` | Re-generates or refreshes `.esedre/snapshot.json` projection (`totalTickets`, `lastTicketId`, `activeLeases`, `tickets`) for zero-latency agent context. |
 | `upgrade` | `esedre upgrade [<path>] [-p\|--project <code>] [--all \| -a] [--force \| -f] [--json]` | Upgrades workspace configuration, project data schema versions (with backups in `~/.esedre/backups/`), scripts, wrappers, workspace & global Antigravity MCP configs, and agent skills across current, target project, or all registered workspaces, warning if `AGENTS.md` or `GEMINI.md` exceeds 24,000 bytes. |
 | `mcp` | `esedre mcp` | Starts the Model Context Protocol stdio server. |
+| `hook` | `esedre hook agy-pre-tool` | Evaluates the Antigravity `PreToolUse` isolation hook and writes `~/.esedre/mcp-active-context.json` for global MCP daemon scoping. |
 
 ### Universal Shorthand Flags
 - `-t` / `--type`: Ticket type filter or assignment (`Feature`, `Platform`, `Tools`, `Idea`, `Bug`).
