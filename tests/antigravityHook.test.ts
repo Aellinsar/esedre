@@ -152,18 +152,58 @@ describe('Antigravity Global MCP Isolation, Hook Bridge & Zero Path Leaks (Esedr
     });
     expect(configured).toBe(true);
 
-    const hooksJsonPath = path.join(fakeGeminiDir, 'config', 'hooks.json');
+    const hooksConfigDir = path.join(fakeGeminiDir, 'config');
+    const hooksJsonPath = path.join(hooksConfigDir, 'hooks.json');
     expect(fs.existsSync(hooksJsonPath)).toBe(true);
     const hooksJson = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf-8'));
     expect(hooksJson['esedre-isolation']?.PreToolUse?.[0]?.matcher).toBe(
       'call_mcp_tool|list_resources|read_resource|.*esedre.*'
     );
+    const hookCommand = hooksJson['esedre-isolation']?.PreToolUse?.[0]?.hooks?.[0]?.command;
+    expect(hookCommand).toBe('node ./agy-pre-tool-hook.mjs');
+    expect(hookCommand).not.toContain('"');
+    expect(fs.existsSync(path.join(hooksConfigDir, 'agy-pre-tool-hook.mjs'))).toBe(true);
 
     const scriptPath = ensureAntigravityPreToolHookScript(fakeGlobalDir);
     expect(fs.existsSync(scriptPath)).toBe(true);
 
-    // Execute standalone .mjs hook with multi-root workspacePaths [hubDir, esedreDir, webDir]
-    const stdoutAllow = execFileSync(process.execPath, [scriptPath], {
+    // 1. Direct shell:false whitespace-tokenized spawn (matching Antigravity's direct process spawner),
+    // including when the user's home directory path contains spaces (e.g. "C:\Users\Jane Doe\.gemini\config")
+    const spacedGeminiDir = path.join(tempRoot, 'User With Spaces', '.gemini');
+    fs.mkdirSync(spacedGeminiDir, { recursive: true });
+    expect(
+      setupGlobalAntigravityMcpConfig({
+        geminiDir: spacedGeminiDir,
+        globalDir: fakeGlobalDir,
+      })
+    ).toBe(true);
+    const spacedConfigDir = path.join(spacedGeminiDir, 'config');
+    const [bin, ...tokenizedArgs] = hookCommand.trim().split(/\s+/);
+    const stdoutTokenized = execFileSync(bin === 'node' ? process.execPath : bin, tokenizedArgs, {
+      cwd: spacedConfigDir,
+      shell: false,
+      input: JSON.stringify({
+        conversationId: 'multi-root-session',
+        workspacePaths: [hubDir, esedreDir, webDir],
+        toolCall: {
+          name: 'call_mcp_tool',
+          args: {
+            ServerName: 'esedre',
+            ToolName: 'esedre_get_ticket',
+            Arguments: { ticketId: 'EseWeb-1' },
+          },
+        },
+      }),
+      env: { ...process.env, ESEDRE_GLOBAL_DIR: fakeGlobalDir },
+      encoding: 'utf-8',
+    }).trim();
+    expect(JSON.parse(stdoutTokenized)).toEqual({ decision: 'allow' });
+
+    // 2. Also verify execution via platform shell (cmd.exe /c on Windows, sh -c on Unix) with cwd set to ~/.gemini/config
+    const shellBin = process.platform === 'win32' ? 'cmd.exe' : 'sh';
+    const shellFlag = process.platform === 'win32' ? '/c' : '-c';
+    const stdoutAllow = execFileSync(shellBin, [shellFlag, hookCommand], {
+      cwd: hooksConfigDir,
       input: JSON.stringify({
         conversationId: 'multi-root-session',
         workspacePaths: [hubDir, esedreDir, webDir],

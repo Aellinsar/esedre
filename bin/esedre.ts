@@ -43,6 +43,7 @@ import {
   findOutdatedWrappers,
   upgradeAllWorkspaces,
   upgradeProjectData,
+  setupGlobalAntigravityMcpConfig,
 } from '../src/upgrade.js';
 import {
   EsedreVersionError,
@@ -937,6 +938,9 @@ async function main(): Promise<void> {
       }
 
       case 'mcp': {
+        try {
+          setupGlobalAntigravityMcpConfig();
+        } catch {}
         const mcpServer = new EsedreMcpServer(storage, {
           workspaceRoot: discovered.workspaceRoot,
           config: discovered.config,

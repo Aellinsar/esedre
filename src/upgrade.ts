@@ -555,7 +555,8 @@ export function setupGlobalAntigravityMcpConfig(options: { geminiDir?: string; g
       fs.writeFileSync(mcpConfigPath, JSON.stringify(configObj, null, 2) + '\n', 'utf-8');
     }
 
-    const hookScriptPath = ensureAntigravityPreToolHookScript(options.globalDir || getGlobalConfigDir());
+    ensureAntigravityPreToolHookScript(options.globalDir || getGlobalConfigDir());
+    ensureAntigravityPreToolHookScript(configDir);
     const hooksConfigPath = path.join(configDir, 'hooks.json');
     let hooksObj: Record<string, any> = {};
     if (fs.existsSync(hooksConfigPath)) {
@@ -575,7 +576,7 @@ export function setupGlobalAntigravityMcpConfig(options: { geminiDir?: string; g
           hooks: [
             {
               type: 'command',
-              command: `node "${hookScriptPath.replace(/\\/g, '/')}"`,
+              command: 'node ./agy-pre-tool-hook.mjs',
               timeout: 5,
             },
           ],
