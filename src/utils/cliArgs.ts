@@ -38,6 +38,8 @@ const BOOLEAN_OPTIONS: Record<string, { short?: string }> = {
   'in-dev': {},
   'no-in-dev': {},
   hub: {},
+  pull: {},
+  push: {},
 };
 
 const STRING_OPTIONS: Record<string, { short?: string }> = {
@@ -174,6 +176,7 @@ function getRequiredPositionalsBeforeMultiWordFlags(
     cmd === 'start' ||
     cmd === 'stop' ||
     cmd === 'logs' ||
+    cmd === 'sync' ||
     cmd === 'snapshot' ||
     cmd === 'refresh' ||
     cmd === 'doctor' ||
@@ -232,7 +235,11 @@ function preprocessCliArgs(rawArgs: string[]): string[] {
   for (let i = 0; i < sanitized.length; i++) {
     const tok = sanitized[i];
 
-    if (MULTI_WORD_STRING_FLAGS.has(tok) && i + 1 < sanitized.length) {
+    if (
+      MULTI_WORD_STRING_FLAGS.has(tok) &&
+      !(command.toLowerCase() === 'sync' && (tok === '--status' || tok === '-s')) &&
+      i + 1 < sanitized.length
+    ) {
       const firstVal = sanitized[i + 1];
       if (!isKnownFlagToken(firstVal)) {
         out.push(tok);
@@ -277,6 +284,7 @@ function preprocessCliArgs(rawArgs: string[]): string[] {
       const isStringFlag = (() => {
         if (tok.includes('=')) return false;
         const name = tok.startsWith('--') ? tok.slice(2) : SHORT_TO_LONG[tok.slice(1)];
+        if (command.toLowerCase() === 'sync' && name === 'status') return false;
         return Boolean(name && name in STRING_OPTIONS);
       })();
       if (isStringFlag && i + 1 < sanitized.length && !isKnownFlagToken(sanitized[i + 1])) {
@@ -320,6 +328,12 @@ export function parseCliArgs(rawArgs: string[]): ParsedCliArgs {
       multiple: true,
       ...(cfg.short ? { short: cfg.short } : {}),
     };
+  }
+
+  const firstNonFlag = normalizedArgs.find((a) => !a.startsWith('-') && a !== '');
+  const isSyncCommand = Boolean(firstNonFlag && firstNonFlag.toLowerCase() === 'sync');
+  if (isSyncCommand) {
+    optionsConfig['status'] = { type: 'boolean', short: 's' };
   }
 
   const parsed = nodeParseArgs({
@@ -441,7 +455,7 @@ export function parseCliArgs(rawArgs: string[]): ParsedCliArgs {
         continue;
       }
 
-      if (name in BOOLEAN_OPTIONS) {
+      if (name in BOOLEAN_OPTIONS || (isSyncCommand && name === 'status')) {
         if (token.inlineValue && token.value !== undefined) {
           const parsedBool = parseExplicitBooleanLiteral(String(token.value));
           if (parsedBool === undefined) {

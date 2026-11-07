@@ -138,6 +138,7 @@ Manage the local web dashboard and API server:
 | `stop` | `ese stop [--port <n>]` | Stop the running Esedre background server daemon. |
 | `status` | `ese status [--port <n>] [--host <url>]` | Check health, uptime, and diagnostics of the running local or remote server. |
 | `logs` | `ese logs [--port <n>] [--lines <n>]` | Tail recent server output logs. |
+| `sync` | `ese sync [--status \| -s] [--pull] [--push] [--hub <path>] [--json]` | Synchronize configured Esedre data hub repository (`esedre-data`) with its Git remote. |
 | `mcp` | `ese mcp` | Launch the Model Context Protocol stdio server for LLM agents. |
 | `hook` | `ese hook agy-pre-tool` | Evaluate Antigravity `PreToolUse` isolation hook and synchronize active MCP workspace context. |
 
@@ -195,6 +196,30 @@ Esedre resolves whether to use `HttpStorageAdapter` (remote HTTP) or `Filesystem
 3. **Self-Contained Local Project Precedence**: If the active workspace contains local in-repo tickets (`.esedre/tickets/<id>/`) or declares an in-repo `dataDir` (a directory inside the workspace root) in `.esedre/esedre.json`, local filesystem storage automatically takes precedence over a machine-global `server.host`.
 4. **Workspace Server Host (`server.host` in `.esedre/esedre.json`)**: Shared team or intranet repositories can declare a default `server.host` in `.esedre/esedre.json` (automatically bypassed on the host machine itself when the host owns the local `dataDir` hub).
 5. **Machine-Global Default (`server.host` in `~/.esedre/config.json`)**: Routes all non-standalone workspaces on a client machine to your primary Esedre server, while still generating local `.esedre/snapshot.json` files inside each client workspace for zero-latency LLM agent grounding.
+
+#### Automatic Data Hub Git Sync (`sync.enabled`)
+
+Esedre can automatically commit, pull with rebase, and push mutations in your dedicated ticket data hub (`esedre-data`) to GitHub while strictly leaving your project source code repositories untouched:
+
+```bash
+# Enable automatic data hub Git synchronization in ~/.esedre/config.json
+ese configure set sync.enabled true
+
+# Optional: customize debounce window (seconds) and periodic pull interval (minutes)
+ese configure set sync.debounceSeconds 3
+ese configure set sync.intervalMinutes 5
+
+# Inspect data hub sync status, pending commits, and last synced SHA
+ese sync --status
+
+# Trigger an immediate manual sync (or --pull / --push only)
+ese sync
+```
+
+* **Hard Data-Hub Boundary (`verifyDataHubGitRepo`)**: Auto-sync verifies that the target directory is the top-level Git root of a dedicated Esedre data hub (`projects/` + `projects.json` or `.esedre-hub`) and refuses to operate on source code repositories, workspace repositories with `projectCode`, or subdirectories inside a parent repo.
+* **Ephemeral Lease Exclusion**: `projects/*/tickets/*/lease.json` files are excluded from staging so high-frequency agent lease claims and heartbeats never pollute Git commit history.
+* **Clean Human Commit Messages**: Mutations within the debounce window coalesce into clean ticket-anchored commits (`[#Esedre-6] Complete ticket and update verification records` or `[#Esedre-6, #Esedre-51] Sync 2 ticket updates`) with zero conventional commit prefixes and zero em dashes.
+* **Non-Interactive Rebase & Conflict Recovery**: Sync runs with `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`, fetches and rebases (`git rebase --autostash`) before pushing, and automatically runs `git rebase --abort` if a merge conflict occurs so the data hub working tree is never left in a half-rebased state.
 
 #### Unique Project Codes Across Data Hubs
 

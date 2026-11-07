@@ -21,6 +21,7 @@ import { FilesystemStorageAdapter } from './storage/filesystem.js';
 import { SecurityFilter } from './securityFilter.js';
 
 import { CURRENT_ESEDRE_VERSION } from './types.js';
+import { globalGitSyncCoordinator } from './sync/gitSync.js';
 import {
   CURRENT_DATA_VERSION,
   runProjectMigrations,
@@ -1237,7 +1238,23 @@ export async function upgradeProjectData(
   if (!loc) {
     throw new Error(`Project "${cleanCode}" not found`);
   }
-  return runProjectMigrations(loc, storage, options);
+  const res = await runProjectMigrations(loc, storage, options);
+  if (
+    loc.sourceType === 'hub' &&
+    loc.hubDir &&
+    (res.appliedMigrations.length > 0 || res.previousSchemaVersion !== res.currentSchemaVersion)
+  ) {
+    globalGitSyncCoordinator.enqueueMutation(
+      {
+        hubDir: loc.hubDir,
+        action: 'upgrade-project',
+        project: loc.project.code,
+        timestamp: new Date().toISOString(),
+      },
+      readGlobalConfig()
+    );
+  }
+  return res;
 }
 
 /**

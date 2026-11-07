@@ -57,10 +57,13 @@ The unified gateway at port `5674` coordinates two internal sub-services:
    - Full heavy markdown and discussion payloads (`detail`, `planMarkdown`, `comments`, `answers`, `inlineComments`) are fetched on demand via `GET /api/planning/ticket/:id` when a user expands a card or opens a deep link, and cached on the client across summary polls while the ticket's `sha1` is unchanged.
    - The right-hand card grid progressively mounts cards in batches of 30 (`visibleCardLimit`) via `IntersectionObserver` while the left-hand Table of Contents and search filter operate across 100% of matching tickets immediately.
    - Sequential N+1 client fetches across `getMetas()`, `getTicketDetails()`, `getAnswers()`, `getComments()`, and `getPlanHistory()` on initial mount are strictly forbidden.
-3. **Ticket Lease REST Endpoints**:
+3. **Ticket Lease & Git Sync REST Endpoints**:
    - `GET /api/planning/leases`: Returns active unexpired ticket leases across projects with `remainingSeconds`.
    - `POST /api/planning/leases/claim`: Acquires a ticket lease.
    - `POST /api/planning/leases/release`: Releases an active ticket lease.
+   - `GET /api/planning/sync/status`: Returns `GitSyncStatusReport` across configured data hubs, including `projectModes` (`hub` vs. `in-repo` hands-off) and bounded sync metrics.
+   - `POST /api/planning/sync/config`: Validates and persists global `sync.*` settings (`enabled`, `remote`, `branch`, `push`, `pullOnStart`, `debounceSeconds`, `intervalMinutes`) in `~/.esedre/config.json` and refreshes the daemon background loop.
+   - `POST /api/planning/sync`: Enqueues a debounced sync event (`notifyOnly: true`) or flushes/synchronizes configured data hubs immediately (`results: GitSyncResult[]`).
 
 ---
 

@@ -1,11 +1,12 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { X, Settings, FileText, Palette, ShieldAlert, Cpu, Check, AlertCircle } from 'lucide-react';
+import { X, Edit3, FileText, Palette, ShieldAlert, Cpu, Check, AlertCircle, FolderGit2, AlertTriangle } from 'lucide-react';
 import { ConfirmationModal } from './ConfirmationModal.js';
 import {
   ProjectDescriptor,
   PALETTES,
   MAX_PROJECT_CODE_LENGTH,
   MAX_PROJECT_NAME_LENGTH,
+  GitSyncStatusReport,
 } from './types';
 
 interface ProjectSettingsModalProps {
@@ -15,6 +16,7 @@ interface ProjectSettingsModalProps {
   availableProjects?: ProjectDescriptor[];
   onSelectProject?: (proj: ProjectDescriptor) => void;
   onUpdated: (updatedProject: ProjectDescriptor, renamedCode?: { oldCode: string; newCode: string }) => void;
+  syncReport?: GitSyncStatusReport | null;
 }
 
 type SettingsTab = 'general' | 'code' | 'grounding';
@@ -26,6 +28,7 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
   availableProjects,
   onSelectProject,
   onUpdated,
+  syncReport,
 }) => {
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [name, setName] = useState('');
@@ -260,12 +263,12 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-[var(--border-subtle)] bg-[var(--bg-surface-elevated)]">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-8 h-8 rounded-xl bg-[var(--accent-bg-subtle)] border border-[var(--accent-border-subtle)] flex items-center justify-center text-[var(--accent-primary)] shadow-xs shrink-0">
-              <Settings size={18} />
+              <Edit3 size={16} />
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <h2 id="project-settings-title" className="text-sm font-bold text-[var(--text-primary)] truncate">
-                  Project Settings
+                  Edit Project
                 </h2>
                 {availableProjects && availableProjects.length > 1 && onSelectProject && (
                   <select
@@ -427,6 +430,39 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
                   ))}
                 </div>
               </div>
+
+              {(() => {
+                const projectMode = syncReport?.projectModes?.find(
+                  (m) => m.code.toLowerCase() === project.code.toLowerCase()
+                );
+                const isInRepo = projectMode?.storageMode === 'in-repo';
+                return (
+                  <div className="p-3 rounded-xl bg-[var(--bg-input)] border border-[var(--border-subtle)] space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-[var(--text-secondary)] flex items-center gap-1.5">
+                        <FolderGit2 size={13} className="text-[var(--accent-primary)]" />
+                        <span>Storage & Auto-Sync Posture</span>
+                      </span>
+                      {isInRepo ? (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold border border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300 inline-flex items-center gap-1">
+                          <AlertTriangle size={10} />
+                          In-Repo Storage (Hands-Off)
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 inline-flex items-center gap-1">
+                          <Check size={10} />
+                          Data Hub ({syncReport?.enabled ? 'Auto-Sync Active' : 'Auto-Sync Off'})
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
+                      {isInRepo
+                        ? 'Tickets for this project live inside its source repository (.esedre/tickets/). They are committed alongside your project code and cannot be auto-synced by Esedre.'
+                        : `Stored in dedicated data hub${projectMode?.hubDir ? ` (${projectMode.hubDir})` : ''}. Configure Data Hub Git Auto-Sync from the Global Settings gear in the top bar.`}
+                    </p>
+                  </div>
+                );
+              })()}
             </div>
           )}
 

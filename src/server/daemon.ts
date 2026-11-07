@@ -4,8 +4,9 @@ import http from 'node:http';
 import https from 'node:https';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { resolvePorts, getGlobalConfigDir, normalizeRemoteHostUrl } from '../config.js';
-import { CURRENT_ESEDRE_VERSION } from '../types.js';
+import { resolvePorts, getGlobalConfigDir, normalizeRemoteHostUrl, readGlobalConfig } from '../config.js';
+import { CURRENT_ESEDRE_VERSION, GitSyncStatusReport } from '../types.js';
+import { getGitSyncStatusReport } from '../sync/gitSync.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,6 +38,7 @@ export interface DaemonStatus {
   schemaVersion?: string;
   staleVersion?: boolean;
   installedVersion?: string;
+  sync?: GitSyncStatusReport;
   error?: string;
 }
 
@@ -525,6 +527,10 @@ export async function getDaemonStatus(options: { port?: number; json?: boolean; 
 
     const daemonVersion = state.version;
     const isStale = Boolean(daemonVersion && daemonVersion !== CURRENT_ESEDRE_VERSION);
+    let syncStatus: GitSyncStatusReport | undefined;
+    try {
+      syncStatus = await getGitSyncStatusReport(readGlobalConfig());
+    } catch {}
 
     return {
       running: true,
@@ -538,6 +544,7 @@ export async function getDaemonStatus(options: { port?: number; json?: boolean; 
       version: daemonVersion,
       staleVersion: isStale,
       installedVersion: CURRENT_ESEDRE_VERSION,
+      ...(syncStatus ? { sync: syncStatus } : {}),
     };
   }
 
@@ -558,6 +565,11 @@ export async function getDaemonStatus(options: { port?: number; json?: boolean; 
     } catch {}
   }
 
+  let syncStatus: GitSyncStatusReport | undefined;
+  try {
+    syncStatus = await getGitSyncStatusReport(readGlobalConfig());
+  } catch {}
+
   const effectiveVersion = state?.version || livePingData?.version;
   return {
     running: ping.responding && ping.isEsedre,
@@ -570,6 +582,7 @@ export async function getDaemonStatus(options: { port?: number; json?: boolean; 
     version: effectiveVersion,
     staleVersion: Boolean(effectiveVersion && effectiveVersion !== CURRENT_ESEDRE_VERSION),
     installedVersion: CURRENT_ESEDRE_VERSION,
+    ...(syncStatus ? { sync: syncStatus } : {}),
   };
 }
 
@@ -613,9 +626,13 @@ export async function getRemoteDaemonStatus(
   } catch {}
 
   try {
-    const [pingRes, projRes] = await Promise.all([
+    const [pingRes, projRes, syncRes] = await Promise.all([
       fetchJsonEndpoint(`${host}/api/ping`, timeoutMs),
       fetchJsonEndpoint(`${host}/api/planning/projects`, timeoutMs).catch(() => ({
+        status: 500,
+        data: null,
+      })),
+      fetchJsonEndpoint(`${host}/api/planning/sync/status`, timeoutMs).catch(() => ({
         status: 500,
         data: null,
       })),
@@ -628,6 +645,10 @@ export async function getRemoteDaemonStatus(
       : undefined;
     const remoteVersion = pingData?.version;
     const staleVersion = Boolean(remoteVersion && remoteVersion !== CURRENT_ESEDRE_VERSION);
+    const syncStatus: GitSyncStatusReport | undefined =
+      syncRes.status === 200 && syncRes.data && Array.isArray(syncRes.data.hubs)
+        ? syncRes.data
+        : undefined;
 
     return {
       running: isRunning,
@@ -642,6 +663,7 @@ export async function getRemoteDaemonStatus(
       schemaVersion: typeof pingData?.schemaVersion === 'string' ? pingData.schemaVersion : undefined,
       staleVersion,
       installedVersion: CURRENT_ESEDRE_VERSION,
+      ...(syncStatus ? { sync: syncStatus } : {}),
     };
   } catch (err: any) {
     return {

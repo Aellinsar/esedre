@@ -27,12 +27,14 @@ import {
   setGlobalConfigKey,
   getGlobalConfigKey,
   resolvePorts,
+  resolveGitSyncConfig,
   expandHome,
   writeGlobalVersion,
   DEFAULT_ESEDRE_PORT,
   MAX_PROJECT_CODE_LENGTH,
   MAX_PROJECT_NAME_LENGTH,
 } from '../src/config.js';
+import { globalGitSyncCoordinator, getGitSyncStatusReport } from '../src/sync/gitSync.js';
 import { detectProjectManifest } from '../src/utils/manifestDetector.js';
 import { generateProjectSnapshot } from '../src/snapshot.js';
 import {
@@ -129,6 +131,9 @@ ${colors.bold}SERVICE DAEMON COMMANDS:${colors.reset}
 
   ${colors.bold}logs${colors.reset}        [--port <n>] [--lines <n>]
                Tail recent logs from the Esedre background server.
+
+  ${colors.bold}sync${colors.reset}        [--status | -s] [--pull] [--push] [--hub <path>] [--json]
+               Synchronize configured Esedre data hub repository (esedre-data) with its Git remote.
 
   ${colors.bold}mcp${colors.reset}         Start the Model Context Protocol (MCP) JSON-RPC 2.0 stdio server for autonomous LLM coding agents.
 
@@ -784,10 +789,18 @@ async function main(): Promise<void> {
         }
 
         const configuredHost = globalCfg.server?.host || globalCfg.serverUrl;
+        const resolvedSync = resolveGitSyncConfig(globalCfg);
         console.log(`\n${colors.bold}${colors.cyan}Esedre Central Configuration${colors.reset}`);
-        console.log(`  • Config File:  ${configPath} ${fs.existsSync(configPath) ? colors.green + '(active)' + colors.reset : colors.dim + '(default)' + colors.reset}`);
-        console.log(`  • Default Port: ${globalCfg.port || DEFAULT_ESEDRE_PORT}`);
-        console.log(`  • Remote Host:  ${configuredHost ? colors.cyan + configuredHost + colors.reset : colors.dim + '(local filesystem)' + colors.reset}`);
+        console.log(`  • Config File:   ${configPath} ${fs.existsSync(configPath) ? colors.green + '(active)' + colors.reset : colors.dim + '(default)' + colors.reset}`);
+        console.log(`  • Default Port:  ${globalCfg.port || DEFAULT_ESEDRE_PORT}`);
+        console.log(`  • Remote Host:   ${configuredHost ? colors.cyan + configuredHost + colors.reset : colors.dim + '(local filesystem)' + colors.reset}`);
+        console.log(
+          `  • Git Auto-Sync: ${
+            resolvedSync.enabled
+              ? `${colors.green}enabled${colors.reset} (remote: ${resolvedSync.remote}, branch: ${resolvedSync.branch}, push: ${resolvedSync.push}, debounce: ${resolvedSync.debounceSeconds}s, interval: ${resolvedSync.intervalMinutes}m)`
+              : `${colors.dim}disabled (enable with 'ese configure set sync.enabled true')${colors.reset}`
+          }`
+        );
 
         console.log(`\n${colors.bold}Data Hubs (dataDir):${colors.reset}`);
         if (globalCfg.dataDir) {
@@ -819,6 +832,8 @@ async function main(): Promise<void> {
         console.log(`  • Link external repository: ${colors.cyan}ese configure add <repoPath>${colors.reset}`);
         console.log(`  • Register a data hub:      ${colors.cyan}ese configure add <hubPath>${colors.reset}`);
         console.log(`  • Set remote server host:   ${colors.cyan}ese configure set server.host http://<host>:5674${colors.reset}`);
+        console.log(`  • Enable Git auto-sync:     ${colors.cyan}ese configure set sync.enabled true${colors.reset}`);
+        console.log(`  • Sync data hub manually:   ${colors.cyan}ese sync [--status]${colors.reset}`);
         console.log(`  • Create hub project:       ${colors.cyan}ese init --project <code> --name "<name>"${colors.reset}`);
         console.log(`  • Unlink a project or hub:  ${colors.cyan}ese configure remove <code|path>${colors.reset}`);
         console.log(`  • Set setting value:        ${colors.cyan}ese configure set <key> <value>${colors.reset}`);
@@ -1176,6 +1191,13 @@ async function main(): Promise<void> {
               if (status.uptimeSeconds !== undefined) console.log(`  • Uptime:      ${status.uptimeSeconds}s`);
               if (status.startedAt) console.log(`  • Started:     ${status.startedAt}`);
               if (status.projects?.length) console.log(`  • Projects:    ${status.projects.join(', ')}`);
+              if (status.sync) {
+                const hubCount = status.sync.hubs.length;
+                const pendingTotal = status.sync.hubs.reduce((sum, h) => sum + (h.pendingCommits || 0), 0);
+                console.log(
+                  `  • Git Sync:    ${status.sync.enabled ? `${colors.green}enabled${colors.reset}` : `${colors.dim}disabled${colors.reset}`} (${hubCount} hub(s), ${pendingTotal} pending commit(s))`
+                );
+              }
             } else {
               console.log(`${colors.yellow}○ Remote Esedre daemon is OFFLINE (${status.host})${colors.reset}`);
             }
@@ -1188,6 +1210,13 @@ async function main(): Promise<void> {
             if (status.startedAt) console.log(`  • Started:     ${status.startedAt}`);
             if (status.projects?.length) console.log(`  • Projects:    ${status.projects.join(', ')}`);
             if (status.logFile) console.log(`  • Logs:        ${status.logFile}`);
+            if (status.sync) {
+              const hubCount = status.sync.hubs.length;
+              const pendingTotal = status.sync.hubs.reduce((sum, h) => sum + (h.pendingCommits || 0), 0);
+              console.log(
+                `  • Git Sync:    ${status.sync.enabled ? `${colors.green}enabled${colors.reset}` : `${colors.dim}disabled${colors.reset}`} (${hubCount} hub(s), ${pendingTotal} pending commit(s))`
+              );
+            }
 
             if (status.staleVersion) {
               console.log(`\n${colors.yellow}⚠️  Warning: Daemon is running v${status.version}, but v${status.installedVersion} is installed.${colors.reset}`);
@@ -1220,6 +1249,123 @@ async function main(): Promise<void> {
         const port = resolvePorts(discovered.config, { port: flagPort }).gateway;
         const lines = flags['lines'] ? parseInt(String(flags['lines']), 10) : 40;
         printDaemonLogs({ port, lines, workspaceRoot: discovered.workspaceRoot });
+        return;
+      }
+
+      case 'sync': {
+        const sub = positionals[0]?.toLowerCase();
+        const isStatusOnly = Boolean(flags['status'] || flags['s'] || sub === 'status');
+        const hubFlag = typeof flags['hub'] === 'string' ? flags['hub'] : undefined;
+
+        if (isStatusOnly) {
+          const report = storage.getSyncStatus
+            ? await storage.getSyncStatus(hubFlag)
+            : await getGitSyncStatusReport(discovered.config || readGlobalConfig(), hubFlag);
+          if (isJson) {
+            console.log(JSON.stringify(report, null, 2));
+            return;
+          }
+          console.log(`\n${colors.bold}${colors.cyan}Esedre Data Hub Git Sync Status${colors.reset}`);
+          console.log(
+            `  • Auto-Sync: ${
+              report.enabled ? `${colors.green}enabled${colors.reset}` : `${colors.dim}disabled${colors.reset}`
+            } (remote: ${report.config.remote}, branch: ${report.config.branch}, push: ${report.config.push}, debounce: ${report.config.debounceSeconds}s, interval: ${report.config.intervalMinutes}m)`
+          );
+          if (report.hubs.length === 0) {
+            console.log(`  • Hubs:      ${colors.dim}(no data hubs configured in dataDir)${colors.reset}`);
+            return;
+          }
+          for (const h of report.hubs) {
+            const stateColor =
+              h.status === 'idle'
+                ? colors.green
+                : h.status === 'disabled'
+                  ? colors.dim
+                  : h.status === 'offline'
+                    ? colors.yellow
+                    : colors.red;
+            console.log(`\n  ${colors.bold}Hub:${colors.reset} ${colors.cyan}${h.hubDir}${colors.reset}`);
+            console.log(`    - State:           ${stateColor}${h.status}${colors.reset}`);
+            console.log(`    - Remote / Branch: ${h.remote} / ${h.branch}`);
+            console.log(`    - Dirty Files:     ${h.dirtyFilesCount ?? 0}`);
+            console.log(`    - Pending Commits: ${h.pendingCommits}`);
+            if (h.lastCommitSha) {
+              console.log(
+                `    - Last Commit:     ${h.lastCommitSha}${h.lastCommitMessage ? ` (${h.lastCommitMessage})` : ''}`
+              );
+            }
+            if (h.lastSyncedAt) {
+              console.log(`    - Last Synced At:  ${h.lastSyncedAt}`);
+            }
+            if (h.lastError) {
+              console.log(`    - Last Error:      ${colors.yellow}${h.lastError}${colors.reset}`);
+            }
+          }
+          return;
+        }
+
+        const pullFlag = Boolean(flags['pull']);
+        const pushFlag = Boolean(flags['push']);
+        const pull = pullFlag || pushFlag || (!pullFlag && !pushFlag);
+        const push = pushFlag || (!pullFlag && !pushFlag);
+
+        const results = storage.syncDataHub
+          ? await storage.syncDataHub({
+              hubDir: hubFlag,
+              pull,
+              push,
+              commit: true,
+              force: true,
+            })
+          : await globalGitSyncCoordinator.flushAll(discovered.config || readGlobalConfig(), {
+              pull,
+              push,
+              commit: true,
+              force: true,
+            });
+
+        const hasFailure = results.some((r) => r.status === 'error' || r.status === 'conflict');
+        if (isJson) {
+          console.log(
+            JSON.stringify(
+              {
+                success: !hasFailure,
+                results,
+              },
+              null,
+              2
+            )
+          );
+          if (hasFailure) process.exit(1);
+          return;
+        }
+
+        if (results.length === 0) {
+          console.log(`${colors.yellow}No configured data hubs found to synchronize.${colors.reset}`);
+          return;
+        }
+
+        for (const r of results) {
+          if (r.status === 'error' || r.status === 'conflict') {
+            console.error(
+              `${colors.red}✗ Sync ${r.status} for ${r.hubDir}: ${r.error || 'Unknown error'}${colors.reset}`
+            );
+          } else if (r.status === 'offline') {
+            console.log(
+              `${colors.yellow}⚠️  Synced local commit for ${r.hubDir} (remote offline: ${r.error || 'deferred push'}, pending commits: ${r.pendingCommits})${colors.reset}`
+            );
+          } else {
+            const commitDetail = r.committed
+              ? `committed ${r.commitSha || ''} "${r.commitMessage || ''}"`
+              : 'working tree clean';
+            console.log(
+              `${colors.green}✔ Synced data hub ${r.hubDir}${colors.reset} (${commitDetail}, pulled: ${r.pulled ? 'yes' : 'no'}, pushed: ${r.pushed ? 'yes' : 'no'}, pending: ${r.pendingCommits})`
+            );
+          }
+        }
+        if (hasFailure) {
+          process.exit(1);
+        }
         return;
       }
 
@@ -2304,6 +2450,12 @@ async function main(): Promise<void> {
     }
     console.error(`${colors.red}Fatal Error: ${err.message}${colors.reset}`);
     process.exit(1);
+  } finally {
+    if (command !== 'mcp' && command !== 'start') {
+      try {
+        await globalGitSyncCoordinator.waitForIdle();
+      } catch {}
+    }
   }
 }
 

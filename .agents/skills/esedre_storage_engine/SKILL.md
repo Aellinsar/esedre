@@ -194,3 +194,19 @@ Tickets with uncompleted `blocked-by` links have `isBlocked: true` projected dyn
    - Triggered explicitly via `ese upgrade`, `ese upgrade --project <Code>`, or `ese upgrade --all`.
    - Before any schema transformation runs, `createProjectMigrationBackup` snapshots `project.json`, `milestones.json`, and `tickets/` into `~/.esedre/backups/<ProjectCode>-<timestamp>-v<from>/` with a `backup-manifest.json`.
 
+## 12. Automatic Data Hub Git Sync (`src/sync/`)
+
+1. **Configuration (`sync` in `~/.esedre/config.json`)**:
+   - Opt-in via `ese configure set sync.enabled true` (`resolveGitSyncConfig` defaults: `enabled: false`, `remote: 'origin'`, `branch: 'main'`, `push: true`, `pullOnStart: true`, `debounceSeconds: 3`, `intervalMinutes: 5`).
+2. **Hard Data-Hub Boundary (`verifyDataHubGitRepo` in `src/sync/gitSync.ts`)**:
+   - Verifies that `git rev-parse --show-toplevel` equals the canonical hub path (rejecting subdirectories inside parent repos), confirms the directory has `projects/` or `projects.json` or `.esedre-hub`, and rejects any repository containing `.esedre/esedre.json` with `projectCode` or Esedre's own `package.json` + `bin/esedre.ts`.
+   - `FilesystemStorageAdapter.recordHubSyncMutation` only emits `SyncMutationEvent` when `loc.sourceType === 'hub' && loc.hubDir`.
+3. **Scoped Staging & Lease Exclusion (`stageDataHubChanges`)**:
+   - Stages only `projects/`, `projects.json`, and `.esedre-hub` while excluding `:(exclude)projects/*/tickets/*/lease.json` and `:(exclude)**/lease.json` so ephemeral TTL leases never create Git commit churn.
+4. **Commit Message Formatting (`src/sync/commitMessage.ts`)**:
+   - `formatSyncCommitMessage(events, stagedFiles)` generates clean human commit messages following Esedre commit standards (`[#<ProjectCode>-<id>] <Imperative Summary>`), coalescing single-ticket and multi-ticket bursts within the debounce window, inferring `[#<ProjectCode>-<id>]` from staged paths when flushing unattributed changes, and stripping conventional prefixes and em dashes.
+5. **Non-Interactive Rebase, Lockfile & Conflict Recovery (`syncDataHub` & `GitSyncCoordinator`)**:
+   - Coordinates via `<hubDir>/.git/esedre-sync.lock` (stale PID lock recovery) and runs Git with `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`.
+   - Runs `git fetch --prune <remote> <branch>` and `git rebase --autostash <remote>/<branch>` before `git push -u <remote> <branch>`. If rebase fails, automatically runs `git rebase --abort` and records `status: 'conflict'` in `~/.esedre/sync-status.json`.
+
+

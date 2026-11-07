@@ -5,9 +5,86 @@ import crypto from 'node:crypto';
 import { StorageAdapter } from '../storage/adapter.js';
 import { SecurityFilter } from '../securityFilter.js';
 import { generateProjectSnapshot } from '../snapshot.js';
-import { validateProjectCode, validateProjectName } from '../config.js';
-import { CURRENT_ESEDRE_VERSION } from '../types.js';
+import { validateProjectCode, validateProjectName, readGlobalConfig, updateGlobalGitSyncConfig } from '../config.js';
+import { CURRENT_ESEDRE_VERSION, GitSyncStatusReport, ProjectSyncMode } from '../types.js';
 import { CURRENT_DATA_VERSION } from '../migrations/index.js';
+import { globalGitSyncCoordinator, getGitSyncStatusReport } from '../sync/gitSync.js';
+
+async function buildEnrichedSyncStatusReport(
+  reqStorage: StorageAdapter,
+  hub?: string
+): Promise<GitSyncStatusReport> {
+  const baseReport = reqStorage.getSyncStatus
+    ? await reqStorage.getSyncStatus(hub)
+    : await getGitSyncStatusReport(readGlobalConfig(), hub);
+
+  let projects: any[] = [];
+  try {
+    projects = await reqStorage.getProjects();
+  } catch {}
+
+  const projectModes: ProjectSyncMode[] = projects.map((p) => {
+    const codeLower = String(p.code || '').toLowerCase();
+    const matchedHub = baseReport.hubs.find((h) => {
+      if (Array.isArray(h.projects) && h.projects.some((c) => c.toLowerCase() === codeLower)) {
+        return true;
+      }
+      try {
+        const pDir = path.join(h.hubDir, 'projects', p.code);
+        if (fs.existsSync(pDir)) return true;
+      } catch {}
+      return false;
+    });
+
+    if (matchedHub) {
+      return {
+        code: p.code,
+        name: p.name || p.code,
+        storageMode: 'hub',
+        hubDir: matchedHub.hubDir,
+        autoSyncEligible: true,
+      };
+    }
+
+    return {
+      code: p.code,
+      name: p.name || p.code,
+      storageMode: 'in-repo',
+      autoSyncEligible: false,
+    };
+  });
+
+  return {
+    ...baseReport,
+    projectModes,
+  };
+}
+
+async function resolveAuthorizedSyncHubDir(
+  reqStorage: StorageAdapter,
+  rawHub?: string
+): Promise<string | undefined> {
+  if (!rawHub || typeof rawHub !== 'string' || !rawHub.trim()) return undefined;
+  const trimmed = rawHub.trim();
+  const baseReport = reqStorage.getSyncStatus
+    ? await reqStorage.getSyncStatus()
+    : await getGitSyncStatusReport(readGlobalConfig());
+  const configuredHubs = baseReport.hubs.map((h) => h.hubDir);
+  const resolvedCandidate = path.resolve(trimmed).toLowerCase();
+  const matched = configuredHubs.find(
+    (h) =>
+      path.resolve(h).toLowerCase() === resolvedCandidate ||
+      path.basename(h).toLowerCase() === trimmed.toLowerCase()
+  );
+  if (!matched) {
+    const err: any = new Error(
+      `Access Denied: Hub '${trimmed}' is not a configured Esedre data hub on this server.`
+    );
+    err.name = 'EsedreAuthorizationError';
+    throw err;
+  }
+  return matched;
+}
 
 const SERVER_STARTED_AT = new Date().toISOString();
 
@@ -41,7 +118,7 @@ function sendJson(res: http.ServerResponse, status: number, data: any, extraHead
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-esedre-allowed-projects, If-None-Match',
     'Access-Control-Expose-Headers': 'ETag',
     ...(extraHeaders || {}),
@@ -600,6 +677,35 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
           sendJson(res, 200, { leases });
           return true;
         }
+
+        if (pathname === '/api/planning/sync/status') {
+          const rawHub = url.searchParams.get('hub') || undefined;
+          const hub = await resolveAuthorizedSyncHubDir(reqStorage, rawHub);
+          const statusReport = await buildEnrichedSyncStatusReport(reqStorage, hub);
+          sendJson(res, 200, statusReport);
+          return true;
+        }
+      }
+
+      if ((req.method === 'POST' || req.method === 'PUT') && pathname === '/api/planning/sync/config') {
+        const body = await readJsonBody(req);
+        try {
+          const updatedConfig = updateGlobalGitSyncConfig(body);
+          if ( (reqStorage as any).refreshConfig ) {
+            try { (reqStorage as any).refreshConfig(); } catch {}
+          }
+          globalGitSyncCoordinator.startDaemonBackgroundLoop(() => readGlobalConfig());
+          invalidateApiCache();
+          const statusReport = await buildEnrichedSyncStatusReport(reqStorage);
+          sendJson(res, 200, {
+            success: true,
+            config: updatedConfig,
+            status: statusReport,
+          });
+        } catch (validationErr: any) {
+          sendJson(res, 400, { error: validationErr.message || 'Invalid Git sync configuration.' });
+        }
+        return true;
       }
 
       if (req.method === 'POST') {
@@ -973,6 +1079,38 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
           });
           return true;
         }
+
+        if (pathname === '/api/planning/sync') {
+          if (body?.notifyOnly && body?.event && typeof body.event.hubDir === 'string') {
+            const authorizedHub = await resolveAuthorizedSyncHubDir(reqStorage, body.event.hubDir);
+            globalGitSyncCoordinator.enqueueMutation(
+              { ...body.event, hubDir: authorizedHub || body.event.hubDir },
+              readGlobalConfig()
+            );
+            sendJson(res, 200, { success: true, queued: true });
+            return true;
+          }
+          const authorizedHubDir = await resolveAuthorizedSyncHubDir(
+            reqStorage,
+            typeof body?.hubDir === 'string' ? body.hubDir : undefined
+          );
+          const syncOptions = {
+            hubDir: authorizedHubDir,
+            pull: body?.pull !== undefined ? Boolean(body.pull) : undefined,
+            push: body?.push !== undefined ? Boolean(body.push) : undefined,
+            commit: body?.commit !== undefined ? Boolean(body.commit) : undefined,
+            force: body?.force !== undefined ? Boolean(body.force) : true,
+          };
+          const results = reqStorage.syncDataHub
+            ? await reqStorage.syncDataHub(syncOptions)
+            : syncOptions.hubDir
+              ? [await globalGitSyncCoordinator.flushHub(syncOptions.hubDir, readGlobalConfig(), syncOptions)]
+              : await globalGitSyncCoordinator.flushAll(readGlobalConfig(), syncOptions);
+          invalidateApiCache();
+          const statusReport = await buildEnrichedSyncStatusReport(reqStorage, syncOptions.hubDir);
+          sendJson(res, 200, { success: true, results, status: statusReport });
+          return true;
+        }
       }
 
       sendJson(res, 404, { error: `Endpoint not found: ${pathname}` });
@@ -1027,6 +1165,8 @@ export function startApiServer(port: number, storage: StorageAdapter, workspaceR
   let prewarmTimer: ReturnType<typeof setTimeout> | null = null;
 
   server.listen(port, '127.0.0.1', () => {
+    globalGitSyncCoordinator.startDaemonBackgroundLoop(() => readGlobalConfig());
+
     // Asynchronously pre-warm storage and summary/full API caches on startup
     prewarmTimer = setTimeout(async () => {
       prewarmTimer = null;
@@ -1049,6 +1189,7 @@ export function startApiServer(port: number, storage: StorageAdapter, workspaceR
   });
 
   server.on('close', () => {
+    globalGitSyncCoordinator.stopDaemonBackgroundLoop();
     if (prewarmTimer) {
       clearTimeout(prewarmTimer);
       prewarmTimer = null;

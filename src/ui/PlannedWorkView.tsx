@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { X, Lightbulb, ShieldAlert, FileText, Search, ChevronRight, ChevronLeft, CheckCircle2, HelpCircle, Clock, Zap, List, Save, Edit3, Check, MessageSquare, Flag, Tag, User, Plus, Quote, Highlighter, Paperclip, GripHorizontal, ArrowRight, ArrowUp, ArrowDown, Trash2, Image as ImageIcon, RotateCcw, Columns, FileCode, Sliders, Split, History, Eye, XCircle, FolderKanban, Settings, Sun, Moon, ExternalLink, Milestone as MilestoneIcon, Link2, Loader2 } from 'lucide-react';
-import { TicketComment, TicketMeta, InlineComment, PlannedFeature, TicketHistorySnapshot, KNOWN_FEATURE_FLAGS, ProjectName, ALL_PROJECTS, ALL_PROJECT_NAMES, UNASSIGNED_PROJECT_COLORS, getProjectDescriptor, getProjectById, ProjectDescriptor, setRuntimeProjects, getRuntimeProjects, DEFAULT_ESEDRE_PORT, TicketPriority, PRIORITIES, PRIORITY_CONFIG, Milestone, LINK_RELATION_LABELS } from './types';
+import { TicketComment, TicketMeta, InlineComment, PlannedFeature, TicketHistorySnapshot, KNOWN_FEATURE_FLAGS, ProjectName, ALL_PROJECTS, ALL_PROJECT_NAMES, UNASSIGNED_PROJECT_COLORS, getProjectDescriptor, getProjectById, ProjectDescriptor, setRuntimeProjects, getRuntimeProjects, DEFAULT_ESEDRE_PORT, TicketPriority, PRIORITIES, PRIORITY_CONFIG, Milestone, LINK_RELATION_LABELS, GitSyncStatusReport } from './types';
 import { activePlanningProvider, loadPlanningClientCache, savePlanningClientCache, PlanningClientCache } from './planningClient';
 import { parsePlannedWorkMarkdown } from './planParser';
 import { CreateTicketModal } from './CreateTicketModal';
 import { CreateProjectModal } from './CreateProjectModal';
 import { ProjectSettingsModal } from './ProjectSettingsModal';
+import { GlobalGitSyncModal } from './GlobalGitSyncModal';
 import { TicketHelpModal } from './TicketHelpModal';
 import { MilestonesView } from './MilestonesView';
 import { MilestoneModal } from './MilestoneModal';
@@ -908,6 +909,8 @@ export function PlannedWorkView({
   const [isCreateProjectOpen, setIsCreateProjectOpen] = useState(false);
   const [isProjectSettingsOpen, setIsProjectSettingsOpen] = useState(false);
   const [selectedSettingsProjectCode, setSelectedSettingsProjectCode] = useState<string | null>(null);
+  const [isGlobalSettingsOpen, setIsGlobalSettingsOpen] = useState(false);
+  const [syncReport, setSyncReport] = useState<GitSyncStatusReport | null>(null);
 
   const currentProject = useMemo(() => {
     if (projectFilter === 'all') return null;
@@ -1063,6 +1066,23 @@ export function PlannedWorkView({
   };
 
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+
+  useEffect(() => {
+    if (isEmbedded || !isOwner) return;
+    let cancelled = false;
+    fetch('/api/planning/sync/status')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data && typeof data === 'object' && Array.isArray(data.hubs)) {
+          setSyncReport(data as GitSyncStatusReport);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isEmbedded, isOwner, refreshTrigger]);
+
   const lastRevisionRef = useRef<string | undefined>(undefined);
   const hydratedHashesRef = useRef<Record<string, string>>({});
   const hydratingTicketsRef = useRef<Set<string>>(new Set());
@@ -2513,6 +2533,43 @@ export function PlannedWorkView({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {isOwner && !isEmbedded && (() => {
+              const hubs = syncReport?.hubs || [];
+              const hasConflictOrError = hubs.some((h) => h.status === 'conflict' || h.status === 'error');
+              const isSyncing = hubs.some((h) => h.status === 'syncing');
+              const hasPending = hubs.some((h) => h.status === 'offline' || h.pendingCommits > 0 || (h.dirtyFilesCount ?? 0) > 0);
+              const syncDotClass = !syncReport?.enabled
+                ? 'bg-slate-400'
+                : hasConflictOrError
+                ? 'bg-rose-500 animate-pulse'
+                : isSyncing
+                ? 'bg-sky-500 animate-pulse'
+                : hasPending
+                ? 'bg-amber-500'
+                : 'bg-emerald-500';
+              const syncLabel = !syncReport?.enabled
+                ? 'Git Sync: Off'
+                : hasConflictOrError
+                ? 'Git Sync: Attention Needed'
+                : isSyncing
+                ? 'Git Sync: Syncing...'
+                : hasPending
+                ? 'Git Sync: Pending Changes'
+                : 'Git Sync: Active';
+              return (
+                <button
+                  type="button"
+                  onClick={() => setIsGlobalSettingsOpen(true)}
+                  className="p-1.5 px-2.5 rounded-xl border border-[var(--border-subtle)] hover:border-[var(--border-strong)] bg-[var(--bg-surface)] hover:bg-[var(--accent-bg-subtle)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                  title={`Global Esedre Settings (${syncLabel})`}
+                  aria-label="Global Esedre Settings"
+                >
+                  <Settings size={14} className="text-[var(--accent-primary)]" />
+                  <span className={`w-2 h-2 rounded-full ${syncDotClass}`} />
+                  <span className="text-[11px] font-medium hidden sm:inline">Settings</span>
+                </button>
+              );
+            })()}
             <button
               type="button"
               onClick={toggleDedicatedTheme}
@@ -2610,75 +2667,76 @@ export function PlannedWorkView({
           </div>
 
           <div className="flex items-center gap-2 mb-1 shrink-0">
-            {/* Project Filter */}
+            {/* Project Filter Split-Pill (with inline Edit Project pencil when a single project is selected) */}
             {(!isEmbedded || availableProjects.length > 1) && (
-              <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[var(--bg-input)] border border-[var(--border-subtle)] hover:border-[var(--border-strong)] rounded-xl text-xs transition-colors shadow-xs">
-                <FolderKanban size={13} className="text-[var(--accent-primary)] shrink-0" />
-                <span className="text-[10px] font-mono text-[var(--text-muted)] hidden sm:inline">Project:</span>
-                <select
-                  value={(() => {
-                    if (projectFilter === 'all') return 'all';
-                    const desc = getProjectDescriptor(projectFilter);
-                    return desc?.code || projectFilter;
-                  })()}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (val === '__new__') {
-                      setIsCreateProjectOpen(true);
-                      return;
-                    }
-                    const desc = val !== 'all' ? getProjectDescriptor(val) : undefined;
-                    const code = desc?.code || val;
-                    setProjectFilter(code);
-                    try {
-                      sessionStorage.setItem('dev_plan_project_filter', code);
-                      localStorage.setItem('dev_plan_project_filter', code);
-                      updateProjectUrlSearchParam(code, isEmbedded);
-                    } catch (err) {}
-
-                    if (code !== 'all' && expandedFeatureId) {
-                      const curFeat = parsedData.plannedFeatures.find((f) => f.id === expandedFeatureId);
-                      const curProj = getProjectDescriptor(curFeat?.projectId)?.code || curFeat?.project;
-                      if (curProj && curProj.toLowerCase() !== code.toLowerCase()) {
-                        setExpandedFeatureId(null);
-                        window.history.replaceState({}, '', window.location.pathname + `?project=${encodeURIComponent(code)}`);
+              <div className="flex items-center bg-[var(--bg-input)] border border-[var(--border-subtle)] hover:border-[var(--border-strong)] rounded-xl text-xs transition-colors shadow-xs overflow-hidden">
+                <div className="flex items-center gap-1.5 px-2.5 py-1.5">
+                  <FolderKanban size={13} className="text-[var(--accent-primary)] shrink-0" />
+                  <span className="text-[10px] font-mono text-[var(--text-muted)] hidden sm:inline">Project:</span>
+                  <select
+                    value={(() => {
+                      if (projectFilter === 'all') return 'all';
+                      const desc = getProjectDescriptor(projectFilter);
+                      return desc?.code || projectFilter;
+                    })()}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === '__new__') {
+                        setIsCreateProjectOpen(true);
+                        return;
                       }
-                    }
-                  }}
-                  className="bg-transparent text-[var(--text-primary)] text-xs font-semibold focus:outline-none cursor-pointer pr-1 border-0"
-                  aria-label="Filter tickets by project"
-                >
-                  {availableProjects.length > 1 && (
-                    <option value="all" className="bg-[var(--bg-surface)] text-[var(--text-primary)] py-1">All Projects</option>
-                  )}
-                  {availableProjects.map((proj) => (
-                    <option key={proj.id} value={proj.code} className="bg-[var(--bg-surface)] text-[var(--text-primary)] py-1">
-                      {proj.name}
-                    </option>
-                  ))}
-                  {isOwner && !isEmbedded && (
-                    <option value="__new__" className="bg-[var(--bg-surface)] text-cyan-600 dark:text-cyan-400 font-semibold py-1">
-                      + New Project...
-                    </option>
-                  )}
-                </select>
-              </div>
-            )}
+                      const desc = val !== 'all' ? getProjectDescriptor(val) : undefined;
+                      const code = desc?.code || val;
+                      setProjectFilter(code);
+                      try {
+                        sessionStorage.setItem('dev_plan_project_filter', code);
+                        localStorage.setItem('dev_plan_project_filter', code);
+                        updateProjectUrlSearchParam(code, isEmbedded);
+                      } catch (err) {}
 
-            {/* Project Settings Button */}
-            {availableProjects.length > 0 && isOwner && !isEmbedded && (
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedSettingsProjectCode(currentProject ? currentProject.code : (availableProjects[0]?.code || null));
-                  setIsProjectSettingsOpen(true);
-                }}
-                className="p-2 sm:px-2.5 sm:py-2 bg-[var(--bg-input)] hover:bg-[var(--accent-bg-subtle)] text-[var(--text-muted)] hover:text-[var(--accent-primary)] border border-[var(--border-subtle)] hover:border-[var(--border-accent)] rounded-xl text-xs font-semibold flex items-center justify-center transition-colors cursor-pointer shadow-xs shrink-0"
-                title={currentProject ? `Project Settings (${currentProject.name})` : 'Project Settings'}
-                aria-label={currentProject ? `Project Settings (${currentProject.name})` : 'Project Settings'}
-              >
-                <Settings size={15} />
-              </button>
+                      if (code !== 'all' && expandedFeatureId) {
+                        const curFeat = parsedData.plannedFeatures.find((f) => f.id === expandedFeatureId);
+                        const curProj = getProjectDescriptor(curFeat?.projectId)?.code || curFeat?.project;
+                        if (curProj && curProj.toLowerCase() !== code.toLowerCase()) {
+                          setExpandedFeatureId(null);
+                          window.history.replaceState({}, '', window.location.pathname + `?project=${encodeURIComponent(code)}`);
+                        }
+                      }
+                    }}
+                    className="bg-transparent text-[var(--text-primary)] text-xs font-semibold focus:outline-none cursor-pointer pr-1 border-0"
+                    aria-label="Filter tickets by project"
+                  >
+                    {availableProjects.length > 1 && (
+                      <option value="all" className="bg-[var(--bg-surface)] text-[var(--text-primary)] py-1">All Projects</option>
+                    )}
+                    {availableProjects.map((proj) => (
+                      <option key={proj.id} value={proj.code} className="bg-[var(--bg-surface)] text-[var(--text-primary)] py-1">
+                        {proj.name}
+                      </option>
+                    ))}
+                    {isOwner && !isEmbedded && (
+                      <option value="__new__" className="bg-[var(--bg-surface)] text-cyan-600 dark:text-cyan-400 font-semibold py-1">
+                        + New Project...
+                      </option>
+                    )}
+                  </select>
+                </div>
+
+                {projectFilter !== 'all' && currentProject && isOwner && !isEmbedded && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedSettingsProjectCode(currentProject.code);
+                      setIsProjectSettingsOpen(true);
+                    }}
+                    className="px-2.5 py-1.5 border-l border-[var(--border-subtle)] hover:bg-[var(--accent-bg-subtle)] text-[var(--text-muted)] hover:text-[var(--accent-primary)] flex items-center justify-center transition-colors cursor-pointer shrink-0 self-stretch"
+                    title={`Edit Project (${currentProject.name})`}
+                    aria-label={`Edit Project (${currentProject.name})`}
+                  >
+                    <Edit3 size={13} />
+                  </button>
+                )}
+              </div>
             )}
 
             {isOwner && (
@@ -5381,6 +5439,7 @@ export function PlannedWorkView({
         project={activeSettingsProject}
         availableProjects={availableProjects}
         onSelectProject={(proj) => setSelectedSettingsProjectCode(proj.code)}
+        syncReport={syncReport}
         onUpdated={(updatedProj, renamedCode) => {
           setAvailableProjects((prev) => {
             const oldCode = renamedCode?.oldCode?.toLowerCase() || updatedProj.code.toLowerCase();
@@ -5428,6 +5487,14 @@ export function PlannedWorkView({
         editingMilestone={editingMilestone}
         defaultProjectCode={projectFilter === 'all' ? (availableProjects[0]?.code || '') : projectFilter}
         availableProjects={availableProjects}
+      />
+
+      {/* Global Esedre Settings Modal (Data Hub Git Sync) */}
+      <GlobalGitSyncModal
+        isOpen={isGlobalSettingsOpen}
+        onClose={() => setIsGlobalSettingsOpen(false)}
+        syncReport={syncReport}
+        onUpdated={(report) => setSyncReport(report)}
       />
 
       {/* Ticket Types & Planning Reference Modal */}

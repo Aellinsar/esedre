@@ -16,8 +16,18 @@ import {
   ReleaseLeaseInput,
   ClaimLeaseResult,
   EsedreLeaseConflictError,
+  GitSyncStatusReport,
+  GitSyncResult,
 } from './types.js';
-import { StorageAdapter, CreateTicketInput, UpdateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './storage/adapter.js';
+import {
+  StorageAdapter,
+  CreateTicketInput,
+  UpdateTicketInput,
+  ListTicketsFilter,
+  RegisterProjectInput,
+  DuplicateProjectWarning,
+  SyncDataHubCallOptions,
+} from './storage/adapter.js';
 import { EsedreConfig, isProjectAuthorized, EsedreAuthorizationError } from './config.js';
 import { isPathInside } from './utils/identity.js';
 
@@ -674,5 +684,19 @@ export class SecurityFilter implements StorageAdapter {
     return allLeases
       .filter((l) => isProjectAuthorized(l.project, this.config.allowedProjects))
       .map((l) => this.redactLease(l)!);
+  }
+
+  public async getSyncStatus(hubDir?: string): Promise<GitSyncStatusReport> {
+    if (!this.target.getSyncStatus) {
+      throw new Error('Sync status is not supported by the active storage adapter.');
+    }
+    return this.target.getSyncStatus(hubDir);
+  }
+
+  public async syncDataHub(options?: SyncDataHubCallOptions): Promise<GitSyncResult[]> {
+    if (!this.target.syncDataHub) {
+      throw new Error('Data hub sync is not supported by the active storage adapter.');
+    }
+    return this.target.syncDataHub(options);
   }
 }

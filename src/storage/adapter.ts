@@ -19,7 +19,17 @@ import {
   RenewLeaseInput,
   ReleaseLeaseInput,
   ClaimLeaseResult,
+  GitSyncStatusReport,
+  GitSyncResult,
 } from '../types.js';
+
+export interface SyncDataHubCallOptions {
+  hubDir?: string;
+  pull?: boolean;
+  push?: boolean;
+  commit?: boolean;
+  force?: boolean;
+}
 
 export interface CreateTicketLinkInput {
   relation: TicketLinkRelation;
@@ -169,4 +179,7 @@ export interface StorageAdapter {
   releaseTicket(input: ReleaseLeaseInput): Promise<{ released: boolean; ticketKey: string; previousLease?: TicketLease }>;
   getTicketLease(id: number | string, projectCode?: string): Promise<TicketLease | null>;
   listLeases(projectCode?: string): Promise<TicketLease[]>;
+
+  getSyncStatus?(hubDir?: string): Promise<GitSyncStatusReport>;
+  syncDataHub?(options?: SyncDataHubCallOptions): Promise<GitSyncResult[]>;
 }

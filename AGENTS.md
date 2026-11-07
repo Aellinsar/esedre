@@ -46,7 +46,7 @@
 **Authoritative Ingress Hierarchy (Zero-Latency Snapshot First)**:
 1. **Primary Read-Only Inspection**: Always check `.esedre/snapshot.json` in the workspace root first for zero-latency access to all tickets, summaries, plan presence (`hasPlan`), and revision hashes.
 2. **Dynamic Lookups & Mutations (MCP)**: Use Esedre MCP tools (`esedre_list_tickets`, `esedre_get_ticket`, `esedre_get_plan`, `esedre_save_plan`, `esedre_create_ticket`, `esedre_update_ticket`, `esedre_claim_ticket`, `esedre_renew_lease`, `esedre_release_ticket`, `esedre_list_leases`, `esedre_link_ticket`, `esedre_unlink_ticket`, `esedre_list_milestones`, `esedre_get_milestone`, `esedre_create_milestone`, `esedre_update_milestone`, `esedre_add_comment`) when MCP is active.
-3. **CLI Ingress**: Use `.esedre/ese` or global `ese` (`get`, `list`, `plan`, `update`, `comment`, `create`, `lease`, `link`, `unlink`, `milestone`, `snapshot`, `refresh`).
+3. **CLI Ingress**: Use `.esedre/ese` or global `ese` (`get`, `list`, `plan`, `update`, `comment`, `create`, `lease`, `link`, `unlink`, `milestone`, `sync`, `snapshot`, `refresh`).
 4. **Storage Boundary**: Backing hubs (`esedre-data`) are managed strictly through the snapshot projection, MCP tools, or `ese` CLI.
 
 ---
@@ -89,7 +89,7 @@
 > **Detailed Reference**: See [esedre_security_and_allowlist](.agents/skills/esedre_security_and_allowlist/SKILL.md).
 
 1. **Two-Tier Configuration Hierarchy**:
-   - **Central Global Config (`~/.esedre/config.json`)**: Portfolio hubs (`dataDir`), linked repositories (`projects`), remote server host (`server.host` / `remotes.<Code>`), and default port (`5674`), managed via `ese configure`.
+   - **Central Global Config (`~/.esedre/config.json`)**: Portfolio hubs (`dataDir`), linked repositories (`projects`), remote server host (`server.host` / `remotes.<Code>`), data hub Git auto-sync (`sync`), and default port (`5674`), managed via `ese configure`.
    - **Workspace Local Config (`.esedre/esedre.json`)**: Local `projectCode` and `allowedProjects` (plus optional intranet `server.host`), initialized via `ese init`.
    - **Smart `dataDir` & Scoped `projects` Hoisting**: When `dataDir` is omitted locally, the loader checks whether `~/.esedre/config.json`'s `dataDir` contains the workspace's project (`hubContainsProject`) before inheriting it, and inherits only `allowedProjects`-authorized repository paths from `globalConfig.projects` (keeping standalone and unauthorized repos isolated).
 2. **Configuration & Upgrade Commands**:
@@ -157,6 +157,9 @@
    - `project.json` and ticket `meta.json` stamp `schemaVersion` (`CURRENT_DATA_VERSION`) and `esedreVersion` (`CURRENT_ESEDRE_VERSION`).
    - Normal read/write operations never silently auto-migrate older projects across multi-owner hubs; mutations enforce `assertProjectCompatible` (`EsedreVersionError`: `BELOW_MIN_SUPPORTED`, `ABOVE_CURRENT_ENGINE`, `FEATURE_REQUIRES_UPGRADE`, MCP `-32002`, REST `409`).
    - Explicit schema migrations run via `ese upgrade`, `ese upgrade --project <Code>`, or `ese upgrade --all` after creating an atomic timestamped backup in `~/.esedre/backups/`.
+7. **Automatic Data Hub Git Sync (`src/sync/`, `ese sync`)**:
+   - Opt-in via `ese configure set sync.enabled true` (`sync` in `~/.esedre/config.json`: `enabled`, `remote`, `branch`, `push`, `pullOnStart`, `debounceSeconds`, `intervalMinutes`) and on-demand via `ese sync [--status] [--pull] [--push] [--hub <path>]`.
+   - Enforces hard data-hub boundary verification (`verifyDataHubGitRepo`: only syncs top-level Git data hubs, never source or workspace repos), excludes ephemeral `lease.json` files, formats clean `[#<ProjectCode>-<id>] <Imperative Summary>` commits with zero conventional prefixes and zero em dashes, and runs non-interactive `fetch` + `rebase --autostash` with automatic `rebase --abort` on conflict.
 
 ---
 

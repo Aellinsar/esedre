@@ -34,6 +34,7 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 | `stop` | `esedre stop [--port <n>] [--quiet] [--json]` | Stops the running background server daemon. |
 | `status` | `esedre status [--port <n>] [--host <url>] [--json]` | Checks health, PID, version, uptime, and diagnostics of the running local or remote server. |
 | `logs` | `esedre logs [--port <n>] [--lines <n>]` | Tails recent server logs. |
+| `sync` | `esedre sync [--status \| -s] [--pull] [--push] [--hub <path>] [--json]` | Synchronizes configured data hub repository (`esedre-data`) with its Git remote (`origin/main`), or inspects sync status (`--status`). Works locally or over `HttpStorageAdapter`. |
 | `list` | `esedre list [--project <code\|all>] [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name\|none>] [--flag <flag\|none>] [--blocked] [--leased] [--leased-by <holder>] [--linked-to <key>] [--json]` | Lists tickets. Defaults to the active repo's `projectCode` in `esedre.json`. `--project all` lists all permitted tickets. |
 | `get` | `esedre get <id...> [--json]` | Displays complete ticket metadata, summary, feature/task/fix breakdown, comments, links, lease status, and blocker status for one or more tickets. |
 | `plan` | `esedre plan <id> [--json] [--set "<markdown>"] [--file <path>]` | Reads or updates the implementation plan markdown. |

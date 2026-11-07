@@ -1,12 +1,93 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { CURRENT_ESEDRE_VERSION } from './types.js';
+import { CURRENT_ESEDRE_VERSION, GitSyncConfig } from './types.js';
+
+export type { GitSyncConfig };
 
 export const DEFAULT_ESEDRE_PORT = 5674;
 export const MAX_PROJECT_CODE_LENGTH = 8;
 export const PROJECT_CODE_REGEX = /^[a-zA-Z0-9]{1,8}$/;
 export const MAX_PROJECT_NAME_LENGTH = 48;
+
+export const DEFAULT_GIT_SYNC_CONFIG: Required<GitSyncConfig> = {
+  enabled: false,
+  remote: 'origin',
+  branch: 'main',
+  push: true,
+  pullOnStart: true,
+  debounceSeconds: 5,
+  intervalMinutes: 15,
+};
+
+export const GIT_REMOTE_NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
+export const GIT_BRANCH_NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,127}$/;
+
+export function validateGitRemoteName(remote: string): string {
+  const clean = typeof remote === 'string' ? remote.trim() : '';
+  if (!clean || clean.startsWith('-') || clean.includes('..') || !GIT_REMOTE_NAME_REGEX.test(clean)) {
+    throw new Error(
+      `Invalid Git remote name '${remote}'. Remote must be a named Git remote (1-64 alphanumeric, '.', '_', or '-' characters, not starting with '-').`
+    );
+  }
+  return clean;
+}
+
+export function validateGitBranchName(branch: string): string {
+  const clean = typeof branch === 'string' ? branch.trim() : '';
+  if (
+    !clean ||
+    clean.startsWith('-') ||
+    clean.endsWith('/') ||
+    clean.endsWith('.lock') ||
+    clean.includes('..') ||
+    clean.includes('@{') ||
+    clean.includes('//') ||
+    !GIT_BRANCH_NAME_REGEX.test(clean)
+  ) {
+    throw new Error(
+      `Invalid Git branch name '${branch}'. Branch must be a valid Git ref name (1-128 alphanumeric, '.', '_', '-', or '/' characters, not starting with '-').`
+    );
+  }
+  return clean;
+}
+
+export function resolveGitSyncConfig(config?: EsedreConfig | null): Required<GitSyncConfig> {
+  const globalCfg = readGlobalConfig();
+  const raw: GitSyncConfig = {
+    ...(globalCfg?.sync || {}),
+    ...(config?.sync || {}),
+  };
+  const debounce =
+    typeof raw.debounceSeconds === 'number' && !Number.isNaN(raw.debounceSeconds)
+      ? Math.min(Math.max(0, Math.round(raw.debounceSeconds)), 300)
+      : DEFAULT_GIT_SYNC_CONFIG.debounceSeconds;
+  const interval =
+    typeof raw.intervalMinutes === 'number' && !Number.isNaN(raw.intervalMinutes)
+      ? Math.min(Math.max(0, Math.round(raw.intervalMinutes)), 1440)
+      : DEFAULT_GIT_SYNC_CONFIG.intervalMinutes;
+  let safeRemote = DEFAULT_GIT_SYNC_CONFIG.remote;
+  if (raw.remote && typeof raw.remote === 'string') {
+    try {
+      safeRemote = validateGitRemoteName(raw.remote);
+    } catch {}
+  }
+  let safeBranch = DEFAULT_GIT_SYNC_CONFIG.branch;
+  if (raw.branch && typeof raw.branch === 'string') {
+    try {
+      safeBranch = validateGitBranchName(raw.branch);
+    } catch {}
+  }
+  return {
+    enabled: Boolean(raw.enabled ?? DEFAULT_GIT_SYNC_CONFIG.enabled),
+    remote: safeRemote,
+    branch: safeBranch,
+    push: raw.push !== undefined ? Boolean(raw.push) : DEFAULT_GIT_SYNC_CONFIG.push,
+    pullOnStart: raw.pullOnStart !== undefined ? Boolean(raw.pullOnStart) : DEFAULT_GIT_SYNC_CONFIG.pullOnStart,
+    debounceSeconds: debounce,
+    intervalMinutes: interval,
+  };
+}
 
 export interface EsedrePortsConfig {
   gateway?: number;
@@ -28,6 +109,7 @@ export interface EsedreConfig {
   serverUrl?: string;
   server?: RemoteServerConfig;
   remotes?: Record<string, string>;
+  sync?: GitSyncConfig;
   port?: number;
   ports?: EsedrePortsConfig;
   projects?: Record<string, string>;
@@ -383,6 +465,12 @@ export function removeLocationFromGlobalConfig(identifier: string): { removed: b
 
   const trimmed = identifier.trim();
 
+  if (trimmed.toLowerCase() === 'sync' || trimmed.toLowerCase().startsWith('sync.')) {
+    if (!current.sync) return { removed: false };
+    setGlobalConfigKey(trimmed, null);
+    return { removed: true, type: 'sync', target: trimmed };
+  }
+
   // Check projects map by code (case-insensitive)
   if (current.projects) {
     const matchedKey = Object.keys(current.projects).find(
@@ -432,7 +520,30 @@ export function removeLocationFromGlobalConfig(identifier: string): { removed: b
   return { removed: false };
 }
 
-export function getGlobalConfigKey(key: string): any {
+const CANONICAL_DOT_KEYS: Record<string, string> = {
+  'sync.enabled': 'sync.enabled',
+  'sync.remote': 'sync.remote',
+  'sync.branch': 'sync.branch',
+  'sync.push': 'sync.push',
+  'sync.pullonstart': 'sync.pullOnStart',
+  'sync.debounceseconds': 'sync.debounceSeconds',
+  'sync.intervalminutes': 'sync.intervalMinutes',
+  'server.host': 'server.host',
+  'server.port': 'server.port',
+  'server.timeoutms': 'server.timeoutMs',
+};
+
+function normalizeGlobalConfigKey(rawKey: string): string {
+  const trimmed = rawKey.trim();
+  const lower = trimmed.toLowerCase();
+  if (CANONICAL_DOT_KEYS[lower]) {
+    return CANONICAL_DOT_KEYS[lower];
+  }
+  return trimmed;
+}
+
+export function getGlobalConfigKey(rawKey: string): any {
+  const key = normalizeGlobalConfigKey(rawKey);
   const current = readGlobalConfig();
   if (!current) return undefined;
   if (key.startsWith('remotes.') && current.remotes) {
@@ -452,7 +563,8 @@ export function getGlobalConfigKey(key: string): any {
   return (current as any)[key];
 }
 
-export function setGlobalConfigKey(key: string, value: any): { key: string; value: any } {
+export function setGlobalConfigKey(rawKey: string, value: any): { key: string; value: any } {
+  const key = normalizeGlobalConfigKey(rawKey);
   const current = readGlobalConfig() || { version: CURRENT_ESEDRE_VERSION, port: DEFAULT_ESEDRE_PORT };
   const isClear =
     value === null ||
@@ -485,6 +597,9 @@ export function setGlobalConfigKey(key: string, value: any): { key: string; valu
       if (parts[0] === 'server' && current.server && Object.keys(current.server).length === 0) {
         delete current.server;
       }
+      if (parts[0] === 'sync' && current.sync && Object.keys(current.sync).length === 0) {
+        delete current.sync;
+      }
     } else {
       delete (current as any)[key];
     }
@@ -493,7 +608,36 @@ export function setGlobalConfigKey(key: string, value: any): { key: string; valu
   }
 
   let parsedValue = value;
-  if (
+  const lowerKey = key.toLowerCase();
+  if (lowerKey === 'sync.enabled' || lowerKey === 'sync.push' || lowerKey === 'sync.pullonstart') {
+    if (typeof value === 'boolean') {
+      parsedValue = value;
+    } else if (typeof value === 'number') {
+      parsedValue = value !== 0;
+    } else if (typeof value === 'string') {
+      const norm = value.trim().toLowerCase();
+      if (norm === 'true' || norm === '1' || norm === 'yes' || norm === 'on') {
+        parsedValue = true;
+      } else if (norm === 'false' || norm === '0' || norm === 'no' || norm === 'off') {
+        parsedValue = false;
+      } else {
+        throw new Error(`Invalid boolean value '${value}' for '${key}'. Expected true or false.`);
+      }
+    }
+  } else if (lowerKey === 'sync.remote') {
+    parsedValue = validateGitRemoteName(String(value));
+  } else if (lowerKey === 'sync.branch') {
+    parsedValue = validateGitBranchName(String(value));
+  } else if (lowerKey === 'sync.debounceseconds' || lowerKey === 'sync.intervalminutes') {
+    const num = typeof value === 'number' ? value : parseInt(String(value).trim(), 10);
+    if (Number.isNaN(num) || num < 0) {
+      throw new Error(`Invalid numeric value '${value}' for '${key}'. Expected a non-negative integer.`);
+    }
+    parsedValue =
+      lowerKey === 'sync.debounceseconds'
+        ? Math.min(Math.max(0, Math.round(num)), 300)
+        : Math.min(Math.max(0, Math.round(num)), 1440);
+  } else if (
     (key === 'port' || key.endsWith('.port') || key.startsWith('ports.') || key === 'server.timeoutMs') &&
     typeof value === 'string'
   ) {
@@ -533,6 +677,38 @@ export function setGlobalConfigKey(key: string, value: any): { key: string; valu
   writeGlobalConfig(current);
   return { key, value: parsedValue };
 }
+
+export function updateGlobalGitSyncConfig(updates: Record<string, any>): Required<GitSyncConfig> {
+  if (!updates || typeof updates !== 'object') {
+    throw new Error('Invalid Git sync configuration payload.');
+  }
+
+  const allowedKeys: Array<keyof GitSyncConfig> = [
+    'enabled',
+    'remote',
+    'branch',
+    'push',
+    'pullOnStart',
+    'debounceSeconds',
+    'intervalMinutes',
+  ];
+
+  for (const field of allowedKeys) {
+    if (updates[field] === undefined) continue;
+    const rawVal = updates[field];
+    if (field === 'remote' || field === 'branch') {
+      if (typeof rawVal !== 'string' || !rawVal.trim()) {
+        throw new Error(`Invalid value for 'sync.${field}'. Expected a non-empty string.`);
+      }
+      setGlobalConfigKey(`sync.${field}`, rawVal.trim());
+    } else {
+      setGlobalConfigKey(`sync.${field}`, rawVal);
+    }
+  }
+
+  return resolveGitSyncConfig(readGlobalConfig());
+}
+
 
 export interface DiscoveredConfig {
   config: EsedreConfig;
@@ -788,6 +964,11 @@ export function findEsedreConfig(startDir?: string, options?: FindConfigOptions)
         ? { ...(globalConfig?.remotes || {}), ...(localConfig.remotes || {}) }
         : undefined;
 
+    const mergedSync =
+      globalConfig?.sync || localConfig.sync
+        ? { ...(globalConfig?.sync || {}), ...(localConfig.sync || {}) }
+        : undefined;
+
     // Local workspace configuration takes precedence; only inherit machine defaults (port/ports/server/remotes), matching central dataDir, or authorized global projects
     const merged: EsedreConfig = {
       ...localConfig,
@@ -796,6 +977,7 @@ export function findEsedreConfig(startDir?: string, options?: FindConfigOptions)
       server: localConfig.server || globalConfig?.server,
       serverUrl: localConfig.serverUrl || globalConfig?.serverUrl,
       remotes: mergedRemotes,
+      sync: mergedSync,
       port: localConfig.port !== undefined ? localConfig.port : (globalConfig?.port || DEFAULT_ESEDRE_PORT),
       ports: localConfig.ports || globalConfig?.ports,
     };
@@ -930,6 +1112,7 @@ export function migrateEsedreConfig(raw: any, targetVersion = CURRENT_ESEDRE_VER
     serverUrl: raw?.serverUrl,
     server: typeof raw?.server === 'object' && raw?.server ? raw.server : undefined,
     remotes: typeof raw?.remotes === 'object' && raw?.remotes ? raw.remotes : undefined,
+    sync: typeof raw?.sync === 'object' && raw?.sync ? raw.sync : undefined,
     port: typeof raw?.port === 'number' && raw.port !== DEFAULT_ESEDRE_PORT ? raw.port : undefined,
     ports: typeof raw?.ports === 'object' && raw?.ports ? raw.ports : undefined,
     projects: typeof raw?.projects === 'object' && raw?.projects ? raw.projects : undefined,

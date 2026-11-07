@@ -40,14 +40,27 @@ import {
   EsedreLeaseConflictError,
   DEFAULT_LEASE_TTL_MINUTES,
   CURRENT_ESEDRE_VERSION,
+  SyncMutationEvent,
+  SyncMutationAction,
+  GitSyncStatusReport,
+  GitSyncResult,
 } from '../types.js';
+import { globalGitSyncCoordinator, getGitSyncStatusReport } from '../sync/gitSync.js';
 import {
   CURRENT_DATA_VERSION,
   assertProjectCompatible,
   getProjectSchemaVersion,
 } from '../migrations/index.js';
 import { resolveWorkerIdentity, isPathInside, isWorkspaceOrGitDir } from '../utils/identity.js';
-import { StorageAdapter, CreateTicketInput, UpdateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './adapter.js';
+import {
+  StorageAdapter,
+  CreateTicketInput,
+  UpdateTicketInput,
+  ListTicketsFilter,
+  RegisterProjectInput,
+  DuplicateProjectWarning,
+  SyncDataHubCallOptions,
+} from './adapter.js';
 import { EsedreConfig, findEsedreConfig, readGlobalConfig, expandHome, validateProjectCode, validateProjectName, getGlobalConfigPath } from '../config.js';
 import { computeTicketHash, verifyTicketHash } from '../snapshot.js';
 import {
@@ -127,6 +140,21 @@ export class FilesystemStorageAdapter implements StorageAdapter {
   private dirtyDirsDuringPrewarm = new Set<string>();
   private isPrewarming = false;
   private prewarmAborted = false;
+
+  private recordHubSyncMutation(
+    loc: ResolvedProjectLocation | undefined,
+    event: Omit<SyncMutationEvent, 'hubDir' | 'timestamp'>
+  ): void {
+    if (!loc || loc.sourceType !== 'hub' || !loc.hubDir) return;
+    globalGitSyncCoordinator.enqueueMutation(
+      {
+        ...event,
+        hubDir: loc.hubDir,
+        timestamp: new Date().toISOString(),
+      },
+      this.getEffectiveSyncConfig()
+    );
+  }
 
   private resolveTicketVersionStamps(
     project: ProjectDescriptor,
@@ -1599,6 +1627,12 @@ export class FilesystemStorageAdapter implements StorageAdapter {
 
     existing.push(milestone);
     this.writeProjectMilestones(targetLoc, existing);
+    this.recordHubSyncMutation(targetLoc, {
+      action: 'create-milestone',
+      project: targetLoc.project.code,
+      milestoneId: milestone.id,
+      title: milestone.title,
+    });
     return milestone;
   }
 
@@ -1661,6 +1695,12 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     m.project = foundLoc.project.code;
 
     this.writeProjectMilestones(foundLoc, list);
+    this.recordHubSyncMutation(foundLoc, {
+      action: 'update-milestone',
+      project: foundLoc.project.code,
+      milestoneId: m.id,
+      title: m.title,
+    });
     return m;
   }
 
@@ -1677,6 +1717,11 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       if (filtered.length !== list.length) {
         assertProjectCompatible(loc.project, { operation: 'write', feature: 'milestones' });
         this.writeProjectMilestones(loc, filtered);
+        this.recordHubSyncMutation(loc, {
+          action: 'update-milestone',
+          project: loc.project.code,
+          milestoneId: id,
+        });
         return true;
       }
     }
@@ -3212,6 +3257,21 @@ ${input.summary || 'Summary to be defined.'}
     }
 
     const created = await this.getTicket(`${targetLoc.project.code}-${nextId}`);
+    this.recordHubSyncMutation(targetLoc, {
+      action: 'create-ticket',
+      project: targetLoc.project.code,
+      ticketId: nextId,
+      ticketKey: newTicketKey,
+      title: cleanTitle,
+    });
+    if (initialPlan) {
+      this.recordHubSyncMutation(targetLoc, {
+        action: 'save-plan',
+        project: targetLoc.project.code,
+        ticketId: nextId,
+        ticketKey: newTicketKey,
+      });
+    }
     return created!;
   }
 
@@ -3454,7 +3514,33 @@ ${input.summary || 'Summary to be defined.'}
 
     this.invalidateTicketCache(locInfo.ticketDir);
 
-    return (await this.getTicket(`${locInfo.loc.project.code}-${locInfo.id}`))!;
+    const updatedTicket = (await this.getTicket(`${locInfo.loc.project.code}-${locInfo.id}`))!;
+    const syncAction: SyncMutationAction =
+      updatedMeta.status === 'Completed' && existing.meta.status !== 'Completed'
+        ? 'complete-ticket'
+        : updatedMeta.status === 'Rejected' && existing.meta.status !== 'Rejected'
+          ? 'reject-ticket'
+          : 'update-ticket';
+    const changedFields = Object.keys(updates).filter(
+      (k) => (updates as any)[k] !== undefined && k !== 'plan' && k !== 'planMarkdown'
+    );
+    this.recordHubSyncMutation(locInfo.loc, {
+      action: syncAction,
+      project: locInfo.loc.project.code,
+      ticketId: locInfo.id,
+      ticketKey: `${locInfo.loc.project.code}-${locInfo.id}`,
+      title: updatedMeta.title,
+      changedFields,
+    });
+    if (updatedPlan !== undefined) {
+      this.recordHubSyncMutation(locInfo.loc, {
+        action: 'save-plan',
+        project: locInfo.loc.project.code,
+        ticketId: locInfo.id,
+        ticketKey: `${locInfo.loc.project.code}-${locInfo.id}`,
+      });
+    }
+    return updatedTicket;
   }
 
   public async getPlan(id: number | string): Promise<string | null> {
@@ -3510,6 +3596,12 @@ ${input.summary || 'Summary to be defined.'}
       } catch {}
     }
     this.invalidateTicketCache(locInfo.ticketDir);
+    this.recordHubSyncMutation(locInfo.loc, {
+      action: 'save-plan',
+      project: locInfo.loc.project.code,
+      ticketId: locInfo.id,
+      ticketKey: `${locInfo.loc.project.code}-${locInfo.id}`,
+    });
   }
 
   public async addComment(id: number | string, comment: { author: string; text: string }): Promise<TicketComment> {
@@ -3543,6 +3635,12 @@ ${input.summary || 'Summary to be defined.'}
     comments.push(newComment);
     writeSafeFile(commentsPath, JSON.stringify(comments, null, 2) + '\n');
     this.invalidateTicketCache(locInfo.ticketDir);
+    this.recordHubSyncMutation(locInfo.loc, {
+      action: 'add-comment',
+      project: locInfo.loc.project.code,
+      ticketId: locInfo.id,
+      ticketKey: `${locInfo.loc.project.code}-${locInfo.id}`,
+    });
     return newComment;
   }
 
@@ -3611,6 +3709,15 @@ ${input.summary || 'Summary to be defined.'}
     this.invalidateTicketCache(locInfo.ticketDir);
 
     const finalTicket = await this.getTicket(`${locInfo.loc.project.code}-${locInfo.id}`);
+    if (!metaUpdates || Object.keys(metaUpdates).length === 0) {
+      this.recordHubSyncMutation(locInfo.loc, {
+        action: 'update-ticket',
+        project: locInfo.loc.project.code,
+        ticketId: locInfo.id,
+        ticketKey: `${locInfo.loc.project.code}-${locInfo.id}`,
+        title: finalTicket?.meta.title,
+      });
+    }
     return {
       success: true,
       meta: finalTicket?.meta || updatedMeta,
@@ -3977,6 +4084,13 @@ ${input.summary || 'Summary to be defined.'}
     }
 
     const updatedSource = (await this.getTicket(sourceInfo.key))!;
+    this.recordHubSyncMutation(sourceInfo.loc, {
+      action: 'link-ticket',
+      project: sourceInfo.project,
+      ticketId: sourceInfo.id,
+      ticketKey: sourceInfo.key,
+      targetKey: resolvedTargets.map((t) => t.key).join(', '),
+    });
     return { source: updatedSource, targets: updatedTargets };
   }
 
@@ -4081,6 +4195,13 @@ ${input.summary || 'Summary to be defined.'}
     }
 
     const updatedSource = (await this.getTicket(sourceInfo.key))!;
+    this.recordHubSyncMutation(sourceInfo.loc, {
+      action: 'unlink-ticket',
+      project: sourceInfo.project,
+      ticketId: sourceInfo.id,
+      ticketKey: sourceInfo.key,
+      targetKey: resolvedTargets.map((t) => t.targetKey).join(', '),
+    });
     return { source: updatedSource, targets: updatedTargets };
   }
 
@@ -4190,6 +4311,13 @@ ${input.summary || 'Summary to be defined.'}
     }
 
     const updatedSource = (await this.getTicket(sourceInfo.key))!;
+    this.recordHubSyncMutation(sourceInfo.loc, {
+      action: 'link-ticket',
+      project: sourceInfo.project,
+      ticketId: sourceInfo.id,
+      ticketKey: sourceInfo.key,
+      targetKey: targetInfo.key,
+    });
     return { source: updatedSource, target: updatedTarget };
   }
 
@@ -4270,6 +4398,13 @@ ${input.summary || 'Summary to be defined.'}
     }
 
     const updatedSource = (await this.getTicket(sourceInfo.key))!;
+    this.recordHubSyncMutation(sourceInfo.loc, {
+      action: 'unlink-ticket',
+      project: sourceInfo.project,
+      ticketId: sourceInfo.id,
+      ticketKey: sourceInfo.key,
+      targetKey,
+    });
     return { source: updatedSource, target: updatedTarget };
   }
 
@@ -4476,5 +4611,58 @@ ${input.summary || 'Summary to be defined.'}
     return tickets
       .map((t) => t.lease)
       .filter((l): l is TicketLease => Boolean(l));
+  }
+
+  private getEffectiveSyncConfig(): EsedreConfig {
+    const globalCfg = readGlobalConfig();
+    const rawDirs: string[] = [];
+    const addDirs = (input?: string | string[], baseDir?: string) => {
+      if (!input) return;
+      const list = Array.isArray(input) ? input : [input];
+      for (const item of list) {
+        if (typeof item !== 'string' || !item.trim()) continue;
+        const expanded = expandHome(item.trim());
+        const resolved = baseDir ? path.resolve(baseDir, expanded) : path.resolve(expanded);
+        if (!rawDirs.some((d) => d.toLowerCase() === resolved.toLowerCase())) {
+          rawDirs.push(resolved);
+        }
+      }
+    };
+    addDirs(this.config.dataDir, this.workspaceRoot);
+    addDirs(globalCfg?.dataDir);
+    return {
+      ...globalCfg,
+      ...this.config,
+      ...(rawDirs.length > 0 ? { dataDir: rawDirs } : {}),
+      sync: {
+        ...(globalCfg?.sync || {}),
+        ...(this.config.sync || {}),
+      },
+    };
+  }
+
+  public async getSyncStatus(hubDir?: string): Promise<GitSyncStatusReport> {
+    const resolvedHub = hubDir ? path.resolve(this.workspaceRoot, expandHome(hubDir)) : undefined;
+    return getGitSyncStatusReport(this.getEffectiveSyncConfig(), resolvedHub);
+  }
+
+  public async syncDataHub(options: SyncDataHubCallOptions = {}): Promise<GitSyncResult[]> {
+    const cfg = this.getEffectiveSyncConfig();
+    if (options.hubDir) {
+      const resolvedHub = path.resolve(this.workspaceRoot, expandHome(options.hubDir));
+      const single = await globalGitSyncCoordinator.flushHub(resolvedHub, cfg, {
+        pull: options.pull,
+        push: options.push,
+        commit: options.commit,
+        force: options.force ?? true,
+      });
+      return [single];
+    }
+    return globalGitSyncCoordinator.flushAll(cfg, {
+      pull: options.pull,
+      push: options.push,
+      commit: options.commit,
+      force: options.force ?? true,
+    });
   }
 }

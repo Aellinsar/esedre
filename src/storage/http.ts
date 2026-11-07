@@ -21,6 +21,8 @@ import {
   ClaimLeaseResult,
   EsedreConflictError,
   EsedreLeaseConflictError,
+  GitSyncStatusReport,
+  GitSyncResult,
 } from '../types.js';
 import {
   StorageAdapter,
@@ -29,6 +31,7 @@ import {
   ListTicketsFilter,
   RegisterProjectInput,
   DuplicateProjectWarning,
+  SyncDataHubCallOptions,
 } from './adapter.js';
 import {
   EsedreConfig,
@@ -758,5 +761,29 @@ export class HttpStorageAdapter implements StorageAdapter {
       `/api/planning/leases${qs}`
     );
     return Array.isArray(data?.leases) ? data.leases : [];
+  }
+
+  public async getSyncStatus(hubDir?: string): Promise<GitSyncStatusReport> {
+    const qs = hubDir ? `?hub=${encodeURIComponent(hubDir)}` : '';
+    const { data } = await this.request<GitSyncStatusReport>(
+      'GET',
+      `/api/planning/sync/status${qs}`
+    );
+    return data;
+  }
+
+  public async syncDataHub(options: SyncDataHubCallOptions = {}): Promise<GitSyncResult[]> {
+    const { data } = await this.request<{ success: boolean; results: GitSyncResult[] }>(
+      'POST',
+      '/api/planning/sync',
+      {
+        ...(options.hubDir ? { hubDir: options.hubDir } : {}),
+        ...(options.pull !== undefined ? { pull: options.pull } : {}),
+        ...(options.push !== undefined ? { push: options.push } : {}),
+        ...(options.commit !== undefined ? { commit: options.commit } : {}),
+        force: options.force ?? true,
+      }
+    );
+    return Array.isArray(data?.results) ? data.results : [];
   }
 }

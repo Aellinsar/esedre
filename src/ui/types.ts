@@ -370,3 +370,70 @@ export interface PlannedFeature {
 }
 
 export const KNOWN_FEATURE_FLAGS: readonly string[] = [] as const;
+
+export interface GitSyncConfig {
+  enabled?: boolean;
+  remote?: string;
+  branch?: string;
+  push?: boolean;
+  pullOnStart?: boolean;
+  debounceSeconds?: number;
+  intervalMinutes?: number;
+}
+
+export type GitSyncStatusState = 'idle' | 'syncing' | 'offline' | 'conflict' | 'error' | 'disabled';
+
+export interface GitSyncHubMetrics {
+  totalSyncs: number;
+  totalCommits: number;
+  totalPulls: number;
+  totalPushes: number;
+  totalConflicts: number;
+  totalErrors: number;
+  lastDurationMs?: number;
+}
+
+export interface GitSyncHubStatus {
+  hubDir: string;
+  enabled: boolean;
+  remote: string;
+  branch: string;
+  push: boolean;
+  status: GitSyncStatusState;
+  pendingCommits: number;
+  dirtyFilesCount?: number;
+  lastCommitSha?: string;
+  lastCommitMessage?: string;
+  lastSyncedAt?: string;
+  lastError?: string;
+  projects?: string[];
+  metrics?: GitSyncHubMetrics;
+}
+
+export interface ProjectSyncMode {
+  code: string;
+  name: string;
+  storageMode: 'hub' | 'in-repo';
+  hubDir?: string;
+  autoSyncEligible: boolean;
+}
+
+export interface GitSyncResult {
+  hubDir: string;
+  committed: boolean;
+  pulled: boolean;
+  pushed: boolean;
+  commitSha?: string;
+  commitMessage?: string;
+  pendingCommits: number;
+  status: GitSyncStatusState;
+  error?: string;
+}
+
+export interface GitSyncStatusReport {
+  enabled: boolean;
+  config: Required<GitSyncConfig>;
+  hubs: GitSyncHubStatus[];
+  projectModes?: ProjectSyncMode[];
+}
+
