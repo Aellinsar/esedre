@@ -414,4 +414,95 @@ describe('Antigravity Global MCP Isolation, Hook Bridge & Zero Path Leaks (Esedr
       process.chdir(origCwd);
     }
   });
+
+  it('writes direct node launcher to ~/.gemini/config/mcp_config.json with forward slashes and migrates legacy cmd.exe/sh configs (Esedre-108)', () => {
+    const spacedGlobalDir = path.join(tempRoot, 'User With Spaces', '.esedre');
+    const spacedGeminiDir = path.join(tempRoot, 'User With Spaces', '.gemini');
+    fs.mkdirSync(spacedGlobalDir, { recursive: true });
+    fs.mkdirSync(path.join(spacedGeminiDir, 'config'), { recursive: true });
+
+    const mcpConfigPath = path.join(spacedGeminiDir, 'config', 'mcp_config.json');
+
+    // 1. Seed legacy Windows cmd.exe /c config with nested quotes
+    fs.writeFileSync(
+      mcpConfigPath,
+      JSON.stringify(
+        {
+          mcpServers: {
+            esedre: {
+              command: 'cmd.exe',
+              args: [
+                '/c',
+                'if exist .esedre\\esedre.cmd (call .esedre\\esedre.cmd mcp) else (if exist "C:\\Users\\Jane Doe\\Documents\\GitHub\\esedre\\dist\\esedre.mjs" (node "C:\\Users\\Jane Doe\\Documents\\GitHub\\esedre\\dist\\esedre.mjs" mcp) else (call "C:\\Users\\Jane Doe\\AppData\\Roaming\\npm\\ese.cmd" mcp))',
+              ],
+            },
+            otherServer: {
+              command: 'npx',
+              args: ['-y', 'other-mcp'],
+            },
+          },
+        },
+        null,
+        2
+      ),
+      'utf-8'
+    );
+
+    const ok = setupGlobalAntigravityMcpConfig({
+      geminiDir: spacedGeminiDir,
+      globalDir: spacedGlobalDir,
+    });
+    expect(ok).toBe(true);
+
+    const expectedEseMjsPath = path.join(spacedGlobalDir, 'ese.mjs').replace(/\\/g, '/');
+    expect(fs.existsSync(path.join(spacedGlobalDir, 'ese.mjs'))).toBe(true);
+
+    const migrated = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf-8'));
+    expect(migrated.mcpServers.otherServer).toEqual({
+      command: 'npx',
+      args: ['-y', 'other-mcp'],
+    });
+    expect(migrated.mcpServers.esedre).toEqual({
+      command: 'node',
+      args: [expectedEseMjsPath, 'mcp'],
+    });
+    for (const arg of migrated.mcpServers.esedre.args) {
+      expect(arg).not.toContain('\\');
+      expect(arg).not.toContain('"');
+    }
+
+    // 2. Repeated setupGlobalAntigravityMcpConfig (e.g. during esedre mcp startup) preserves node launcher even when projects.Esedre is registered
+    const repoRoot = path.resolve(__dirname, '..');
+    fs.writeFileSync(
+      path.join(spacedGlobalDir, 'config.json'),
+      JSON.stringify({ projects: { Esedre: repoRoot } }, null, 2),
+      'utf-8'
+    );
+    expect(
+      setupGlobalAntigravityMcpConfig({
+        geminiDir: spacedGeminiDir,
+        globalDir: spacedGlobalDir,
+      })
+    ).toBe(true);
+    const afterRepeat = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf-8'));
+    expect(afterRepeat.mcpServers.esedre).toEqual({
+      command: 'node',
+      args: [expectedEseMjsPath, 'mcp'],
+    });
+
+    // 3. Direct shell:false execution of the planted ~/.esedre/ese.mjs resolves the bundle from ~/.esedre/config.json even when cwd is outside any workspace
+    const emptyNonWorkspace = path.join(tempRoot, 'outside-any-repo');
+    fs.mkdirSync(emptyNonWorkspace, { recursive: true });
+    const verOut = execFileSync(
+      process.execPath,
+      [migrated.mcpServers.esedre.args[0], '--version'],
+      {
+        cwd: emptyNonWorkspace,
+        shell: false,
+        env: { ...process.env, ESEDRE_GLOBAL_DIR: spacedGlobalDir },
+        encoding: 'utf-8',
+      }
+    ).trim();
+    expect(verOut).toContain('esedre v');
+  });
 });

@@ -562,11 +562,11 @@ describe('.esedre/snapshot.json Comprehensive Test Suite', () => {
       const updated = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf-8'));
       expect(updated.mcpServers.otherServer).toEqual({ command: 'node', args: ['other.js'] });
       expect(updated.mcpServers.esedre).toBeDefined();
+      expect(updated.mcpServers.esedre.command).toBe('node');
       const argsJoined = (updated.mcpServers.esedre.args || []).join(' ');
-      expect(argsJoined).toContain('mcp');
-      if (process.platform === 'win32') {
-        expect(argsJoined.toLowerCase()).toContain('if exist');
-      }
+      expect(argsJoined).toContain('ese.mjs mcp');
+      expect(argsJoined).not.toContain('\\');
+      expect(argsJoined.toLowerCase()).not.toContain('if exist');
     });
   });
 });

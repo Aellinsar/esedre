@@ -491,6 +491,84 @@ export interface ConfigureResult {
   ruleSizeWarnings: AgentRuleSizeWarning[];
 }
 
+export const ESE_MJS_LAUNCHER = `#!/usr/bin/env node
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+const scriptPath = fileURLToPath(import.meta.url);
+const scriptDir = path.dirname(scriptPath);
+const cwd = process.cwd();
+const localWrapper = path.resolve(cwd, '.esedre/ese.mjs');
+const localWrapperDir = fs.existsSync(localWrapper) ? path.dirname(localWrapper) : path.join(cwd, '.esedre');
+let configuredRepoBundle = '';
+try {
+  const cfgPaths = [
+    path.join(scriptDir, 'config.json'),
+    ...(process.env.ESEDRE_GLOBAL_DIR ? [path.join(process.env.ESEDRE_GLOBAL_DIR, 'config.json')] : []),
+    path.join(os.homedir(), '.esedre', 'config.json'),
+  ];
+  for (const cp of cfgPaths) {
+    if (fs.existsSync(cp)) {
+      const cfg = JSON.parse(fs.readFileSync(cp, 'utf-8'));
+      const repo = cfg?.projects?.Esedre || cfg?.projects?.esedre || cfg?.projects?.ESEDRE;
+      if (typeof repo === 'string' && repo.trim()) {
+        const expanded = repo.startsWith('~/') || repo.startsWith('~\\\\') ? path.join(os.homedir(), repo.slice(2)) : repo;
+        const candidate = path.resolve(expanded, 'dist/esedre.mjs');
+        if (fs.existsSync(candidate)) {
+          configuredRepoBundle = candidate;
+          break;
+        }
+      }
+    }
+  }
+} catch {}
+const candidates = [
+  ...(process.env.ESEDRE_BUNDLE_PATH ? [process.env.ESEDRE_BUNDLE_PATH] : []),
+  path.resolve(localWrapperDir, '../dist/esedre.mjs'),
+  path.resolve(localWrapperDir, '../../esedre/dist/esedre.mjs'),
+  path.resolve(localWrapperDir, '../esedre/dist/esedre.mjs'),
+  path.resolve(localWrapperDir, '../node_modules/esedre/dist/esedre.mjs'),
+  path.resolve(scriptDir, '../dist/esedre.mjs'),
+  path.resolve(scriptDir, '../../esedre/dist/esedre.mjs'),
+  path.resolve(scriptDir, '../esedre/dist/esedre.mjs'),
+  path.resolve(scriptDir, '../node_modules/esedre/dist/esedre.mjs'),
+  ...(configuredRepoBundle ? [configuredRepoBundle] : []),
+  ...(process.env.APPDATA ? [path.join(process.env.APPDATA, 'npm', 'node_modules', 'esedre', 'dist', 'esedre.mjs')] : []),
+  ...(process.env.NPM_CONFIG_PREFIX ? [
+    path.join(process.env.NPM_CONFIG_PREFIX, 'lib', 'node_modules', 'esedre', 'dist', 'esedre.mjs'),
+    path.join(process.env.NPM_CONFIG_PREFIX, 'node_modules', 'esedre', 'dist', 'esedre.mjs'),
+  ] : []),
+  path.resolve(path.dirname(process.execPath), '../lib/node_modules/esedre/dist/esedre.mjs'),
+  path.resolve(path.dirname(process.execPath), 'node_modules/esedre/dist/esedre.mjs'),
+  '/opt/homebrew/lib/node_modules/esedre/dist/esedre.mjs',
+  '/usr/local/lib/node_modules/esedre/dist/esedre.mjs',
+];
+const resolvedBundle = candidates.find((p) => fs.existsSync(p));
+if (resolvedBundle) {
+  process.argv[1] = resolvedBundle;
+  await import(pathToFileURL(resolvedBundle).href);
+} else {
+  const args = process.argv.slice(2);
+  const child = spawn('npx', ['--yes', 'esedre', ...args], { stdio: 'inherit', shell: process.platform === 'win32' });
+  child.on('exit', (code) => process.exit(code ?? 1));
+  child.on('error', () => process.exit(1));
+}
+`;
+
+export function ensureGlobalEseLauncherScript(globalDir = getGlobalConfigDir()): string {
+  if (!fs.existsSync(globalDir)) {
+    fs.mkdirSync(globalDir, { recursive: true });
+  }
+  const scriptPath = path.join(globalDir, 'ese.mjs');
+  fs.writeFileSync(scriptPath, ESE_MJS_LAUNCHER.replace(/\r\n/g, '\n'), 'utf-8');
+  try {
+    fs.chmodSync(scriptPath, 0o755);
+  } catch {}
+  return scriptPath;
+}
+
 export function plantWrappers(targetDir: string): void {
   const esedreDir = path.join(targetDir, '.esedre');
   fs.mkdirSync(esedreDir, { recursive: true });
@@ -502,7 +580,7 @@ export function plantWrappers(targetDir: string): void {
     { name: 'ese.cmd', content: ESE_WRAPPER_CMD, exec: false },
     { name: 'ese.ps1', content: ESE_WRAPPER_PS1, exec: false },
     { name: 'ese', content: ESE_WRAPPER_BASH, exec: true },
-    { name: 'ese.mjs', content: `#!/usr/bin/env node\nimport fs from 'node:fs';\nimport path from 'node:path';\nimport { spawn } from 'node:child_process';\nimport { fileURLToPath, pathToFileURL } from 'node:url';\nconst scriptDir = path.dirname(fileURLToPath(import.meta.url));\nconst candidates = [\n  ...(process.env.ESEDRE_BUNDLE_PATH ? [process.env.ESEDRE_BUNDLE_PATH] : []),\n  path.resolve(scriptDir, '../dist/esedre.mjs'),\n  path.resolve(scriptDir, '../../esedre/dist/esedre.mjs'),\n  path.resolve(scriptDir, '../esedre/dist/esedre.mjs'),\n  path.resolve(scriptDir, '../node_modules/esedre/dist/esedre.mjs'),\n  ...(process.env.APPDATA ? [path.join(process.env.APPDATA, 'npm', 'node_modules', 'esedre', 'dist', 'esedre.mjs')] : []),\n  ...(process.env.NPM_CONFIG_PREFIX ? [path.join(process.env.NPM_CONFIG_PREFIX, 'lib', 'node_modules', 'esedre', 'dist', 'esedre.mjs')] : []),\n  path.resolve(path.dirname(process.execPath), '../lib/node_modules/esedre/dist/esedre.mjs'),\n  '/opt/homebrew/lib/node_modules/esedre/dist/esedre.mjs',\n  '/usr/local/lib/node_modules/esedre/dist/esedre.mjs',\n];\nconst resolvedBundle = candidates.find((p) => fs.existsSync(p));\nif (resolvedBundle) {\n  process.argv[1] = resolvedBundle;\n  await import(pathToFileURL(resolvedBundle).href);\n} else {\n  const args = process.argv.slice(2);\n  const child = spawn('npx', ['--yes', 'esedre', ...args], { stdio: 'inherit', shell: process.platform === 'win32' });\n  child.on('exit', (code) => process.exit(code ?? 1));\n  child.on('error', () => process.exit(1));\n}\n`, exec: true },
+    { name: 'ese.mjs', content: ESE_MJS_LAUNCHER, exec: true },
     { name: '.gitattributes', content: `# Ensure POSIX shell wrappers and universal Node launchers always use LF line endings\nese text eol=lf\nesedre text eol=lf\n*.mjs text eol=lf\n*.cmd text eol=crlf\n*.ps1 text eol=crlf\n`, exec: false },
   ];
 
@@ -518,6 +596,11 @@ export function plantWrappers(targetDir: string): void {
 }
 
 export function setupGlobalAntigravityMcpConfig(options: { geminiDir?: string; globalDir?: string } = {}): boolean {
+  const globalDir = options.globalDir || getGlobalConfigDir();
+  try {
+    ensureGlobalEseLauncherScript(globalDir);
+  } catch {}
+
   const geminiDir =
     options.geminiDir ||
     process.env.ESEDRE_GEMINI_DIR ||
@@ -545,61 +628,25 @@ export function setupGlobalAntigravityMcpConfig(options: { geminiDir?: string; g
       }
     }
 
+    const globalEseMjsPath = ensureGlobalEseLauncherScript(globalDir).replace(/\\/g, '/');
     const existing = configObj.mcpServers.esedre;
-    const existingArgs = Array.isArray(existing?.args) ? existing.args.join(' ') : '';
-    const isBareRelativeWrapper =
-      existing?.command === '.esedre/esedre' ||
-      existing?.command === '.esedre\\esedre.cmd' ||
-      (existing?.command === 'cmd.exe' &&
-        existingArgs.includes('.esedre\\esedre.cmd') &&
-        !existingArgs.toLowerCase().includes('if exist'));
+    const isUpToDateNodeLauncher =
+      Boolean(existing) &&
+      existing.command === 'node' &&
+      Array.isArray(existing.args) &&
+      existing.args.length === 2 &&
+      existing.args[0] === globalEseMjsPath &&
+      existing.args[1] === 'mcp';
 
-    const globalCfg = readGlobalConfig();
-    const esedreRepoPath =
-      globalCfg?.projects?.['Esedre'] ||
-      globalCfg?.projects?.['esedre'] ||
-      globalCfg?.projects?.['ESEDRE'];
-    const localBundleCandidate = esedreRepoPath
-      ? path.join(expandHome(esedreRepoPath), 'dist', 'esedre.mjs')
-      : null;
-    const resolvedLocalBundle =
-      localBundleCandidate && fs.existsSync(localBundleCandidate) ? localBundleCandidate : null;
-    const isMissingLocalBundleFallback = Boolean(
-      resolvedLocalBundle &&
-        existing &&
-        !existingArgs.includes(resolvedLocalBundle)
-    );
-
-    if (!existing || isBareRelativeWrapper || isMissingLocalBundleFallback) {
-      if (process.platform === 'win32') {
-        const globalNpmEse = path.join(
-          process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
-          'npm',
-          'ese.cmd'
-        );
-        const npmFallbackCmd = fs.existsSync(globalNpmEse) ? `call "${globalNpmEse}" mcp` : 'call ese mcp';
-        const fallbackCmd = resolvedLocalBundle
-          ? `if exist "${resolvedLocalBundle}" (node "${resolvedLocalBundle}" mcp) else (${npmFallbackCmd})`
-          : npmFallbackCmd;
-        configObj.mcpServers.esedre = {
-          command: 'cmd.exe',
-          args: ['/c', `if exist .esedre\\esedre.cmd (call .esedre\\esedre.cmd mcp) else (${fallbackCmd})`],
-        };
-      } else {
-        configObj.mcpServers.esedre = {
-          command: 'sh',
-          args: [
-            '-c',
-            resolvedLocalBundle
-              ? `if [ -x .esedre/esedre ]; then exec .esedre/esedre mcp; elif [ -f "${resolvedLocalBundle}" ]; then exec node "${resolvedLocalBundle}" mcp; else exec ese mcp; fi`
-              : 'if [ -x .esedre/esedre ]; then exec .esedre/esedre mcp; else exec ese mcp; fi',
-          ],
-        };
-      }
+    if (!isUpToDateNodeLauncher) {
+      configObj.mcpServers.esedre = {
+        command: 'node',
+        args: [globalEseMjsPath, 'mcp'],
+      };
       fs.writeFileSync(mcpConfigPath, JSON.stringify(configObj, null, 2) + '\n', 'utf-8');
     }
 
-    ensureAntigravityPreToolHookScript(options.globalDir || getGlobalConfigDir());
+    ensureAntigravityPreToolHookScript(globalDir);
     ensureAntigravityPreToolHookScript(configDir);
     const hooksConfigPath = path.join(configDir, 'hooks.json');
     let hooksObj: Record<string, any> = {};
@@ -983,6 +1030,7 @@ export function configureWorkspace(targetDir: string, options: ConfigureOptions 
   // 7. Global store check & pre-creation (resilient, never crashes configure)
   const globalStoreRes = ensureGlobalEsedreStore();
   try {
+    ensureGlobalEseLauncherScript();
     ensureAntigravityPreToolHookScript();
   } catch {}
   if (!globalStoreRes.ok) {
@@ -1211,21 +1259,31 @@ export async function upgradeAllWorkspaces(options: UpgradeAllOptions = {}): Pro
     }
   };
 
-  // 1. Current workspace root if present and initialized
+  // 1. Current workspace root if present and initialized (excluding os.homedir() / global ~/.esedre parent)
   if (options.currentWorkspaceRoot && fs.existsSync(options.currentWorkspaceRoot)) {
-    const hasEsedre =
-      fs.existsSync(path.join(options.currentWorkspaceRoot, '.esedre')) ||
-      fs.existsSync(path.join(options.currentWorkspaceRoot, 'esedre.json'));
-    if (hasEsedre) {
-      const disc = findEsedreConfig(options.currentWorkspaceRoot, { fallbackToGlobal: true });
-      const resolvedRoot = path.resolve(options.currentWorkspaceRoot);
+    const resolvedRoot = path.resolve(options.currentWorkspaceRoot);
+    const candidateEsedreDir = path.join(resolvedRoot, '.esedre');
+    const isGlobalEsedreParent =
+      canonicalKey(resolvedRoot) === canonicalKey(os.homedir()) ||
+      canonicalKey(candidateEsedreDir) === canonicalKey(getGlobalConfigDir());
+    const hasWorkspaceEsedre =
+      fs.existsSync(path.join(resolvedRoot, '.esedre', 'esedre.json')) ||
+      fs.existsSync(path.join(resolvedRoot, 'esedre.json')) ||
+      (!isGlobalEsedreParent && fs.existsSync(candidateEsedreDir));
+    if (hasWorkspaceEsedre && !isGlobalEsedreParent) {
+      const disc = findEsedreConfig(resolvedRoot, { fallbackToGlobal: true });
       seenCanonical.add(canonicalKey(resolvedRoot));
       workspaceMap.set(
         resolvedRoot,
-        disc.config?.projectCode || path.basename(options.currentWorkspaceRoot)
+        disc.config?.projectCode || path.basename(resolvedRoot)
       );
     }
   }
+
+  try {
+    ensureGlobalEseLauncherScript();
+    setupGlobalAntigravityMcpConfig();
+  } catch {}
 
   // 2. Registered projects in global config
   if (globalCfg?.projects) {

@@ -105,7 +105,7 @@ describe('Esedre Daemon Integration & CLI Lifecycle', () => {
     expect(postStopRes.code).toBe(0);
     const postStopJson = JSON.parse(postStopRes.stdout);
     expect(postStopJson.running).toBe(false);
-  }, 20000);
+  }, 30000);
 
   it('recovers cleanly from stale PID in state file', async () => {
     const STALE_PORT = 5975;

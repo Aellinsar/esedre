@@ -83,9 +83,10 @@ describe('Tier 1: Cross-Platform Compatibility Contracts (Esedre-100)', () => {
         }
       }
 
-      // The cross-platform Node launcher .esedre/ese.mjs must exist on disk
+      // The cross-platform Node launcher .esedre/ese.mjs and global ~/.esedre/ese.mjs must exist on disk
       const mjsLauncherPath = path.join(wsDir, '.esedre', 'ese.mjs');
       expect(fs.existsSync(mjsLauncherPath)).toBe(true);
+      expect(fs.existsSync(path.join(customGlobalDir, 'ese.mjs'))).toBe(true);
     });
 
     it('ensures the repository own tracked .agents/mcp.json is OS-agnostic', () => {

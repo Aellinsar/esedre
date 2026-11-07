@@ -199,6 +199,28 @@ exit /b %ERRORLEVEL%
       expect(res.workspaces[0].name).toBe('VALID');
       expect(res.totalUpgraded).toBe(1);
     });
+
+    it('does not mistake the user home directory (containing global ~/.esedre) for a project workspace', async () => {
+      const fakeHome = path.join(tempBaseDir, 'fake-home');
+      const fakeGlobalEsedre = path.join(fakeHome, '.esedre');
+      fs.mkdirSync(fakeGlobalEsedre, { recursive: true });
+      process.env.ESEDRE_GLOBAL_DIR = fakeGlobalEsedre;
+
+      const validWs = path.join(tempBaseDir, 'real-project');
+      configureWorkspace(validWs, { projectCode: 'REAL' });
+
+      const res = await upgradeAllWorkspaces({
+        currentWorkspaceRoot: fakeHome,
+        globalConfig: {
+          projects: {
+            REAL: validWs,
+          },
+        },
+      });
+
+      expect(res.workspaces.map((w) => w.name)).toEqual(['REAL']);
+      expect(fs.existsSync(path.join(fakeGlobalEsedre, 'esedre.json'))).toBe(false);
+    });
   });
 
   describe('CLI ese upgrade --all execution', () => {
