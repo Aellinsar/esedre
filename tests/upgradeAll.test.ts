@@ -14,12 +14,29 @@ import { EsedreConfig } from '../src/config.js';
 
 describe('Windows CMD Wrapper Diagnostics and Multi-Workspace Upgrade', () => {
   let tempBaseDir: string;
+  let originalGlobalDir: string | undefined;
+  let originalBundlePath: string | undefined;
+  const cliPath = path.resolve(__dirname, '../dist/esedre.mjs');
 
   beforeEach(() => {
     tempBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-upgrade-all-'));
+    originalGlobalDir = process.env.ESEDRE_GLOBAL_DIR;
+    originalBundlePath = process.env.ESEDRE_BUNDLE_PATH;
+    process.env.ESEDRE_GLOBAL_DIR = path.join(tempBaseDir, 'global-store');
+    process.env.ESEDRE_BUNDLE_PATH = cliPath;
   });
 
   afterEach(() => {
+    if (originalGlobalDir !== undefined) {
+      process.env.ESEDRE_GLOBAL_DIR = originalGlobalDir;
+    } else {
+      delete process.env.ESEDRE_GLOBAL_DIR;
+    }
+    if (originalBundlePath !== undefined) {
+      process.env.ESEDRE_BUNDLE_PATH = originalBundlePath;
+    } else {
+      delete process.env.ESEDRE_BUNDLE_PATH;
+    }
     if (fs.existsSync(tempBaseDir)) {
       fs.rmSync(tempBaseDir, { recursive: true, force: true });
     }
@@ -242,7 +259,8 @@ exit /b %ERRORLEVEL%
       const statusObj = JSON.parse(resJson.stdout);
       expect(statusObj.outdatedWrappers).toBeDefined();
       expect(statusObj.outdatedWrappers.length).toBeGreaterThanOrEqual(1);
-      expect(statusObj.outdatedWrappers.some((w: any) => w.dir === ws)).toBe(true);
+      const realWs = fs.realpathSync(ws);
+      expect(statusObj.outdatedWrappers.some((w: any) => fs.realpathSync(w.dir) === realWs)).toBe(true);
 
       // Test Human mode output
       const resHuman = child_process.spawnSync(
@@ -286,6 +304,11 @@ exit /b %ERRORLEVEL%
         cwd: ws,
         encoding: 'utf-8',
         windowsHide: true,
+        env: {
+          ...process.env,
+          ESEDRE_GLOBAL_DIR: path.join(tempBaseDir, 'global-store'),
+          ESEDRE_BUNDLE_PATH: cliPath,
+        },
       });
 
       expect(cmdResult.status).toBe(0);

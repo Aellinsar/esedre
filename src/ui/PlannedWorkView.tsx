@@ -788,24 +788,57 @@ export function PlannedWorkView({
   });
   const previousExpandedIdRef = useRef<string | null>(expandedFeatureId);
   const [showToc, setShowToc] = useState(true);
+  const TOC_MIN_WIDTH = 260;
+  const TOC_MAX_WIDTH = 720;
+  const TOC_STORAGE_KEY = 'dev_plan_toc_width_v2';
+  const getDefaultTocWidth = useCallback(() => {
+    if (typeof window !== 'undefined' && window.innerWidth >= 768) {
+      const availableWidth = Math.max(768, window.innerWidth - 76);
+      return Math.max(TOC_MIN_WIDTH, Math.min(TOC_MAX_WIDTH, Math.round(availableWidth * 0.35)));
+    }
+    return 480;
+  }, []);
+  const [hasCustomTocWidth, setHasCustomTocWidth] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem(TOC_STORAGE_KEY) || sessionStorage.getItem(TOC_STORAGE_KEY);
+      return Boolean(saved && !isNaN(parseInt(saved, 10)));
+    }
+    return false;
+  });
   const [tocWidth, setTocWidth] = useState<number>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('dev_plan_toc_width') || sessionStorage.getItem('dev_plan_toc_width');
-      if (saved) return parseInt(saved, 10);
+      const saved = localStorage.getItem(TOC_STORAGE_KEY) || sessionStorage.getItem(TOC_STORAGE_KEY);
+      if (saved) {
+        const parsed = parseInt(saved, 10);
+        if (!isNaN(parsed)) return Math.max(TOC_MIN_WIDTH, Math.min(TOC_MAX_WIDTH, parsed));
+      }
     }
-    return 320;
+    return getDefaultTocWidth();
   });
   const [isResizing, setIsResizing] = useState(false);
 
-
-
   const handleUpdateTocWidth = (newWidth: number) => {
-    const clamped = Math.max(220, Math.min(650, newWidth));
+    const clamped = Math.max(TOC_MIN_WIDTH, Math.min(TOC_MAX_WIDTH, newWidth));
     setTocWidth(clamped);
+    setHasCustomTocWidth(true);
     try {
-      localStorage.setItem('dev_plan_toc_width', clamped.toString());
-      sessionStorage.setItem('dev_plan_toc_width', clamped.toString());
+      localStorage.setItem(TOC_STORAGE_KEY, clamped.toString());
+      sessionStorage.setItem(TOC_STORAGE_KEY, clamped.toString());
     } catch (err) {}
+  };
+
+  const handleResetOrToggleTocWidth = () => {
+    const defaultW = getDefaultTocWidth();
+    if (hasCustomTocWidth && Math.abs(tocWidth - defaultW) > 8) {
+      setTocWidth(defaultW);
+      setHasCustomTocWidth(false);
+      try {
+        localStorage.removeItem(TOC_STORAGE_KEY);
+        sessionStorage.removeItem(TOC_STORAGE_KEY);
+      } catch (err) {}
+    } else {
+      handleUpdateTocWidth(Math.abs(tocWidth - 320) <= 8 ? defaultW : 320);
+    }
   };
 
   // Ticket answers, plans & comments states
@@ -1837,10 +1870,15 @@ export function PlannedWorkView({
   }, [expandedFeatureId, isEmbedded]);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      sessionStorage.setItem('dev_plan_toc_width', String(tocWidth));
-    }
-  }, [tocWidth]);
+    if (typeof window === 'undefined' || hasCustomTocWidth) return;
+    const handleWindowResize = () => {
+      if (window.innerWidth >= 768) {
+        setTocWidth(getDefaultTocWidth());
+      }
+    };
+    window.addEventListener('resize', handleWindowResize);
+    return () => window.removeEventListener('resize', handleWindowResize);
+  }, [hasCustomTocWidth, getDefaultTocWidth]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -1905,14 +1943,14 @@ export function PlannedWorkView({
 
     const handleMouseMove = (moveEvent: MouseEvent) => {
       const delta = moveEvent.clientX - startX;
-      const newWidth = Math.max(220, Math.min(650, startWidth + delta));
+      const newWidth = Math.max(TOC_MIN_WIDTH, Math.min(TOC_MAX_WIDTH, startWidth + delta));
       setTocWidth(newWidth);
     };
 
     const handleMouseUp = (upEvent: MouseEvent) => {
       setIsResizing(false);
       const delta = upEvent.clientX - startX;
-      const finalWidth = Math.max(220, Math.min(650, startWidth + delta));
+      const finalWidth = Math.max(TOC_MIN_WIDTH, Math.min(TOC_MAX_WIDTH, startWidth + delta));
       handleUpdateTocWidth(finalWidth);
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
@@ -2860,7 +2898,7 @@ export function PlannedWorkView({
               {/* Horizontal Drag Resize Handle (Desktop Only) */}
               <div
                 onMouseDown={handleMouseDown}
-                onDoubleClick={() => handleUpdateTocWidth(tocWidth === 320 ? 480 : 320)}
+                onDoubleClick={handleResetOrToggleTocWidth}
                 className={`hidden md:flex w-3 hover:w-3 shrink-0 items-center justify-center cursor-ew-resize group self-stretch py-2 relative z-10 transition-colors ${
                   isResizing ? 'bg-[var(--accent-bg-subtle)]' : 'hover:bg-[var(--accent-bg-subtle)]'
                 }`}

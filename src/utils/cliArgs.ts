@@ -23,6 +23,13 @@ const BOOLEAN_OPTIONS: Record<string, { short?: string }> = {
   'no-proxy': {},
   'include-plans': {},
   includePlans: {},
+  'include-plan': {},
+  includePlan: {},
+  'include-raw': {},
+  includeRaw: {},
+  'include-completed': {},
+  includeCompleted: {},
+  compact: {},
   raw: {},
   blocked: {},
   'no-blocked': {},
@@ -87,6 +94,7 @@ const STRING_OPTIONS: Record<string, { short?: string }> = {
   date: {},
   allow: {},
   'data-dir': {},
+  host: {},
   port: {},
   lines: {},
   'final-status': {},
@@ -126,14 +134,181 @@ function parseExplicitBooleanLiteral(val: string): boolean | undefined {
   return undefined;
 }
 
+const MULTI_WORD_STRING_FLAGS = new Set<string>([
+  '--title',
+  '--effort',
+  '-e',
+  '--summary',
+  '--detail',
+  '--plan',
+  '--set',
+  '--notes',
+  '--note',
+  '--text',
+  '--description',
+  '-d',
+  '--desc',
+  '--name',
+  '-n',
+  '--search',
+  '-q',
+  '--author',
+  '--by',
+  '--status',
+  '-s',
+]);
+
+function getRequiredPositionalsBeforeMultiWordFlags(
+  command: string,
+  positionalsSoFar: string[]
+): number {
+  const cmd = command.toLowerCase();
+  if (
+    !cmd ||
+    cmd === 'create' ||
+    cmd === 'new' ||
+    cmd === 'add' ||
+    cmd === 'list' ||
+    cmd === 'ls' ||
+    cmd === 'status' ||
+    cmd === 'start' ||
+    cmd === 'stop' ||
+    cmd === 'logs' ||
+    cmd === 'snapshot' ||
+    cmd === 'refresh' ||
+    cmd === 'doctor' ||
+    cmd === 'init' ||
+    cmd === 'upgrade' ||
+    cmd === 'configure' ||
+    cmd === 'config' ||
+    cmd === 'mcp' ||
+    cmd === 'version' ||
+    cmd === 'help'
+  ) {
+    return 0;
+  }
+  if (cmd === 'milestone' || cmd === 'milestones' || cmd === 'ms') {
+    const sub = (positionalsSoFar[0] || '').toLowerCase();
+    if (sub === 'create' || sub === 'add' || sub === 'new' || sub === 'list' || sub === 'ls') {
+      return 1;
+    }
+    return 2;
+  }
+  if (cmd === 'lease' || cmd === 'leases') {
+    const sub = (positionalsSoFar[0] || '').toLowerCase();
+    if (sub === 'list' || sub === 'ls') {
+      return 1;
+    }
+    return 2;
+  }
+  if (cmd === 'project') {
+    const sub = (positionalsSoFar[0] || '').toLowerCase();
+    if (sub === 'set' || sub === 'update') {
+      return 2;
+    }
+    return 1;
+  }
+  if (cmd === 'rename-project' || cmd === 'unlink') {
+    return 2;
+  }
+  if (cmd === 'link') {
+    return 3;
+  }
+  return 1;
+}
+
+function preprocessCliArgs(rawArgs: string[]): string[] {
+  const sanitized = rawArgs.map((arg) => {
+    const trimmedCr = typeof arg === 'string' ? arg.replace(/\r+$/, '') : String(arg);
+    if (trimmedCr === '-json') return '--json';
+    if (trimmedCr.toLowerCase().startsWith('-json=')) return `-${trimmedCr}`;
+    return trimmedCr;
+  });
+
+  const out: string[] = [];
+  let command = '';
+  const positionalsSoFar: string[] = [];
+
+  for (let i = 0; i < sanitized.length; i++) {
+    const tok = sanitized[i];
+
+    if (MULTI_WORD_STRING_FLAGS.has(tok) && i + 1 < sanitized.length) {
+      const firstVal = sanitized[i + 1];
+      if (!isKnownFlagToken(firstVal)) {
+        out.push(tok);
+        const parts: string[] = [firstVal];
+        i++;
+
+        const isStatusTwoWord =
+          (tok === '--status' || tok === '-s') &&
+          firstVal.toLowerCase() === 'in' &&
+          i + 1 < sanitized.length &&
+          /^(development|progress|dev)$/i.test(sanitized[i + 1]);
+
+        const requiredPos = getRequiredPositionalsBeforeMultiWordFlags(command, positionalsSoFar);
+        const canConsumeMultiWord = positionalsSoFar.length >= requiredPos || isStatusTwoWord;
+
+        if (canConsumeMultiWord) {
+          while (i + 1 < sanitized.length) {
+            const nextTok = sanitized[i + 1];
+            if (isKnownFlagToken(nextTok)) break;
+            if (/^--[a-zA-Z0-9][-a-zA-Z0-9]*(=|$)/.test(nextTok)) break;
+            if (
+              command.toLowerCase() === 'init' &&
+              (nextTok.includes('/') || nextTok.includes('\\') || nextTok.startsWith('.'))
+            ) {
+              break;
+            }
+            parts.push(nextTok);
+            i++;
+            if (isStatusTwoWord && positionalsSoFar.length < requiredPos) {
+              break;
+            }
+          }
+        }
+
+        out.push(parts.join(' '));
+        continue;
+      }
+    }
+
+    if (isKnownFlagToken(tok)) {
+      out.push(tok);
+      const isStringFlag = (() => {
+        if (tok.includes('=')) return false;
+        const name = tok.startsWith('--') ? tok.slice(2) : SHORT_TO_LONG[tok.slice(1)];
+        return Boolean(name && name in STRING_OPTIONS);
+      })();
+      if (isStringFlag && i + 1 < sanitized.length && !isKnownFlagToken(sanitized[i + 1])) {
+        out.push(sanitized[i + 1]);
+        i++;
+      }
+      continue;
+    }
+
+    if (!tok.startsWith('-') || tok === '-') {
+      if (!command) {
+        command = tok;
+      } else {
+        positionalsSoFar.push(tok);
+      }
+    }
+    out.push(tok);
+  }
+
+  return out;
+}
+
 /**
  * Standard CLI argument parser built on Node's `node:util` `parseArgs`.
  * Properly distinguishes boolean flags from value-taking string flags, supports
  * `--key=value` and `-k=value`, handles boolean flags before positionals,
- * supports `--in-dev false` / `--leased false` / `--blocked false`, and detects
- * missing values for value-taking flags.
+ * supports `--in-dev false` / `--leased false` / `--blocked false`, detects
+ * missing values for value-taking flags, and reassembles unquoted multi-word
+ * string flags when shell quote-stripping occurs over SSH `cmd.exe /c`.
  */
 export function parseCliArgs(rawArgs: string[]): ParsedCliArgs {
+  const normalizedArgs = preprocessCliArgs(rawArgs);
   const optionsConfig: Record<string, { type: 'boolean' | 'string'; short?: string; multiple?: boolean }> = {};
 
   for (const [name, cfg] of Object.entries(BOOLEAN_OPTIONS)) {
@@ -148,7 +323,7 @@ export function parseCliArgs(rawArgs: string[]): ParsedCliArgs {
   }
 
   const parsed = nodeParseArgs({
-    args: rawArgs,
+    args: normalizedArgs,
     options: optionsConfig,
     strict: false,
     allowPositionals: true,
@@ -219,10 +394,15 @@ export function parseCliArgs(rawArgs: string[]): ParsedCliArgs {
       for (let j = i + 1; j < tokens.length; j++) {
         const rem = tokens[j] as any;
         if (rem.value !== undefined) {
+          const remVal = String(rem.value);
+          if (remVal === '--json' || remVal === '-json') {
+            recordBooleanFlag('json', remVal, true);
+            continue;
+          }
           if (!command) {
-            command = String(rem.value);
+            command = remVal;
           } else {
-            positionals.push(String(rem.value));
+            positionals.push(remVal);
           }
         }
       }

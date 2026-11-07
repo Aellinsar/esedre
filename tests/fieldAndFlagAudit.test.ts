@@ -95,6 +95,74 @@ describe('Field, Flag, Clearing, Validation & Filter Parity Audit (Esedre-103..1
       expect(e2.error).toBeUndefined();
       expect(e2.flags['text']).toBe('- fixed edge case');
     });
+
+    it('reassembles unquoted multi-word --title, --effort, --summary, and --status values when SSH cmd.exe /c strips quotes and preserves --json', () => {
+      const c1 = parseCliArgs([
+        'create',
+        '--project',
+        'Sleep',
+        '--title',
+        'Weekly',
+        'Research',
+        'Settings',
+        'Mobile',
+        'Top',
+        'Layout',
+        '--type',
+        'Feature',
+        '--priority',
+        'Medium',
+        '--complexity',
+        'Low',
+        '--effort',
+        '0.5',
+        '-',
+        '1.0',
+        'hours',
+        '--summary',
+        'Redesign',
+        'weekly',
+        'research',
+        'settings',
+        '--json',
+      ]);
+      expect(c1.error).toBeUndefined();
+      expect(c1.command).toBe('create');
+      expect(c1.positionals).toEqual([]);
+      expect(c1.flags['project']).toBe('Sleep');
+      expect(c1.flags['title']).toBe('Weekly Research Settings Mobile Top Layout');
+      expect(c1.flags['effort']).toBe('0.5 - 1.0 hours');
+      expect(c1.flags['summary']).toBe('Redesign weekly research settings');
+      expect(c1.flags['json']).toBe(true);
+
+      const u1 = parseCliArgs([
+        'update',
+        'Sleep-226',
+        '--status',
+        'In',
+        'Development',
+        '--title',
+        'Weekly',
+        'Research',
+        'Settings',
+        'Mobile',
+        'Top',
+        'Layout',
+        '--effort',
+        '0.5',
+        '-',
+        '1.0',
+        'hours',
+        '--json\r',
+      ]);
+      expect(u1.error).toBeUndefined();
+      expect(u1.command).toBe('update');
+      expect(u1.positionals).toEqual(['Sleep-226']);
+      expect(u1.flags['status']).toBe('In Development');
+      expect(u1.flags['title']).toBe('Weekly Research Settings Mobile Top Layout');
+      expect(u1.flags['effort']).toBe('0.5 - 1.0 hours');
+      expect(u1.flags['json']).toBe(true);
+    });
   });
 
   describe('Esedre-104 & Esedre-105: Normalizers, Validators & Clear Sentinels', () => {

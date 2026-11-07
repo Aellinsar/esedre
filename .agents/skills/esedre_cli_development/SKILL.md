@@ -14,10 +14,10 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
    - In development: `npx tsx bin/esedre.ts <command> [options]`.
    - In production / bundle: `node dist/esedre.mjs <command> [options]`.
 
-2. **Configuration Auto-Discovery**:
-   - Every CLI execution begins by calling `findEsedreConfig(process.cwd())`.
+2. **Configuration Auto-Discovery & Adapter Selection**:
+   - Every CLI execution begins by calling `findEsedreConfig(process.cwd(), { fallbackToGlobal: true })`.
    - The crawler climbs upward until it locates `esedre.json` (or reaches the filesystem root).
-   - The discovered `workspaceRoot` and `config` are passed directly into `FilesystemStorageAdapter`.
+   - `createStorageAdapter(discovered, { hostFlag, projectCode })` resolves the 5-tier remote host hierarchy (`resolveRemoteHost`) and selects either `HttpStorageAdapter` (remote HTTP) or `FilesystemStorageAdapter` (local disk), wrapped in `SecurityFilter`.
 
 3. **Argument Parsing (`src/utils/cliArgs.ts`)**:
    - Built on Node's standard `parseArgs` from `node:util` (`strict: false`, `allowPositionals: true`, `tokens: true`) with explicit `BOOLEAN_OPTIONS` and `STRING_OPTIONS` schemas.
@@ -29,10 +29,10 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 | Command | Syntax | Description |
 |---|---|---|
 | `init` | `esedre init [path] [--hub <name\|path>] [--project <code>] [--name "<name>"]` | Brings a repository online (creates `.esedre/esedre.json`, wrappers, initial snapshot), bootstraps a data hub (`--hub`), or registers a project directly into a data hub (`--project <code> [--hub <name\|path>]`). Warns if `AGENTS.md` or `GEMINI.md` exceeds 24,000 bytes. |
-| `configure` | `esedre configure [add <path> \| remove <code\|path> \| set <k> <v>]` | Inspects or mutates central configuration in `~/.esedre/config.json`. |
+| `configure` | `esedre configure [add <path> \| remove <code\|path> \| set <k> <v> \| get <k>]` | Inspects or mutates central configuration in `~/.esedre/config.json` (including `server.host` and `remotes.<Code>`, cleared with `none`). |
 | `start` | `esedre start [--port <n>] [--foreground \| -f] [--quiet] [--json]` | Starts the background server daemon (or foreground with `-f`). |
 | `stop` | `esedre stop [--port <n>] [--quiet] [--json]` | Stops the running background server daemon. |
-| `status` | `esedre status [--port <n>] [--json]` | Checks health, PID, uptime, and diagnostics of the running server. |
+| `status` | `esedre status [--port <n>] [--host <url>] [--json]` | Checks health, PID, version, uptime, and diagnostics of the running local or remote server. |
 | `logs` | `esedre logs [--port <n>] [--lines <n>]` | Tails recent server logs. |
 | `list` | `esedre list [--project <code\|all>] [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name\|none>] [--flag <flag\|none>] [--blocked] [--leased] [--leased-by <holder>] [--linked-to <key>] [--json]` | Lists tickets. Defaults to the active repo's `projectCode` in `esedre.json`. `--project all` lists all permitted tickets. |
 | `get` | `esedre get <id...> [--json]` | Displays complete ticket metadata, summary, feature/task/fix breakdown, comments, links, lease status, and blocker status for one or more tickets. |

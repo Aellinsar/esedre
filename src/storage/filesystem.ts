@@ -4302,9 +4302,12 @@ ${input.summary || 'Summary to be defined.'}
     assertProjectCompatible(resolved.loc.project, { operation: 'write', feature: 'ticket-leases' });
 
     let effectiveWorktree: string | undefined;
+    const isRemoteHostname = Boolean(
+      input.hostname?.trim() && input.hostname.trim().toLowerCase() !== os.hostname().toLowerCase(),
+    );
     if (input.worktree?.trim()) {
       effectiveWorktree = path.resolve(input.worktree.trim());
-    } else {
+    } else if (!isRemoteHostname) {
       const projectRepoRoot = this.getProjectRepoRoot(resolved.project);
       if (projectRepoRoot) {
         effectiveWorktree =

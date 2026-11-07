@@ -5,6 +5,35 @@ All notable changes to Esedre are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Remote Server Host & Client-Server Federation (`HttpStorageAdapter`) (Ticket #51)**:
+  - Added `HttpStorageAdapter` (`src/storage/http.ts`) and `createStorageAdapter` (`src/storage/index.ts`), enabling secondary client machines (such as laptops) to execute all CLI commands (`ese`) and stdio MCP tools (`ese mcp`) over HTTP against a remote Esedre daemon (`0.0.0.0:5674`) without cloning `esedre-data` locally.
+  - Added 5-tier remote/local host precedence resolution (`resolveRemoteHost` in `src/config.ts`):
+    1. Runtime `--host <url|local>` flag and `ESEDRE_HOST` environment variable override.
+    2. Per-project remote mapping (`remotes.<ProjectCode>` in `.esedre/esedre.json` or `~/.esedre/config.json`).
+    3. Self-contained local project precedence (`isSelfContainedLocalWorkspace`): workspaces with populated `.esedre/tickets/<id>/` directories or an in-repo `dataDir` automatically use `FilesystemStorageAdapter` even when a global `server.host` is configured.
+    4. Workspace `server.host` in `.esedre/esedre.json` (bypassed automatically on the host machine that owns the local data hub).
+    5. Machine-global default `server.host` in `~/.esedre/config.json` (`ese configure set server.host <url>`, cleared via `ese configure set server.host none`).
+  - Added remote health diagnostics to `ese status` (`getRemoteDaemonStatus` in `src/server/daemon.ts`) and enriched `GET /api/ping` with `version`, `schemaVersion`, `startedAt`, and `uptimeSeconds`.
+  - Expanded REST API (`src/server/apiServer.ts`) with full `ListTicketsFilter` query parameter support on `GET /api/planning/tickets`, single milestone lookup on `GET /api/planning/milestone/:id`, batch `targetIds` on `/api/planning/link` and `/api/planning/unlink`, and HTTP `409` serialization for `EsedreConflictError`.
+  - Updated `EsedreMcpServer` (`src/mcp/server.ts`) to dynamically switch between `HttpStorageAdapter` and `FilesystemStorageAdapter` per workspace via `applyRequestContext` while still refreshing local `.esedre/snapshot.json` projections on client machines.
+- **Responsive 35% / 65% Default UI Table of Contents Split Ratio (Ticket #107)**:
+  - Updated `<PlannedWorkView />` (`src/ui/PlannedWorkView.tsx`) to calculate a responsive 35% / 65% default left/right split (`getDefaultTocWidth` clamped to `260px..720px`) on desktop viewports so 48-character ticket titles display without truncation.
+  - Persisted user-dragged custom widths under `dev_plan_toc_width_v2` (dynamically tracking window resize when uncustomized) and updated double-click on the resize handle to reset or toggle between the 35% default and compact `320px`.
+- **Storage Migration & Multi-Version Compatibility Engine (Tickets #85, #97)**:
+  - Added `schemaVersion`, `esedreVersion`, and optional `pinSchemaVersion` stamps across `project.json` and ticket `meta.json` (`src/migrations/`).
+  - Enforced non-intrusive compatibility guards (`assertProjectCompatible` throwing `EsedreVersionError`) and explicit migrations via `ese upgrade [--project <Code> | --all]` with atomic pre-migration backups in `~/.esedre/backups/`.
+- **Multi-Repo Configuration Plumbing, Antigravity `PreToolUse` Isolation Hook & Host Path Redaction (Tickets #92, #93)**:
+  - Added scoped `globalConfig.projects` inheritance in `findEsedreConfig` and automatic workspace registration in `~/.esedre/config.json`.
+  - Added self-contained Antigravity `PreToolUse` isolation hook (`~/.esedre/agy-pre-tool-hook.mjs` and `~/.gemini/config/hooks.json`) and active context bridge (`~/.esedre/mcp-active-context.json`).
+  - Redacted host filesystem paths (`lease.worktree`) from all MCP responses, conflict errors, and `.esedre/snapshot.json` projections.
+- **Startup Cache Pre-Warming, Lazy Detail Hydration & Card Grid Windowing (Ticket #88)**:
+  - Added chunked non-blocking startup cache pre-warming (`prewarmCache`), summary-mode `/api/planning/all?summary=true` initial load with on-demand ticket hydration, and paginated card rendering in `<PlannedWorkView />`.
+- **Cross-Platform CLI/MCP Parity, Lifecycle-Tiered Snapshots & Batch Linking (Tickets #78..#81, #86..#91, #94..#106)**:
+  - Added automatic `.esedre/snapshot.json` refresh across all mutating CLI and MCP operations, compact lifecycle-tiered snapshot projections (`completed` and `rejected` index arrays, `--include-plans` opt-in), batch ticket linking/unlinking (`targetTicketIds`), deduplicated MCP ticket payloads (`includeRaw`), cross-platform `.esedre/ese.mjs` Node launcher, and comprehensive cross-platform E2E test suites.
+
 ## [1.3.0] - 2026-10-15
 
 ### Added

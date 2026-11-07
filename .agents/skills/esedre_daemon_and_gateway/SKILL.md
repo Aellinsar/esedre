@@ -20,8 +20,8 @@ ese start [--port 5674] [--quiet] [--json]
 # Run foreground server directly in terminal (blocks terminal, Ctrl+C to stop)
 ese start -f [--port 5674]  # or: ese start --foreground
 
-# Check health, uptime, and active project topology
-ese status [--port 5674] [--json]
+# Check health, uptime, and active project topology (local or configured remote server.host)
+ese status [--port 5674] [--host <url>] [--json]
 
 # Tail or view recent server logs
 ese logs [--lines <n>]
@@ -98,6 +98,7 @@ The filesystem storage adapter automatically polls configuration files (`esedre.
 ## 4. Standalone Mode vs Embedded View & Theme Contract
 
 - **Standalone Mode**: Normal, primary operation of Esedre accessed via its dedicated web UI (`/app`, port 5674). The server is ALWAYS run whenever Esedre is utilized (`ese start`).
+- **Responsive 35% / 65% Default TOC Split (`Esedre-107`)**: On desktop viewports (`>= 768px`), `<PlannedWorkView />` defaults the Table of Contents (TOC) / ticket card split to a responsive **35% / 65% ratio** (`getDefaultTocWidth` clamped to `260px..720px`, with `480px` fallback) so full 48-character ticket titles render cleanly without truncation. Custom dragged widths persist in `dev_plan_toc_width_v2`, and double-clicking the resize handle resets or toggles between the 35% default and compact `320px`.
 - **Embedded View**: Optional embedding of `<PlannedWorkView />` inside a host application (e.g., inside a modal or drawer):
 
 ```tsx

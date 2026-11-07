@@ -238,6 +238,7 @@ export const HISTORIC_SKILL_HASHES: string[] = [
   'd0bd99ea93d9c65245b3be51188d4bc153024092',
   'e5d4fe4f2ae0bd464bad877ea1e5ab63cef747fa',
   'd25597e8c2c26cdc5873e5dbf02335032db07580',
+  'b388a920b2bec50bba0117d18ea789ec1ddaf4e9',
 ];
 
 
@@ -304,9 +305,9 @@ Both \`esedre\` and \`ese\` work interchangeably. On POSIX shells use \`.esedre/
 
 ### Read or Update Implementation Plans
 \`\`\`bash
-.esedre/ese plan <ticketId>
-.esedre/ese plan <ticketId> --file <planFilePath>
-.esedre/ese plan <ticketId> --set "<markdownContent>" [--last-hash <hash>]
+.esedre/ese plan <ticketId> [--json]
+.esedre/ese plan <ticketId> --file <planFilePath> [--json]
+.esedre/ese plan <ticketId> --set "<markdownContent>" [--last-hash <hash>] [--json]
 \`\`\`
 
 ### Create a Ticket
@@ -316,9 +317,9 @@ Both \`esedre\` and \`ese\` work interchangeably. On POSIX shells use \`.esedre/
 
 ### Update Ticket Status & Attributes
 \`\`\`bash
-.esedre/ese update <ticketId> --status "In Development"
-.esedre/ese update <ticketId> --status "Completed"
-.esedre/ese update <ticketId> --type Feature -P High --complexity Medium --effort "2.0 - 4.0 hours"
+.esedre/ese update <ticketId> --status "In Development" [--json]
+.esedre/ese update <ticketId> --status "Completed" [--json]
+.esedre/ese update <ticketId> --type Feature -P High --complexity Medium --effort "2.0 - 4.0 hours" [--json]
 .esedre/ese update <ticketId> -P none           # Clears priority
 .esedre/ese update <ticketId> -m "Release 1.0"  # Links ticket to milestone (inherits umbrella feature flag)
 .esedre/ese update <ticketId> -m none           # Unlinks ticket from milestone
@@ -345,15 +346,15 @@ When authoring or updating a ticket's \`detail.md\` (via \`--detail\`, \`--file\
 
 ### Append Comments or Notes
 \`\`\`bash
-.esedre/ese comment <ticketId> "Verified implementation." --author "Agent"
-.esedre/ese comment <ticketId> --file <commentFilePath> --author "Agent"
-.esedre/ese comment <ticketId> --text "Verified implementation." --author "Agent"
+.esedre/ese comment <ticketId> "Verified implementation." --author "Agent" [--json]
+.esedre/ese comment <ticketId> --file <commentFilePath> --author "Agent" [--json]
+.esedre/ese comment <ticketId> --text "Verified implementation." --author "Agent" [--json]
 \`\`\`
 
 ### Link or Unlink Tickets
 \`\`\`bash
-.esedre/ese link <sourceId> <relation> <targetId...> [--author "..."]
-.esedre/ese unlink <sourceId> <targetId...> [--relation <relation>]
+.esedre/ese link <sourceId> <relation> <targetId...> [--author "..."] [--json]
+.esedre/ese unlink <sourceId> <targetId...> [--relation <relation>] [--json]
 # Supported relations: relates-to, blocks, parent-of, duplicates
 # Inverse reciprocal links are automatically synchronized.
 \`\`\`
@@ -369,8 +370,8 @@ When authoring or updating a ticket's \`detail.md\` (via \`--detail\`, \`--file\
 
 ### Regenerate Snapshot
 \`\`\`bash
-.esedre/ese snapshot [--include-plans]
-.esedre/ese refresh [--include-plans]
+.esedre/ese snapshot [--include-plans] [--json]
+.esedre/ese refresh [--include-plans] [--json]
 \`\`\`
 
 ### Server Lifecycle & Daemon Management
@@ -1108,11 +1109,22 @@ export function findOutdatedWrappers(
   const outdated: OutdatedWrapperInfo[] = [];
   const checkedDirs = new Set<string>();
 
+  const canonicalKey = (p: string): string => {
+    try {
+      const real = fs.realpathSync(p).normalize('NFC');
+      return process.platform === 'win32' || process.platform === 'darwin' ? real.toLowerCase() : real;
+    } catch {
+      const norm = p.normalize('NFC');
+      return process.platform === 'win32' || process.platform === 'darwin' ? norm.toLowerCase() : norm;
+    }
+  };
+
   const checkDir = (dir: string, name: string) => {
     const resolved = path.resolve(expandHome(dir));
-    if (checkedDirs.has(resolved.toLowerCase())) return;
-    checkedDirs.add(resolved.toLowerCase());
     if (!fs.existsSync(resolved)) return;
+    const key = canonicalKey(resolved);
+    if (checkedDirs.has(key)) return;
+    checkedDirs.add(key);
 
     const cmdPath = path.join(resolved, '.esedre', 'esedre.cmd');
     if (fs.existsSync(cmdPath)) {
@@ -1187,6 +1199,17 @@ export async function upgradeProjectData(
 export async function upgradeAllWorkspaces(options: UpgradeAllOptions = {}): Promise<UpgradeAllResult> {
   const globalCfg = options.globalConfig !== undefined ? options.globalConfig : readGlobalConfig();
   const workspaceMap = new Map<string, string>();
+  const seenCanonical = new Set<string>();
+
+  const canonicalKey = (p: string): string => {
+    try {
+      const real = fs.realpathSync(p).normalize('NFC');
+      return process.platform === 'win32' || process.platform === 'darwin' ? real.toLowerCase() : real;
+    } catch {
+      const norm = p.normalize('NFC');
+      return process.platform === 'win32' || process.platform === 'darwin' ? norm.toLowerCase() : norm;
+    }
+  };
 
   // 1. Current workspace root if present and initialized
   if (options.currentWorkspaceRoot && fs.existsSync(options.currentWorkspaceRoot)) {
@@ -1195,8 +1218,10 @@ export async function upgradeAllWorkspaces(options: UpgradeAllOptions = {}): Pro
       fs.existsSync(path.join(options.currentWorkspaceRoot, 'esedre.json'));
     if (hasEsedre) {
       const disc = findEsedreConfig(options.currentWorkspaceRoot, { fallbackToGlobal: true });
+      const resolvedRoot = path.resolve(options.currentWorkspaceRoot);
+      seenCanonical.add(canonicalKey(resolvedRoot));
       workspaceMap.set(
-        path.resolve(options.currentWorkspaceRoot),
+        resolvedRoot,
         disc.config?.projectCode || path.basename(options.currentWorkspaceRoot)
       );
     }
@@ -1207,7 +1232,9 @@ export async function upgradeAllWorkspaces(options: UpgradeAllOptions = {}): Pro
     for (const [code, p] of Object.entries(globalCfg.projects)) {
       const resolved = path.resolve(expandHome(p));
       if (fs.existsSync(resolved)) {
-        if (!workspaceMap.has(resolved)) {
+        const key = canonicalKey(resolved);
+        if (!seenCanonical.has(key)) {
+          seenCanonical.add(key);
           workspaceMap.set(resolved, code);
         }
       }

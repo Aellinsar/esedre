@@ -146,6 +146,25 @@ describe('Tier 1: Cross-Platform Compatibility Contracts (Esedre-100)', () => {
         for (const name of ['ese', 'esedre', 'ese.mjs']) {
           const mode = fs.statSync(path.join(wsDir, '.esedre', name)).mode;
           expect(mode & 0o111).toBeGreaterThan(0);
+
+          const repoMode = fs.statSync(path.join(repoRoot, '.esedre', name)).mode;
+          expect(repoMode & 0o111).toBeGreaterThan(0);
+        }
+      }
+
+      if (fs.existsSync(path.join(repoRoot, '.git'))) {
+        const lsFilesOut = execFileSync(
+          'git',
+          ['--no-pager', 'ls-files', '-s', '.esedre/ese', '.esedre/esedre', '.esedre/ese.mjs'],
+          {
+            cwd: repoRoot,
+            encoding: 'utf-8',
+          }
+        ).trim();
+        const lines = lsFilesOut.split(/\r?\n/).filter(Boolean);
+        expect(lines).toHaveLength(3);
+        for (const line of lines) {
+          expect(line.startsWith('100755 ')).toBe(true);
         }
       }
     });

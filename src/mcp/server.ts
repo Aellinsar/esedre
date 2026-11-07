@@ -7,8 +7,10 @@ import { EsedreTicket, TicketDetail, TicketLease, TicketType, TicketCategory, Ti
 import { EsedreVersionError } from '../migrations/index.js';
 import { resolveWorkerIdentity, isPathInside, isWorkspaceOrGitDir } from '../utils/identity.js';
 import { generateProjectSnapshot } from '../snapshot.js';
-import { findEsedreConfig, readGlobalConfig, expandHome, EsedreConfig } from '../config.js';
+import { findEsedreConfig, readGlobalConfig, expandHome, EsedreConfig, resolveRemoteHost, isSelfContainedLocalWorkspace } from '../config.js';
 import { SecurityFilter } from '../securityFilter.js';
+import { HttpStorageAdapter } from '../storage/http.js';
+import { FilesystemStorageAdapter } from '../storage/filesystem.js';
 import { readActiveMcpContext } from './antigravityHook.js';
 
 export interface EsedreMcpServerOptions {
@@ -84,12 +86,42 @@ export class EsedreMcpServer {
         this.activeWorkspaceRoot = ctx.workspaceRoot || this.activeWorkspaceRoot;
         this.activeWorkspacePaths = ctx.workspacePaths;
         this.activeProjectCode = ctx.projectCode || this.activeProjectCode;
+        const effectiveRoot = this.activeWorkspaceRoot || process.cwd();
+        const ctxDiscovered =
+          ctx.workspaceRoot && fs.existsSync(ctx.workspaceRoot)
+            ? findEsedreConfig(ctx.workspaceRoot, { fallbackToGlobal: true })
+            : null;
         this.activeConfig = {
           ...(this.options.config || {}),
+          ...(ctxDiscovered?.config || {}),
           ...(ctx.projectCode ? { projectCode: ctx.projectCode } : {}),
           ...(ctx.allowedProjects ? { allowedProjects: ctx.allowedProjects } : {}),
         };
-        this.storage = new SecurityFilter(this.rawStorage, this.activeConfig);
+        const remoteHost = resolveRemoteHost(
+          {
+            workspaceRoot: effectiveRoot,
+            configPath: ctxDiscovered?.configPath || null,
+            config: this.activeConfig,
+          },
+          { projectCode: this.activeProjectCode }
+        );
+        let targetRaw = this.rawStorage;
+        if (remoteHost) {
+          targetRaw = new HttpStorageAdapter({
+            host: remoteHost,
+            workspaceRoot: effectiveRoot,
+            config: this.activeConfig,
+          });
+        } else if (
+          this.rawStorage instanceof HttpStorageAdapter ||
+          isSelfContainedLocalWorkspace(
+            effectiveRoot,
+            ctxDiscovered?.localConfig || null
+          )
+        ) {
+          targetRaw = new FilesystemStorageAdapter(effectiveRoot, this.activeConfig);
+        }
+        this.storage = new SecurityFilter(targetRaw, this.activeConfig);
       }
     }
   }

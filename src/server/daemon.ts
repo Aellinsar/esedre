@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
+import https from 'node:https';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { resolvePorts, getGlobalConfigDir } from '../config.js';
+import { resolvePorts, getGlobalConfigDir, normalizeRemoteHostUrl } from '../config.js';
 import { CURRENT_ESEDRE_VERSION } from '../types.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -23,6 +24,8 @@ export interface DaemonState {
 
 export interface DaemonStatus {
   running: boolean;
+  remote?: boolean;
+  host?: string;
   pid?: number;
   port?: number;
   uptimeSeconds?: number;
@@ -31,6 +34,7 @@ export interface DaemonStatus {
   projects?: string[];
   logFile?: string;
   version?: string;
+  schemaVersion?: string;
   staleVersion?: boolean;
   installedVersion?: string;
   error?: string;
@@ -160,7 +164,7 @@ export function isProcessAlive(pid: number): boolean {
 /**
  * Performs a fast HTTP probe against the internal Esedre API.
  */
-export function pingDaemon(port: number, timeoutMs = 200): Promise<{ responding: boolean; isEsedre: boolean; projects?: string[] }> {
+export function pingDaemon(port: number, timeoutMs = 1000): Promise<{ responding: boolean; isEsedre: boolean; projects?: string[] }> {
   return new Promise((resolve) => {
     const req = http.get(
       `http://127.0.0.1:${port}/api/planning/projects`,
@@ -199,7 +203,7 @@ export function pingDaemon(port: number, timeoutMs = 200): Promise<{ responding:
   });
 }
 
-function fetchDaemonPid(port: number, timeoutMs = 300): Promise<number | undefined> {
+function fetchDaemonPid(port: number, timeoutMs = 1000): Promise<number | undefined> {
   return new Promise((resolve) => {
     const req = http.get(
       `http://127.0.0.1:${port}/api/ping`,
@@ -251,7 +255,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const existingState = getDaemonState(port, workspaceRoot);
   if (existingState) {
     if (isProcessAlive(existingState.pid)) {
-      const ping = await pingDaemon(port, 1500);
+      const ping = await pingDaemon(port, 3000);
       if (ping.responding && ping.isEsedre) {
         if (!options.quiet) {
           console.log(`\x1b[36m⚡ Esedre daemon already running on http://localhost:${port} (PID ${existingState.pid})\x1b[0m`);
@@ -422,7 +426,7 @@ export async function stopDaemon(options: StopDaemonOptions = {}): Promise<boole
 
   if (!pid) {
     // Check if anything is responding on port
-    const ping = await pingDaemon(port, 200);
+    const ping = await pingDaemon(port, 1000);
     if (!ping.responding) {
       if (!options.quiet) {
         console.log(`\x1b[33m○ Esedre daemon is not running on port ${port}.\x1b[0m`);
@@ -431,7 +435,7 @@ export async function stopDaemon(options: StopDaemonOptions = {}): Promise<boole
     }
 
     // 1. Primary cross-platform PID resolution via GET /api/ping (works even when lsof is absent)
-    pid = await fetchDaemonPid(port, 300);
+    pid = await fetchDaemonPid(port, 1000);
 
     // 2. Fallback to OS network tables if /api/ping did not return a PID
     if (!pid) {
@@ -477,6 +481,15 @@ export async function stopDaemon(options: StopDaemonOptions = {}): Promise<boole
     const stopStart = Date.now();
     while (isProcessAlive(pid) && Date.now() - stopStart < 2000) {
       await new Promise((r) => setTimeout(r, 50));
+    }
+
+    if (isProcessAlive(pid)) {
+      if (!options.quiet) {
+        console.error(
+          `\x1b[33m⚠️  Could not stop Esedre daemon on port ${port} (PID ${pid}): Access denied (process may be running in an elevated Administrator session).\x1b[0m`
+        );
+      }
+      return false;
     }
   }
 
@@ -535,15 +548,111 @@ export async function getDaemonStatus(options: { port?: number; json?: boolean; 
     } catch {}
   }
 
+  let livePingData: any = null;
+  if (ping.responding && ping.isEsedre) {
+    try {
+      const res = await fetchJsonEndpoint(`http://127.0.0.1:${port}/api/ping`, 500);
+      if (res.status === 200 && res.data?.esedre) {
+        livePingData = res.data;
+      }
+    } catch {}
+  }
+
+  const effectiveVersion = state?.version || livePingData?.version;
   return {
     running: ping.responding && ping.isEsedre,
+    pid: typeof livePingData?.pid === 'number' ? livePingData.pid : undefined,
     port,
+    uptimeSeconds: typeof livePingData?.uptimeSeconds === 'number' ? livePingData.uptimeSeconds : undefined,
+    startedAt: typeof livePingData?.startedAt === 'string' ? livePingData.startedAt : undefined,
     projects: ping.projects,
     logFile,
-    version: state?.version,
-    staleVersion: Boolean(state?.version && state.version !== CURRENT_ESEDRE_VERSION),
+    version: effectiveVersion,
+    staleVersion: Boolean(effectiveVersion && effectiveVersion !== CURRENT_ESEDRE_VERSION),
     installedVersion: CURRENT_ESEDRE_VERSION,
   };
+}
+
+function fetchJsonEndpoint(urlStr: string, timeoutMs: number): Promise<{ status: number; data: any }> {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(urlStr);
+    const transport = parsedUrl.protocol === 'https:' ? https : http;
+    const req = transport.get(parsedUrl, { timeout: timeoutMs }, (res) => {
+      let body = '';
+      res.on('data', (chunk) => {
+        body += chunk;
+      });
+      res.on('end', () => {
+        try {
+          resolve({ status: res.statusCode || 500, data: JSON.parse(body) });
+        } catch {
+          resolve({ status: res.statusCode || 500, data: null });
+        }
+      });
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error(`Timeout after ${timeoutMs}ms`));
+    });
+    req.on('error', reject);
+  });
+}
+
+/**
+ * Probes a remote Esedre daemon host for health, version, uptime, and registered projects.
+ */
+export async function getRemoteDaemonStatus(
+  remoteHost: string,
+  timeoutMs = 2500
+): Promise<DaemonStatus> {
+  const host = normalizeRemoteHostUrl(remoteHost) || remoteHost;
+  let parsedPort: number | undefined;
+  try {
+    const u = new URL(host);
+    parsedPort = u.port ? parseInt(u.port, 10) : (u.protocol === 'https:' ? 443 : 80);
+  } catch {}
+
+  try {
+    const [pingRes, projRes] = await Promise.all([
+      fetchJsonEndpoint(`${host}/api/ping`, timeoutMs),
+      fetchJsonEndpoint(`${host}/api/planning/projects`, timeoutMs).catch(() => ({
+        status: 500,
+        data: null,
+      })),
+    ]);
+
+    const pingData = pingRes.data;
+    const isRunning = Boolean(pingRes.status === 200 && pingData && pingData.esedre);
+    const projects = Array.isArray(projRes.data)
+      ? projRes.data.map((p: any) => p.code || p.name).filter(Boolean)
+      : undefined;
+    const remoteVersion = pingData?.version;
+    const staleVersion = Boolean(remoteVersion && remoteVersion !== CURRENT_ESEDRE_VERSION);
+
+    return {
+      running: isRunning,
+      remote: true,
+      host,
+      pid: typeof pingData?.pid === 'number' ? pingData.pid : undefined,
+      port: parsedPort,
+      uptimeSeconds: typeof pingData?.uptimeSeconds === 'number' ? pingData.uptimeSeconds : undefined,
+      startedAt: typeof pingData?.startedAt === 'string' ? pingData.startedAt : undefined,
+      projects,
+      version: remoteVersion,
+      schemaVersion: typeof pingData?.schemaVersion === 'string' ? pingData.schemaVersion : undefined,
+      staleVersion,
+      installedVersion: CURRENT_ESEDRE_VERSION,
+    };
+  } catch (err: any) {
+    return {
+      running: false,
+      remote: true,
+      host,
+      port: parsedPort,
+      installedVersion: CURRENT_ESEDRE_VERSION,
+      error: err.code || err.message,
+    };
+  }
 }
 
 /**

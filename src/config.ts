@@ -14,6 +14,11 @@ export interface EsedrePortsConfig {
   api?: number;
 }
 
+export interface RemoteServerConfig {
+  host?: string;
+  timeoutMs?: number;
+}
+
 export interface EsedreConfig {
   version?: string;
   projectCode?: string;
@@ -21,10 +26,42 @@ export interface EsedreConfig {
   allowedProjects?: string[];
   dataDir?: string | string[];
   serverUrl?: string;
+  server?: RemoteServerConfig;
+  remotes?: Record<string, string>;
   port?: number;
   ports?: EsedrePortsConfig;
   projects?: Record<string, string>;
   defaultAuthor?: string;
+}
+
+export function normalizeRemoteHostUrl(raw?: string | null): string | undefined {
+  if (!raw || typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const lower = trimmed.toLowerCase();
+  if (lower === 'none' || lower === 'null' || lower === 'false' || lower === 'clear') {
+    return undefined;
+  }
+  if (lower === 'local') {
+    return 'local';
+  }
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  const withoutSuffix = withProtocol
+    .replace(/\/+$/, '')
+    .replace(/\/(?:api(?:\/planning)?|app)$/i, '');
+  try {
+    const parsed = new URL(withoutSuffix);
+    if (
+      parsed.protocol === 'http:' &&
+      !parsed.port &&
+      (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(parsed.hostname) || parsed.hostname === 'localhost')
+    ) {
+      parsed.port = String(DEFAULT_ESEDRE_PORT);
+    }
+    return parsed.origin + (parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, ''));
+  } catch {
+    return withoutSuffix;
+  }
 }
 
 export interface ResolvedPorts {
@@ -398,6 +435,11 @@ export function removeLocationFromGlobalConfig(identifier: string): { removed: b
 export function getGlobalConfigKey(key: string): any {
   const current = readGlobalConfig();
   if (!current) return undefined;
+  if (key.startsWith('remotes.') && current.remotes) {
+    const code = key.slice('remotes.'.length).trim();
+    const matched = Object.keys(current.remotes).find((k) => k.toLowerCase() === code.toLowerCase());
+    return matched ? current.remotes[matched] : undefined;
+  }
   if (key.includes('.')) {
     const parts = key.split('.');
     let val: any = current;
@@ -412,12 +454,70 @@ export function getGlobalConfigKey(key: string): any {
 
 export function setGlobalConfigKey(key: string, value: any): { key: string; value: any } {
   const current = readGlobalConfig() || { version: CURRENT_ESEDRE_VERSION, port: DEFAULT_ESEDRE_PORT };
+  const isClear =
+    value === null ||
+    value === undefined ||
+    (typeof value === 'string' && ['none', 'null', ''].includes(value.trim().toLowerCase()));
+
+  if (isClear) {
+    if (key.startsWith('remotes.')) {
+      const code = key.slice('remotes.'.length).trim();
+      if (current.remotes) {
+        for (const existingKey of Object.keys(current.remotes)) {
+          if (existingKey.toLowerCase() === code.toLowerCase()) {
+            delete current.remotes[existingKey];
+          }
+        }
+        if (Object.keys(current.remotes).length === 0) {
+          delete current.remotes;
+        }
+      }
+    } else if (key.includes('.')) {
+      const parts = key.split('.');
+      let obj: any = current;
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (!obj || typeof obj !== 'object') break;
+        obj = obj[parts[i]];
+      }
+      if (obj && typeof obj === 'object') {
+        delete obj[parts[parts.length - 1]];
+      }
+      if (parts[0] === 'server' && current.server && Object.keys(current.server).length === 0) {
+        delete current.server;
+      }
+    } else {
+      delete (current as any)[key];
+    }
+    writeGlobalConfig(current);
+    return { key, value: null };
+  }
+
   let parsedValue = value;
-  if ((key === 'port' || key.endsWith('.port') || key.startsWith('ports.')) && typeof value === 'string') {
+  if (
+    (key === 'port' || key.endsWith('.port') || key.startsWith('ports.') || key === 'server.timeoutMs') &&
+    typeof value === 'string'
+  ) {
     const num = parseInt(value, 10);
     if (!isNaN(num)) parsedValue = num;
+  } else if (
+    (key === 'server.host' || key === 'serverUrl' || key.startsWith('remotes.')) &&
+    typeof value === 'string'
+  ) {
+    parsedValue = normalizeRemoteHostUrl(value) ?? value;
   }
-  if (key.includes('.')) {
+
+  if (key.startsWith('remotes.')) {
+    const code = key.slice('remotes.'.length).trim();
+    if (!current.remotes || typeof current.remotes !== 'object') {
+      current.remotes = {};
+    }
+    for (const existingKey of Object.keys(current.remotes)) {
+      if (existingKey.toLowerCase() === code.toLowerCase() && existingKey !== code) {
+        delete current.remotes[existingKey];
+      }
+    }
+    current.remotes[code] = parsedValue;
+  } else if (key.includes('.')) {
     const parts = key.split('.');
     let obj: any = current;
     for (let i = 0; i < parts.length - 1; i++) {
@@ -436,6 +536,7 @@ export function setGlobalConfigKey(key: string, value: any): { key: string; valu
 
 export interface DiscoveredConfig {
   config: EsedreConfig;
+  localConfig?: EsedreConfig | null;
   configPath?: string | null;
   workspaceRoot: string;
   isGlobalFallback?: boolean;
@@ -443,6 +544,127 @@ export interface DiscoveredConfig {
 
 export interface FindConfigOptions {
   fallbackToGlobal?: boolean;
+}
+
+export function isSelfContainedLocalWorkspace(
+  workspaceRoot: string,
+  localConfig?: EsedreConfig | null
+): boolean {
+  const absRoot = path.resolve(workspaceRoot);
+  if (localConfig?.dataDir) {
+    const dirs = Array.isArray(localConfig.dataDir) ? localConfig.dataDir : [localConfig.dataDir];
+    for (const d of dirs) {
+      if (typeof d !== 'string' || !d.trim()) continue;
+      const resolved = path.resolve(absRoot, expandHome(d.trim()));
+      const rel = path.relative(absRoot, resolved);
+      if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+        return true;
+      }
+    }
+  }
+  const inRepoTicketDirs = [
+    path.join(absRoot, '.esedre', 'tickets'),
+    path.join(absRoot, 'tickets'),
+    path.join(absRoot, 'src', 'data', 'planning', 'tickets'),
+  ];
+  return inRepoTicketDirs.some((dir) => {
+    if (!fs.existsSync(dir)) return false;
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      return entries.some((e) => e.isDirectory() && /^\d+$/.test(e.name));
+    } catch {
+      return false;
+    }
+  });
+}
+
+export function resolveRemoteHost(
+  discovered: DiscoveredConfig,
+  options?: { hostFlag?: string; projectCode?: string }
+): string | undefined {
+  // Tier 1: Runtime CLI flag (--host) or ESEDRE_HOST environment variable
+  const rawOverride = options?.hostFlag ?? process.env.ESEDRE_HOST;
+  if (rawOverride !== undefined && String(rawOverride).trim() !== '') {
+    const norm = normalizeRemoteHostUrl(String(rawOverride));
+    if (!norm || norm === 'local') {
+      return undefined;
+    }
+    return norm;
+  }
+
+  const globalConfig = readGlobalConfig();
+  const localConfig = discovered.localConfig ?? (discovered.isGlobalFallback ? null : discovered.config);
+  const targetCode = (
+    options?.projectCode ||
+    localConfig?.projectCode ||
+    discovered.config?.projectCode ||
+    ''
+  ).trim();
+
+  // Tier 2: Per-project remote mapping in workspace or ~/.esedre/config.json
+  if (targetCode && targetCode.toLowerCase() !== 'all') {
+    const lowerTarget = targetCode.toLowerCase();
+    const remoteSources = [localConfig?.remotes, globalConfig?.remotes];
+    for (const source of remoteSources) {
+      if (source && typeof source === 'object') {
+        const matchedKey = Object.keys(source).find((k) => k.toLowerCase() === lowerTarget);
+        if (matchedKey && source[matchedKey]) {
+          const norm = normalizeRemoteHostUrl(source[matchedKey]);
+          if (!norm || norm === 'local') {
+            return undefined;
+          }
+          return norm;
+        }
+      }
+    }
+
+    if (globalConfig?.projects && typeof globalConfig.projects === 'object') {
+      const matchedProjKey = Object.keys(globalConfig.projects).find(
+        (k) => k.toLowerCase() === lowerTarget
+      );
+      if (matchedProjKey) {
+        const val = globalConfig.projects[matchedProjKey];
+        if (typeof val === 'string' && /^https?:\/\//i.test(val.trim())) {
+          return normalizeRemoteHostUrl(val);
+        }
+      }
+    }
+  }
+
+  // Tier 3: Self-contained local project precedence (.esedre/tickets/ or explicit local dataDir)
+  if (!discovered.isGlobalFallback && isSelfContainedLocalWorkspace(discovered.workspaceRoot, localConfig)) {
+    return undefined;
+  }
+
+  // Tier 4: Workspace .esedre/esedre.json server.host / serverUrl (for shared intranet repos)
+  const localHostRaw = localConfig?.server?.host || localConfig?.serverUrl;
+  if (localHostRaw) {
+    const normLocal = normalizeRemoteHostUrl(localHostRaw);
+    if (!normLocal || normLocal === 'local') {
+      return undefined;
+    }
+    const hasGlobalRemote = Boolean(globalConfig?.server?.host || globalConfig?.serverUrl);
+    if (!hasGlobalRemote && globalConfig?.dataDir && targetCode) {
+      const globalDirs = Array.isArray(globalConfig.dataDir)
+        ? globalConfig.dataDir
+        : [globalConfig.dataDir];
+      if (globalDirs.some((d) => hubContainsProject(d, [targetCode]))) {
+        return undefined;
+      }
+    }
+    return normLocal;
+  }
+
+  // Tier 5: Global default server.host / serverUrl in ~/.esedre/config.json
+  const globalHostRaw = globalConfig?.server?.host || globalConfig?.serverUrl;
+  if (globalHostRaw) {
+    const normGlobal = normalizeRemoteHostUrl(globalHostRaw);
+    if (normGlobal && normGlobal !== 'local') {
+      return normGlobal;
+    }
+  }
+
+  return undefined;
 }
 
 export function findEsedreConfig(startDir?: string, options?: FindConfigOptions): DiscoveredConfig {
@@ -519,9 +741,18 @@ export function findEsedreConfig(startDir?: string, options?: FindConfigOptions)
         )
     );
 
+    const hasRemoteHostConfigured = Boolean(
+      localConfig.server?.host ||
+        localConfig.serverUrl ||
+        globalConfig?.server?.host ||
+        globalConfig?.serverUrl ||
+        localConfig.remotes ||
+        globalConfig?.remotes
+    );
+
     let inheritedProjects = localConfig.projects;
     if (
-      (inheritedDataDir !== undefined || hasExternalAllowedProjects) &&
+      (inheritedDataDir !== undefined || hasExternalAllowedProjects || hasRemoteHostConfigured) &&
       globalConfig?.projects &&
       typeof globalConfig.projects === 'object'
     ) {
@@ -529,6 +760,10 @@ export function findEsedreConfig(startDir?: string, options?: FindConfigOptions)
       for (const [code, rawPath] of Object.entries(globalConfig.projects)) {
         if (!code || typeof rawPath !== 'string' || !rawPath.trim()) continue;
         if (!isProjectAuthorized(code, effectiveAllowed)) continue;
+        if (/^https?:\/\//i.test(rawPath.trim())) {
+          filteredGlobal[code] = rawPath.trim();
+          continue;
+        }
         const resolvedRepoPath = path.resolve(expandHome(rawPath));
         if (!fs.existsSync(resolvedRepoPath)) continue;
         filteredGlobal[code] = rawPath;
@@ -548,16 +783,25 @@ export function findEsedreConfig(startDir?: string, options?: FindConfigOptions)
       }
     }
 
-    // Local workspace configuration takes precedence; only inherit machine defaults (port/ports), matching central dataDir, or authorized global projects
+    const mergedRemotes =
+      globalConfig?.remotes || localConfig.remotes
+        ? { ...(globalConfig?.remotes || {}), ...(localConfig.remotes || {}) }
+        : undefined;
+
+    // Local workspace configuration takes precedence; only inherit machine defaults (port/ports/server/remotes), matching central dataDir, or authorized global projects
     const merged: EsedreConfig = {
       ...localConfig,
       dataDir: inheritedDataDir,
       projects: inheritedProjects,
+      server: localConfig.server || globalConfig?.server,
+      serverUrl: localConfig.serverUrl || globalConfig?.serverUrl,
+      remotes: mergedRemotes,
       port: localConfig.port !== undefined ? localConfig.port : (globalConfig?.port || DEFAULT_ESEDRE_PORT),
       ports: localConfig.ports || globalConfig?.ports,
     };
     return {
       config: merged,
+      localConfig,
       configPath: localConfigPath,
       workspaceRoot: localWorkspaceRoot,
       isGlobalFallback: false,
@@ -568,7 +812,6 @@ export function findEsedreConfig(startDir?: string, options?: FindConfigOptions)
   if (options?.fallbackToGlobal) {
     let checkDir = path.resolve(startDir || process.cwd());
     let hasInRepoMarkers = false;
-    let inRepoRoot = checkDir;
 
     while (true) {
       const candidateMarkers = [
@@ -584,7 +827,6 @@ export function findEsedreConfig(startDir?: string, options?: FindConfigOptions)
       ];
       if (candidateMarkers.some((m) => fs.existsSync(m))) {
         hasInRepoMarkers = true;
-        inRepoRoot = checkDir;
         break;
       }
       const parent = path.dirname(checkDir);
@@ -592,9 +834,20 @@ export function findEsedreConfig(startDir?: string, options?: FindConfigOptions)
       checkDir = parent;
     }
 
-    if (!hasInRepoMarkers && globalConfig && (globalConfig.dataDir || globalConfig.projects || globalConfig.port || globalConfig.projectCode)) {
+    if (
+      !hasInRepoMarkers &&
+      globalConfig &&
+      (globalConfig.dataDir ||
+        globalConfig.projects ||
+        globalConfig.port ||
+        globalConfig.projectCode ||
+        globalConfig.server?.host ||
+        globalConfig.serverUrl ||
+        globalConfig.remotes)
+    ) {
       return {
         config: globalConfig,
+        localConfig: null,
         configPath: getGlobalConfigPath(),
         workspaceRoot: process.cwd(),
         isGlobalFallback: true,
@@ -604,6 +857,7 @@ export function findEsedreConfig(startDir?: string, options?: FindConfigOptions)
 
   return {
     config: {},
+    localConfig: null,
     configPath: null,
     workspaceRoot: process.cwd(),
     isGlobalFallback: true,
@@ -674,6 +928,8 @@ export function migrateEsedreConfig(raw: any, targetVersion = CURRENT_ESEDRE_VER
     allowedProjects: Array.isArray(raw?.allowedProjects) ? raw.allowedProjects : undefined,
     dataDir: Array.isArray(raw?.dataDir) ? raw.dataDir : (typeof raw?.dataDir === 'string' ? raw.dataDir : undefined),
     serverUrl: raw?.serverUrl,
+    server: typeof raw?.server === 'object' && raw?.server ? raw.server : undefined,
+    remotes: typeof raw?.remotes === 'object' && raw?.remotes ? raw.remotes : undefined,
     port: typeof raw?.port === 'number' && raw.port !== DEFAULT_ESEDRE_PORT ? raw.port : undefined,
     ports: typeof raw?.ports === 'object' && raw?.ports ? raw.ports : undefined,
     projects: typeof raw?.projects === 'object' && raw?.projects ? raw.projects : undefined,

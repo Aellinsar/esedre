@@ -41,6 +41,7 @@
 4. **Disparate Multi-Repo Federation**: `projects: { "Core": "../core-engine", "Web": "../frontend-app" }`.
 5. **Hybrid**: Combines `dataDir` hubs and `projects` federated paths.
 6. **Monorepo / In-Workspace Hub**: Auto-discovers `projects/` at `workspaceRoot`, `./data`, or `./.esedre` when `dataDir` is omitted.
+7. **Remote Server Host (`HttpStorageAdapter` via `src/storage/http.ts`)**: Client machines without local `esedre-data` clones connect over HTTP to a remote Esedre daemon via `resolveRemoteHost` (`--host <url|local>` / `ESEDRE_HOST` -> `remotes.<Code>` -> self-contained local `.esedre/tickets/<id>/` or in-repo `dataDir` precedence -> workspace `server.host` -> global `server.host` in `~/.esedre/config.json`).
 
 **Authoritative Ingress Hierarchy (Zero-Latency Snapshot First)**:
 1. **Primary Read-Only Inspection**: Always check `.esedre/snapshot.json` in the workspace root first for zero-latency access to all tickets, summaries, plan presence (`hasPlan`), and revision hashes.
@@ -88,8 +89,8 @@
 > **Detailed Reference**: See [esedre_security_and_allowlist](.agents/skills/esedre_security_and_allowlist/SKILL.md).
 
 1. **Two-Tier Configuration Hierarchy**:
-   - **Central Global Config (`~/.esedre/config.json`)**: Portfolio hubs (`dataDir`), linked repositories (`projects`), and default port (`5674`), managed via `ese configure`.
-   - **Workspace Local Config (`.esedre/esedre.json`)**: Local `projectCode` and `allowedProjects`, initialized via `ese init`.
+   - **Central Global Config (`~/.esedre/config.json`)**: Portfolio hubs (`dataDir`), linked repositories (`projects`), remote server host (`server.host` / `remotes.<Code>`), and default port (`5674`), managed via `ese configure`.
+   - **Workspace Local Config (`.esedre/esedre.json`)**: Local `projectCode` and `allowedProjects` (plus optional intranet `server.host`), initialized via `ese init`.
    - **Smart `dataDir` & Scoped `projects` Hoisting**: When `dataDir` is omitted locally, the loader checks whether `~/.esedre/config.json`'s `dataDir` contains the workspace's project (`hubContainsProject`) before inheriting it, and inherits only `allowedProjects`-authorized repository paths from `globalConfig.projects` (keeping standalone and unauthorized repos isolated).
 2. **Configuration & Upgrade Commands**:
    - `ese init [path]`: Initializes a workspace, data hub (`--hub`), or hub project (`--project <Code> [--name <Name>] [--hub <hub>]`).
@@ -144,8 +145,8 @@
    - Always use `type` (`Feature`, `Platform`, `Tools`, `Idea`, `Bug`); legacy `category` is deprecated. Optional `priority` supports `Critical`, `High`, `Medium`, `Low` (or `none` to clear).
    - Milestones (`milestones.json`) support optional umbrella `featureFlag` inheritance (`meta.inheritedFeatureFlag`).
    - Bi-directional ticket links (`relates-to`, `blocks`/`blocked-by`, `parent-of`/`child-of`, `duplicates`/`duplicated-by`) enforce cycle detection, project `isBlocked: true` when blocked by uncompleted tickets, and redact restricted cross-project targets.
-3. **Compound IDs, Hydration & Embedded Theme Contract**:
-   - Portfolio views use compound keys `${projectCode}-${ticketNumber}` and DOM anchors `id="feature-card-${projectCode}-${number}"`. Initial hydration fetches consolidated state via `/api/planning/all` (no N+1 client waterfalls).
+3. **Compound IDs, Hydration, TOC Split & Embedded Theme Contract**:
+   - Portfolio views use compound keys `${projectCode}-${ticketNumber}` and DOM anchors `id="feature-card-${projectCode}-${number}"`. Initial hydration fetches consolidated state via `/api/planning/all` (no N+1 client waterfalls), and the desktop TOC / card list defaults to a responsive **35% / 65% split ratio** (`getDefaultTocWidth` clamped to `260px..720px`, persisted to `dev_plan_toc_width_v2` on manual drag) so 48-character ticket titles render cleanly without truncation.
    - `<PlannedWorkView />` includes a zero-effort CSS fallback bridge (`ESEDRE_THEME_FALLBACK_CSS`) and inherits any of the 12 core CSS custom properties (`--bg-surface`, `--text-primary`, `--accent-primary`, etc.) from host apps.
 4. **Windows CMD & PowerShell Wrappers**:
    - `ese.cmd` / `esedre.cmd` must dispatch via `call :run %*` and `goto :eof` without `:done` labels. `ese.ps1` / `esedre.ps1` must enforce UTF-8 console encodings at startup.

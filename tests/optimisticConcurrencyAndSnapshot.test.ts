@@ -388,10 +388,16 @@ describe('Upgrade & 3-Way Hash Detection', () => {
       expect(eseCmdContent).toContain('exit /b %ERRORLEVEL%');
 
       if (process.platform === 'win32') {
+        const cliBundlePath = path.resolve(__dirname, '..', 'dist', 'esedre.mjs');
         const eseCmdPath = path.join(tempDir, '.esedre', 'ese.cmd');
         const output = child_process.execSync(`cmd.exe /c "${eseCmdPath}" --version`, {
           encoding: 'utf-8',
           windowsHide: true,
+          env: {
+            ...process.env,
+            ESEDRE_GLOBAL_DIR: path.join(tempDir, 'global-store'),
+            ESEDRE_BUNDLE_PATH: cliBundlePath,
+          },
         });
         expect(output).not.toContain('The system cannot find the batch label specified');
         expect(output).toContain('esedre v');
@@ -429,10 +435,16 @@ describe('Upgrade & 3-Way Hash Detection', () => {
       expect(updatedCmd).toContain('exit /b %ERRORLEVEL%');
 
       if (process.platform === 'win32') {
+        const cliBundlePath = path.resolve(__dirname, '..', 'dist', 'esedre.mjs');
         const eseCmdPath = path.join(esedreDir, 'ese.cmd');
         const output = child_process.execSync(`cmd.exe /c "${eseCmdPath}" --version`, {
           encoding: 'utf-8',
           windowsHide: true,
+          env: {
+            ...process.env,
+            ESEDRE_GLOBAL_DIR: path.join(tempDir, 'global-store'),
+            ESEDRE_BUNDLE_PATH: cliBundlePath,
+          },
         });
         expect(output).not.toContain('The system cannot find the batch label specified');
         expect(output).toContain('esedre v');

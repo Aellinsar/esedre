@@ -177,6 +177,16 @@ export class SecurityFilter implements StorageAdapter {
     id: number | string,
     project?: string
   ): Promise<{ lookupId: number | string; ticket: EsedreTicket | null }> {
+    const cleanId = String(id).trim().replace(/^#/, '');
+    const explicitMatch = cleanId.match(/^([a-zA-Z0-9]{1,8})-\d+$/);
+    const explicitProj =
+      project && project.trim() && project.trim().toLowerCase() !== 'all'
+        ? project.trim()
+        : explicitMatch?.[1];
+    if (explicitProj && !isProjectAuthorized(explicitProj, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(explicitProj);
+    }
+
     if (project && project.trim() && project.trim().toLowerCase() !== 'all') {
       const qualified = this.qualifyTicketId(id, project);
       const ticket = await this.target.getTicket(qualified);

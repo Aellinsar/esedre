@@ -6,6 +6,10 @@ import { StorageAdapter } from '../storage/adapter.js';
 import { SecurityFilter } from '../securityFilter.js';
 import { generateProjectSnapshot } from '../snapshot.js';
 import { validateProjectCode, validateProjectName } from '../config.js';
+import { CURRENT_ESEDRE_VERSION } from '../types.js';
+import { CURRENT_DATA_VERSION } from '../migrations/index.js';
+
+const SERVER_STARTED_AT = new Date().toISOString();
 
 const MAX_JSON_BODY_BYTES = 10 * 1024 * 1024; // 10MB payload ceiling
 
@@ -291,7 +295,15 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
     try {
       if (req.method === 'GET') {
         if (pathname === '/api/ping') {
-          sendJson(res, 200, { status: 'ok', esedre: true, pid: process.pid });
+          sendJson(res, 200, {
+            status: 'ok',
+            esedre: true,
+            pid: process.pid,
+            version: CURRENT_ESEDRE_VERSION,
+            schemaVersion: CURRENT_DATA_VERSION,
+            startedAt: SERVER_STARTED_AT,
+            uptimeSeconds: Math.floor(process.uptime()),
+          });
           return true;
         }
 
@@ -307,6 +319,24 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
           const type = ((url.searchParams.get('type') || url.searchParams.get('category')) as any) || undefined;
           const category = type;
           const priority = (url.searchParams.get('priority') as any) || undefined;
+          const milestone = url.searchParams.get('milestone') || undefined;
+          const featureFlag = url.searchParams.get('featureFlag') || undefined;
+          const isBlockedRaw = url.searchParams.get('isBlocked');
+          const isBlocked =
+            isBlockedRaw === 'true' || isBlockedRaw === '1'
+              ? true
+              : isBlockedRaw === 'false' || isBlockedRaw === '0'
+                ? false
+                : undefined;
+          const linkedTo = url.searchParams.get('linkedTo') || undefined;
+          const leasedRaw = url.searchParams.get('leased');
+          const leased =
+            leasedRaw === 'true' || leasedRaw === '1'
+              ? true
+              : leasedRaw === 'false' || leasedRaw === '0'
+                ? false
+                : undefined;
+          const leasedBy = url.searchParams.get('leasedBy') || undefined;
           const search = url.searchParams.get('search') || undefined;
 
           const tickets = await reqStorage.listTickets({
@@ -315,6 +345,12 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
             type,
             category,
             priority,
+            milestone,
+            featureFlag,
+            isBlocked,
+            linkedTo,
+            leased,
+            leasedBy,
             search,
           });
           sendJson(res, 200, tickets);
@@ -542,6 +578,22 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
           return true;
         }
 
+        if (pathname.startsWith('/api/planning/milestone/')) {
+          const rawIdStr = pathname.slice('/api/planning/milestone/'.length);
+          let idStr = rawIdStr;
+          try {
+            idStr = decodeURIComponent(rawIdStr);
+          } catch {}
+          const project = url.searchParams.get('project') || undefined;
+          const milestone = await reqStorage.getMilestone(idStr, project);
+          if (!milestone) {
+            sendJson(res, 404, { error: 'Milestone not found', notFound: true });
+            return true;
+          }
+          sendJson(res, 200, { milestone });
+          return true;
+        }
+
         if (pathname === '/api/planning/leases') {
           const project = url.searchParams.get('project') || undefined;
           const leases = await reqStorage.listLeases(project);
@@ -556,7 +608,7 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
         if (pathname === '/api/planning/tickets') {
           invalidateApiCache();
           const created = await reqStorage.createTicket(body);
-          sendJson(res, 201, { ticketId: String(created.meta.id), meta: created.meta });
+          sendJson(res, 201, { ticketId: String(created.meta.id), meta: created.meta, ticket: created });
           return true;
         }
 
@@ -667,21 +719,21 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
             return true;
           }
           invalidateApiCache();
-          await reqStorage.addComment(ticketId, { author: author || 'Developer', text });
+          const createdComment = await reqStorage.addComment(ticketId, { author: author || 'Developer', text });
           const ticket = await reqStorage.getTicket(ticketId);
-          sendJson(res, 200, { comments: ticket?.comments || [] });
+          sendJson(res, 200, { comment: createdComment, comments: ticket?.comments || [] });
           return true;
         }
 
         if (pathname === '/api/planning/update-meta') {
-          const { ticketId, updates, lastHash } = body;
+          const { ticketId, updates, lastHash, force } = body;
           if (!ticketId) {
             sendJson(res, 400, { error: 'ticketId is required.' });
             return true;
           }
           invalidateApiCache();
-          const updated = await reqStorage.updateTicket(ticketId, updates, lastHash);
-          sendJson(res, 200, { meta: updated.meta });
+          const updated = await reqStorage.updateTicket(ticketId, updates, force ? undefined : lastHash);
+          sendJson(res, 200, { meta: updated.meta, ticket: updated });
           return true;
         }
 
@@ -784,25 +836,57 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
 
         if (pathname === '/api/planning/link') {
           invalidateApiCache();
-          const { sourceId, relation, targetId, author, project } = body;
-          if (!sourceId || !relation || !targetId) {
-            sendJson(res, 400, { error: 'sourceId, relation, and targetId are required.' });
+          const { sourceId, relation, targetId, targetIds, author, project } = body;
+          if (!sourceId || !relation || (!targetId && (!Array.isArray(targetIds) || targetIds.length === 0))) {
+            sendJson(res, 400, { error: 'sourceId, relation, and targetId (or targetIds) are required.' });
             return true;
           }
-          const result = await reqStorage.addTicketLink(sourceId, relation, targetId, { author, project });
-          sendJson(res, 200, { success: true, source: result.source, target: result.target });
+          if (Array.isArray(targetIds) && targetIds.length > 0 && reqStorage.addTicketLinks) {
+            const batchResult = await reqStorage.addTicketLinks(sourceId, relation, targetIds, { author, project });
+            sendJson(res, 200, {
+              success: true,
+              source: batchResult.source,
+              target: batchResult.targets[0],
+              targets: batchResult.targets,
+            });
+            return true;
+          }
+          const singleTarget = targetId ?? (Array.isArray(targetIds) ? targetIds[0] : undefined);
+          const result = await reqStorage.addTicketLink(sourceId, relation, singleTarget, { author, project });
+          sendJson(res, 200, {
+            success: true,
+            source: result.source,
+            target: result.target,
+            targets: result.target ? [result.target] : [],
+          });
           return true;
         }
 
         if (pathname === '/api/planning/unlink') {
           invalidateApiCache();
-          const { sourceId, targetId, relation, project } = body;
-          if (!sourceId || !targetId) {
-            sendJson(res, 400, { error: 'sourceId and targetId are required.' });
+          const { sourceId, targetId, targetIds, relation, project } = body;
+          if (!sourceId || (!targetId && (!Array.isArray(targetIds) || targetIds.length === 0))) {
+            sendJson(res, 400, { error: 'sourceId and targetId (or targetIds) are required.' });
             return true;
           }
-          const result = await reqStorage.removeTicketLink(sourceId, targetId, { relation, project });
-          sendJson(res, 200, { success: true, source: result.source, target: result.target });
+          if (Array.isArray(targetIds) && targetIds.length > 0 && reqStorage.removeTicketLinks) {
+            const batchResult = await reqStorage.removeTicketLinks(sourceId, targetIds, { relation, project });
+            sendJson(res, 200, {
+              success: true,
+              source: batchResult.source,
+              target: batchResult.targets[0],
+              targets: batchResult.targets,
+            });
+            return true;
+          }
+          const singleTarget = targetId ?? (Array.isArray(targetIds) ? targetIds[0] : undefined);
+          const result = await reqStorage.removeTicketLink(sourceId, singleTarget, { relation, project });
+          sendJson(res, 200, {
+            success: true,
+            source: result.source,
+            target: result.target,
+            targets: result.target ? [result.target] : [],
+          });
           return true;
         }
 
@@ -895,7 +979,17 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
       return true;
     } catch (err: any) {
       if (err.name === 'EsedreAuthorizationError' || err.message?.includes('outside this workspace\'s authorized scope') || err.message?.includes('Access Denied')) {
-        sendJson(res, 403, { error: err.message });
+        sendJson(res, 403, { error: err.message, projectCode: err.projectCode });
+        return true;
+      }
+      if (err.name === 'EsedreConflictError') {
+        sendJson(res, 409, {
+          error: err.message,
+          code: 'CONFLICT',
+          ticketId: err.ticketId,
+          currentHash: err.currentHash,
+          lastHash: err.lastHash,
+        });
         return true;
       }
       if (err.name === 'EsedreLeaseConflictError') {

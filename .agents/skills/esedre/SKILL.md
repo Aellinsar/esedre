@@ -61,9 +61,9 @@ Both `esedre` and `ese` work interchangeably. On POSIX shells use `.esedre/ese <
 
 ### Read or Update Implementation Plans
 ```bash
-.esedre/ese plan <ticketId>
-.esedre/ese plan <ticketId> --file <planFilePath>
-.esedre/ese plan <ticketId> --set "<markdownContent>" [--last-hash <hash>]
+.esedre/ese plan <ticketId> [--json]
+.esedre/ese plan <ticketId> --file <planFilePath> [--json]
+.esedre/ese plan <ticketId> --set "<markdownContent>" [--last-hash <hash>] [--json]
 ```
 
 ### Create a Ticket
@@ -73,9 +73,9 @@ Both `esedre` and `ese` work interchangeably. On POSIX shells use `.esedre/ese <
 
 ### Update Ticket Status & Attributes
 ```bash
-.esedre/ese update <ticketId> --status "In Development"
-.esedre/ese update <ticketId> --status "Completed"
-.esedre/ese update <ticketId> --type Feature -P High --complexity Medium --effort "2.0 - 4.0 hours"
+.esedre/ese update <ticketId> --status "In Development" [--json]
+.esedre/ese update <ticketId> --status "Completed" [--json]
+.esedre/ese update <ticketId> --type Feature -P High --complexity Medium --effort "2.0 - 4.0 hours" [--json]
 .esedre/ese update <ticketId> -P none           # Clears priority
 .esedre/ese update <ticketId> -m "Release 1.0"  # Links ticket to milestone (inherits umbrella feature flag)
 .esedre/ese update <ticketId> -m none           # Unlinks ticket from milestone
@@ -102,15 +102,15 @@ When authoring or updating a ticket's `detail.md` (via `--detail`, `--file`, or 
 
 ### Append Comments or Notes
 ```bash
-.esedre/ese comment <ticketId> "Verified implementation." --author "Agent"
-.esedre/ese comment <ticketId> --file <commentFilePath> --author "Agent"
-.esedre/ese comment <ticketId> --text "Verified implementation." --author "Agent"
+.esedre/ese comment <ticketId> "Verified implementation." --author "Agent" [--json]
+.esedre/ese comment <ticketId> --file <commentFilePath> --author "Agent" [--json]
+.esedre/ese comment <ticketId> --text "Verified implementation." --author "Agent" [--json]
 ```
 
 ### Link or Unlink Tickets
 ```bash
-.esedre/ese link <sourceId> <relation> <targetId...> [--author "..."]
-.esedre/ese unlink <sourceId> <targetId...> [--relation <relation>]
+.esedre/ese link <sourceId> <relation> <targetId...> [--author "..."] [--json]
+.esedre/ese unlink <sourceId> <targetId...> [--relation <relation>] [--json]
 # Supported relations: relates-to, blocks, parent-of, duplicates
 # Inverse reciprocal links are automatically synchronized.
 ```
@@ -126,8 +126,8 @@ When authoring or updating a ticket's `detail.md` (via `--detail`, `--file`, or 
 
 ### Regenerate Snapshot
 ```bash
-.esedre/ese snapshot [--include-plans]
-.esedre/ese refresh [--include-plans]
+.esedre/ese snapshot [--include-plans] [--json]
+.esedre/ese refresh [--include-plans] [--json]
 ```
 
 ### Server Lifecycle & Daemon Management

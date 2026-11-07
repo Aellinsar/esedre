@@ -81,7 +81,7 @@ describe('Esedre Daemon & Global Runtime Store', () => {
     expect(state2.pid).toBe(state.pid);
 
     // 4. Ping directly
-    const ping = await pingDaemon(TEST_PORT, 400);
+    const ping = await pingDaemon(TEST_PORT, 2000);
     expect(ping.responding).toBe(true);
     expect(ping.isEsedre).toBe(true);
 

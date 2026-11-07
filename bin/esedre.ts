@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { FilesystemStorageAdapter } from '../src/storage/filesystem.js';
 import { StorageAdapter } from '../src/storage/adapter.js';
+import { createStorageAdapter } from '../src/storage/index.js';
 import { SecurityFilter } from '../src/securityFilter.js';
 import { formatTicketListTable, formatTicketDetail, formatMilestoneListTable, formatLeaseListTable, colors, normalizeDashesAndMojibake, normalizePriority, isClearSentinel, validateTicketType } from '../src/utils/formatter.js';
 import { parseCliArgs, ParsedCliArgs } from '../src/utils/cliArgs.js';
@@ -52,7 +53,7 @@ import {
   checkProjectCompatibility,
 } from '../src/migrations/index.js';
 import { startGatewayCluster } from '../src/server/gateway.js';
-import { startDaemon, stopDaemon, getDaemonStatus, printDaemonLogs } from '../src/server/daemon.js';
+import { startDaemon, stopDaemon, getDaemonStatus, getRemoteDaemonStatus, printDaemonLogs } from '../src/server/daemon.js';
 function resolveCliFilePath(rawPath: string): string { const expanded = expandHome(rawPath.trim()); return path.resolve(process.platform === 'win32' ? expanded : expanded.replace(/\\/g, '/')); }
 function normalizeCliMultiline(val: string): string { const cleaned = normalizeDashesAndMojibake(val).replace(/\r\n/g, '\n').replace(/\r/g, '\n'); const unescaped = cleaned.replace(/\\r\\n/g, '\n').replace(/\\n\\n/g, '\n\n').replace(/\\n(?=\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```))/g, '\n').replace(/([.!?;\)\]`"'])\s*\\n/g, '$1\n'); return /[A-Za-z]:\\|\.\\|\.\.\\/.test(unescaped) ? unescaped : unescaped.replace(/\\n/g, '\n'); }
 
@@ -144,7 +145,7 @@ ${colors.bold}DEVELOPER ADMINISTRATION (Human Setup & Configuration):${colors.re
                Inspect or mutate central Esedre configuration (~/.esedre/config.json).
                • add <path>       Link an external project repository (federated projects map) or register a data hub (dataDir)
                • remove <target>  Unlink a project or data hub
-               • set <key> <val>  Update a central configuration setting
+               • set <key> <val>  Update a central configuration setting (e.g. server.host http://<ip>:5674 or none)
 
   ${colors.bold}upgrade${colors.reset}     [<path>] [-p|--project <code>] [--all|-a] [--force|-f] [--json]
                Upgrade workspace configuration schema, wrappers, MCP isolation hooks, agent skills, and project data schema. Registers workspace in ~/.esedre/config.json and refreshes snapshot.
@@ -179,6 +180,7 @@ ${colors.bold}OPTIONS:${colors.reset}
   --file <path>        Path to markdown file for detail (create, update), implementation plan (plan), or comment (comment).
   --plan "<md>"        Implementation plan markdown for ticket during create or update.
   --plan-file <path>   Path to markdown file for implementation plan during create or update.
+  --host <url|local>   Override target remote Esedre daemon host URL (or 'local' for local disk).
   --json              Output raw machine-readable JSON (strongly recommended for autonomous LLM coding agents).
   --last-hash <hash>  Optimistic concurrency control: last known sha1 hash of the ticket from 'get'.
   --force             Bypass optimistic concurrency last-hash conflict checks on writes.
@@ -287,7 +289,7 @@ async function refreshCliSnapshotAfterMutation(
         discovered.config.projectCode.toLowerCase() === lower
           ? discovered.workspaceRoot
           : storage.getProjectRepoRoot?.(code)) ||
-        (fs.existsSync(path.join(discovered.workspaceRoot, '.esedre')) ? discovered.workspaceRoot : undefined);
+        (fs.existsSync(path.join(discovered.workspaceRoot, '.esedre', 'esedre.json')) ? discovered.workspaceRoot : undefined);
       if (targetOutputDir && fs.existsSync(targetOutputDir)) {
         await generateProjectSnapshot(storage, code, targetOutputDir);
       }
@@ -367,9 +369,11 @@ async function main(): Promise<void> {
     return;
   }
 
-  // SecurityFilter wraps raw FilesystemStorageAdapter
-  const rawStorage = new FilesystemStorageAdapter(discovered.workspaceRoot, discovered.config);
-  const storage = new SecurityFilter(rawStorage, discovered.config);
+  const hostFlag = typeof flags['host'] === 'string' ? flags['host'] : undefined;
+  const { rawStorage, storage, remoteHost } = createStorageAdapter(discovered, {
+    hostFlag,
+    projectCode: typeof flags['project'] === 'string' && flags['project'] !== 'all' ? flags['project'] : undefined,
+  });
 
   try {
     switch (command) {
@@ -738,7 +742,20 @@ async function main(): Promise<void> {
             console.log(JSON.stringify(setRes, null, 2));
             return;
           }
-          console.log(`${colors.green}✔ Updated central configuration: ${key} = ${JSON.stringify(parsedVal)}${colors.reset}`);
+          const isCleared =
+            typeof val === 'string' &&
+            ['none', 'clear', 'null', 'local'].includes(val.trim().toLowerCase()) &&
+            (key.toLowerCase() === 'server.host' ||
+              key.toLowerCase() === 'serverurl' ||
+              key.toLowerCase() === 'host' ||
+              key.toLowerCase().startsWith('remotes.') ||
+              key.toLowerCase().startsWith('remote.'));
+          if (isCleared) {
+            console.log(`${colors.green}✔ Cleared central configuration key: ${key}${colors.reset}`);
+          } else {
+            const actualVal = getGlobalConfigKey(key) ?? parsedVal;
+            console.log(`${colors.green}✔ Updated central configuration: ${key} = ${JSON.stringify(actualVal)}${colors.reset}`);
+          }
           return;
         }
 
@@ -766,9 +783,11 @@ async function main(): Promise<void> {
           return;
         }
 
+        const configuredHost = globalCfg.server?.host || globalCfg.serverUrl;
         console.log(`\n${colors.bold}${colors.cyan}Esedre Central Configuration${colors.reset}`);
         console.log(`  • Config File:  ${configPath} ${fs.existsSync(configPath) ? colors.green + '(active)' + colors.reset : colors.dim + '(default)' + colors.reset}`);
         console.log(`  • Default Port: ${globalCfg.port || DEFAULT_ESEDRE_PORT}`);
+        console.log(`  • Remote Host:  ${configuredHost ? colors.cyan + configuredHost + colors.reset : colors.dim + '(local filesystem)' + colors.reset}`);
 
         console.log(`\n${colors.bold}Data Hubs (dataDir):${colors.reset}`);
         if (globalCfg.dataDir) {
@@ -789,9 +808,17 @@ async function main(): Promise<void> {
           console.log(`  ${colors.dim}(none linked: link with 'ese configure add <projectPath>')${colors.reset}`);
         }
 
+        if (globalCfg.remotes && Object.keys(globalCfg.remotes).length > 0) {
+          console.log(`\n${colors.bold}Remote Project Hosts (remotes):${colors.reset}`);
+          for (const [code, hostUrl] of Object.entries(globalCfg.remotes)) {
+            console.log(`  • ${colors.bold}${code}${colors.reset}: ${colors.cyan}${hostUrl}${colors.reset}`);
+          }
+        }
+
         console.log(`\n${colors.bold}Commands:${colors.reset}`);
         console.log(`  • Link external repository: ${colors.cyan}ese configure add <repoPath>${colors.reset}`);
         console.log(`  • Register a data hub:      ${colors.cyan}ese configure add <hubPath>${colors.reset}`);
+        console.log(`  • Set remote server host:   ${colors.cyan}ese configure set server.host http://<host>:5674${colors.reset}`);
         console.log(`  • Create hub project:       ${colors.cyan}ese init --project <code> --name "<name>"${colors.reset}`);
         console.log(`  • Unlink a project or hub:  ${colors.cyan}ese configure remove <code|path>${colors.reset}`);
         console.log(`  • Set setting value:        ${colors.cyan}ese configure set <key> <value>${colors.reset}`);
@@ -872,7 +899,11 @@ async function main(): Promise<void> {
           if (!isProjectAuthorized(cleanCode, discovered.config?.allowedProjects)) {
             throw new EsedreAuthorizationError(cleanCode);
           }
-          const migration = await upgradeProjectData(rawStorage, cleanCode, { forceStamp: isForce });
+          const fsTarget =
+            rawStorage instanceof FilesystemStorageAdapter
+              ? rawStorage
+              : new FilesystemStorageAdapter(discovered.workspaceRoot, discovered.config);
+          const migration = await upgradeProjectData(fsTarget, cleanCode, { forceStamp: isForce });
           let snapshotTickets: number | undefined;
           const targetSnapshotDir =
             discovered.config?.projectCode &&
@@ -936,14 +967,22 @@ async function main(): Promise<void> {
           console.error(`${colors.red}Error: "projectCode" is required in esedre.json configuration (no default fallback).${colors.reset}`);
           process.exit(1);
         }
-        const rawTargetStorage = targetDir === discovered.workspaceRoot
-          ? rawStorage
-          : new FilesystemStorageAdapter(targetDir, targetDiscovered.config);
-        const migration = await upgradeProjectData(rawTargetStorage, projectCode, { forceStamp: isForce });
-        const targetStorage = targetDir === discovered.workspaceRoot
-          ? storage
-          : new SecurityFilter(rawTargetStorage, targetDiscovered.config);
-        const snapshot = await generateProjectSnapshot(targetStorage, projectCode, targetDir);
+        const targetAdapterBundle =
+          targetDir === discovered.workspaceRoot
+            ? { rawStorage, storage }
+            : createStorageAdapter(targetDiscovered, { hostFlag });
+        const migration =
+          targetAdapterBundle.rawStorage instanceof FilesystemStorageAdapter
+            ? await upgradeProjectData(targetAdapterBundle.rawStorage, projectCode, { forceStamp: isForce })
+            : {
+                projectCode,
+                previousSchemaVersion: CURRENT_DATA_VERSION,
+                currentSchemaVersion: CURRENT_DATA_VERSION,
+                esedreVersion: CURRENT_ESEDRE_VERSION,
+                appliedMigrations: [] as Array<{ version: string; description: string }>,
+                backupPath: undefined,
+              };
+        const snapshot = await generateProjectSnapshot(targetAdapterBundle.storage, projectCode, targetDir);
 
         if (isJson) {
           console.log(
@@ -1093,10 +1132,18 @@ async function main(): Promise<void> {
         printDuplicateProjectWarnings(storage, isJson);
         const flagPort = flags['port'] ? parseInt(String(flags['port']), 10) : undefined;
         const port = resolvePorts(discovered.config, { port: flagPort }).gateway;
-        const status = await getDaemonStatus({ port, workspaceRoot: discovered.workspaceRoot });
+        const useRemoteStatus = Boolean(remoteHost && flagPort === undefined);
+        const status = useRemoteStatus
+          ? await getRemoteDaemonStatus(remoteHost!)
+          : await getDaemonStatus({ port, workspaceRoot: discovered.workspaceRoot });
         const globalCfg = readGlobalConfig() || discovered.config;
         const outdatedWrappers = findOutdatedWrappers(discovered.workspaceRoot, globalCfg);
-        const visibleProjects = await storage.getProjects();
+        let visibleProjects: ProjectDescriptor[] = [];
+        if (!useRemoteStatus || status.running) {
+          try {
+            visibleProjects = await storage.getProjects();
+          } catch {}
+        }
         const pendingSchemaProjects = visibleProjects
           .map((p) => checkProjectCompatibility(p, { operation: 'read' }))
           .filter((c) => c.needsUpgrade);
@@ -1119,7 +1166,20 @@ async function main(): Promise<void> {
             )
           );
         } else {
-          if (status.running) {
+          if (status.remote) {
+            if (status.running) {
+              console.log(`${colors.bold}${colors.green}● Remote Esedre daemon is RUNNING${colors.reset}`);
+              console.log(`  • Host:        ${status.host}`);
+              console.log(`  • Port:        ${status.port}`);
+              if (status.pid) console.log(`  • Remote PID:  ${status.pid}`);
+              if (status.version) console.log(`  • Version:     v${status.version} (schema v${status.schemaVersion ?? CURRENT_DATA_VERSION})`);
+              if (status.uptimeSeconds !== undefined) console.log(`  • Uptime:      ${status.uptimeSeconds}s`);
+              if (status.startedAt) console.log(`  • Started:     ${status.startedAt}`);
+              if (status.projects?.length) console.log(`  • Projects:    ${status.projects.join(', ')}`);
+            } else {
+              console.log(`${colors.yellow}○ Remote Esedre daemon is OFFLINE (${status.host})${colors.reset}`);
+            }
+          } else if (status.running) {
             console.log(`${colors.bold}${colors.green}● Esedre daemon is RUNNING${colors.reset}`);
             console.log(`  • Port:        ${status.port}`);
             if (status.pid) console.log(`  • PID:         ${status.pid}`);
@@ -2249,10 +2309,16 @@ async function main(): Promise<void> {
 
 export function createHotMcpDelegate(options: any) {
   const workspaceRoot = options?.workspaceRoot || process.cwd();
-  const discovered = findEsedreConfig(workspaceRoot);
+  const discovered = findEsedreConfig(workspaceRoot, { fallbackToGlobal: true });
   const effectiveConfig = options?.config || discovered.config;
-  const rawStorage = new FilesystemStorageAdapter(discovered.workspaceRoot, effectiveConfig);
-  const storage = new SecurityFilter(rawStorage, effectiveConfig);
+  const { storage } = createStorageAdapter(
+    {
+      workspaceRoot: discovered.workspaceRoot,
+      configPath: discovered.configPath,
+      config: effectiveConfig,
+    },
+    { projectCode: options?.projectCode || effectiveConfig?.projectCode }
+  );
   return new EsedreMcpServer(storage, {
     ...options,
     workspaceRoot: discovered.workspaceRoot,

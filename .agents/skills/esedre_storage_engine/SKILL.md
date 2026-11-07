@@ -56,6 +56,7 @@ Methods accept both numeric IDs (`96`) and compound project keys (`Profe-96`, `E
 4. **Disparate Multi-Repo Federation**: `projects: { "Core": "../core-engine", "Web": "../frontend-app" }`.
 5. **Hybrid Topology**: Combines `dataDir` hubs and `projects` federated repo paths.
 6. **Monorepo / In-Workspace Hub Topology**: When `dataDir` is omitted, auto-discovers `projects/` directory directly at workspace root or `./data`, enabling zero-configuration monorepos and local ticket hubs.
+7. **Remote HTTP Topology (`HttpStorageAdapter` in `src/storage/http.ts`)**: Selected automatically by `createStorageAdapter` (`src/storage/index.ts`) when `resolveRemoteHost` resolves an active remote URL (`--host` / `ESEDRE_HOST`, `remotes.<Code>`, workspace `server.host`, or global `server.host` in `~/.esedre/config.json`). Self-contained local projects with populated `.esedre/tickets/<id>/` directories or an in-repo `dataDir` (a directory inside the workspace root) in `.esedre/esedre.json` take precedence over global `server.host` and remain on `FilesystemStorageAdapter`, whereas external hub references (`../esedre-data`) route to `server.host` on client machines. `HttpStorageAdapter` forwards `x-esedre-allowed-projects` and rehydrates `EsedreAuthorizationError`, `EsedreConflictError`, `EsedreLeaseConflictError`, and `EsedreVersionError`.
 
 ## 3. Filesystem Storage Layout
 

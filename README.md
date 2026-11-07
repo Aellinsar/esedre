@@ -136,7 +136,7 @@ Manage the local web dashboard and API server:
 |---|---|---|
 | `start` | `ese start [--port <n>] [--foreground \| -f]` | Start the Esedre background server daemon (or foreground with `-f`). |
 | `stop` | `ese stop [--port <n>]` | Stop the running Esedre background server daemon. |
-| `status` | `ese status [--port <n>]` | Check health, uptime, and diagnostics of the running server. |
+| `status` | `ese status [--port <n>] [--host <url>]` | Check health, uptime, and diagnostics of the running local or remote server. |
 | `logs` | `ese logs [--port <n>] [--lines <n>]` | Tail recent server output logs. |
 | `mcp` | `ese mcp` | Launch the Model Context Protocol stdio server for LLM agents. |
 | `hook` | `ese hook agy-pre-tool` | Evaluate Antigravity `PreToolUse` isolation hook and synchronize active MCP workspace context. |
@@ -148,7 +148,7 @@ Commands for repository onboarding, central machine linking, and maintenance:
 | Command | Usage | Description |
 |---|---|---|
 | `init` | `ese init [<path>] [--project <code>] [--name <name>] [--hub <name\|path>] [-y]` | Bring a project repository online, bootstrap a dedicated data hub (`--hub`), or create a project directly in a data hub (`--project <code>`). |
-| `configure` | `ese configure [add <path> \| remove <code\|path> \| set <k> <v>]` | Inspect or mutate central configuration (`~/.esedre/config.json`). Link external project repositories or data hubs. |
+| `configure` | `ese configure [add <path> \| remove <code\|path> \| set <k> <v> \| get <k>]` | Inspect or mutate central configuration (`~/.esedre/config.json`). Link external project repositories, data hubs, or remote server hosts (`server.host`, `remotes.<Code>`). |
 | `rename-project` | `ese rename-project <oldCode> <newCode> [--name "<name>"]` | Rename a project code across directory storage paths, manifests, and tickets. |
 | `project set` | `ese project set <code> [--name "<name>"]` | Update metadata for an existing project (e.g. display name). |
 | `upgrade` | `ese upgrade [<path>] [-p\|--project <code>] [--all \| -a] [--force \| -f]` | Upgrade workspace configuration schema, project data schema versions (`project.json` and ticket `meta.json` with atomic backups in `~/.esedre/backups/`), in-repo wrappers, workspace and global Antigravity MCP configs (including `PreToolUse` isolation hooks), and agent skills across current, target project, or all registered workspaces, with automatic `~/.esedre/config.json` registration and 24 KB rule size checks. |
@@ -170,6 +170,31 @@ Esedre employs a two-tier configuration model that cleanly isolates machine-spec
 * **Scoped Repository Mapping Inheritance**: Both `ese init` and `ese upgrade` automatically register project repositories in `~/.esedre/config.json`'s `projects` map using canonical `projectCode` casing. At runtime, workspaces inherit only `allowedProjects`-authorized repository paths from `~/.esedre/config.json` (allowing `ese lease claim`, `ese snapshot --project <Code>`, and MCP snapshot refreshes to locate authorized sibling git repositories without manual path duplication), while keeping unauthorized repositories unmapped and isolated.
 * **Subdirectory Guard in `ese init`**: Initializing a repository via `ese init` does not write `dataDir` to `.esedre/esedre.json` when the configured data hub is located outside the repository. A `dataDir` property is only written to `.esedre/esedre.json` if `dataDir` is a subdirectory within the project's repository (such as a monorepo subfolder or in-repo ticket directory), or if explicitly specified via `--data-dir`.
 * **Local In-Repo Overrides**: If a repository explicitly specifies `dataDir` in its `.esedre/esedre.json`, the local configuration takes full precedence, ensuring standalone in-repo ticket stores remain completely independent.
+
+#### Remote Server Host & Multi-Machine LAN Workflows (`HttpStorageAdapter`)
+
+You can run the Esedre daemon (`ese start`) on a central desktop or intranet host and connect secondary machines (such as a laptop) over HTTP without cloning `esedre-data` onto client machines:
+
+```bash
+# Point a client machine's CLI and MCP server at a remote Esedre daemon
+ese configure set server.host http://192.168.86.38:5674
+
+# Optional: map a specific project code to a dedicated remote host
+ese configure set remotes.Work http://intranet.example.com:5674
+
+# Verify remote daemon health, version, uptime, and projects
+ese status
+
+# Clear remote host and revert to local filesystem storage
+ese configure set server.host none
+```
+
+Esedre resolves whether to use `HttpStorageAdapter` (remote HTTP) or `FilesystemStorageAdapter` (local disk) using a 5-tier precedence hierarchy:
+1. **Runtime Override (`--host <url|local>` / `ESEDRE_HOST`)**: Passing `--host http://192.168.86.38:5674` or `--host local` (or setting `ESEDRE_HOST`) overrides all configuration files for a single command.
+2. **Per-Project Remote Mapping (`remotes.<ProjectCode>`)**: Explicit per-project remote URLs in `.esedre/esedre.json` or `~/.esedre/config.json` take precedence for that project.
+3. **Self-Contained Local Project Precedence**: If the active workspace contains local in-repo tickets (`.esedre/tickets/<id>/`) or declares an in-repo `dataDir` (a directory inside the workspace root) in `.esedre/esedre.json`, local filesystem storage automatically takes precedence over a machine-global `server.host`.
+4. **Workspace Server Host (`server.host` in `.esedre/esedre.json`)**: Shared team or intranet repositories can declare a default `server.host` in `.esedre/esedre.json` (automatically bypassed on the host machine itself when the host owns the local `dataDir` hub).
+5. **Machine-Global Default (`server.host` in `~/.esedre/config.json`)**: Routes all non-standalone workspaces on a client machine to your primary Esedre server, while still generating local `.esedre/snapshot.json` files inside each client workspace for zero-latency LLM agent grounding.
 
 #### Unique Project Codes Across Data Hubs
 
