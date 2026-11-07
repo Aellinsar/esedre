@@ -8,7 +8,7 @@ import { generateProjectSnapshot } from '../snapshot.js';
 import { validateProjectCode, validateProjectName, readGlobalConfig, updateGlobalGitSyncConfig } from '../config.js';
 import { CURRENT_ESEDRE_VERSION, GitSyncStatusReport, ProjectSyncMode } from '../types.js';
 import { CURRENT_DATA_VERSION } from '../migrations/index.js';
-import { globalGitSyncCoordinator, getGitSyncStatusReport } from '../sync/gitSync.js';
+import { globalGitSyncCoordinator, getGitSyncStatusReport, normalizeRealPath } from '../sync/gitSync.js';
 
 async function buildEnrichedSyncStatusReport(
   reqStorage: StorageAdapter,
@@ -70,10 +70,10 @@ async function resolveAuthorizedSyncHubDir(
     ? await reqStorage.getSyncStatus()
     : await getGitSyncStatusReport(readGlobalConfig());
   const configuredHubs = baseReport.hubs.map((h) => h.hubDir);
-  const resolvedCandidate = path.resolve(trimmed).toLowerCase();
+  const resolvedCandidate = normalizeRealPath(trimmed);
   const matched = configuredHubs.find(
     (h) =>
-      path.resolve(h).toLowerCase() === resolvedCandidate ||
+      normalizeRealPath(h) === resolvedCandidate ||
       path.basename(h).toLowerCase() === trimmed.toLowerCase()
   );
   if (!matched) {

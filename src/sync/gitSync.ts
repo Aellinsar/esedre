@@ -83,14 +83,29 @@ export function execGit(
   });
 }
 
-function normalizeRealPath(p: string): string {
-  try {
-    const real = fs.realpathSync(path.resolve(p)).normalize('NFC').replace(/\\/g, '/').replace(/\/+$/, '');
-    return process.platform === 'win32' || process.platform === 'darwin' ? real.toLowerCase() : real;
-  } catch {
-    const abs = path.resolve(p).normalize('NFC').replace(/\\/g, '/').replace(/\/+$/, '');
-    return process.platform === 'win32' || process.platform === 'darwin' ? abs.toLowerCase() : abs;
+export function normalizeRealPath(p: string): string {
+  const realFn = typeof fs.realpathSync.native === 'function' ? fs.realpathSync.native : fs.realpathSync;
+  const initial = path.resolve(p);
+  const tailSegments: string[] = [];
+  let current = initial;
+  while (true) {
+    try {
+      if (fs.existsSync(current)) {
+        const real = realFn(current);
+        const joined = (tailSegments.length > 0 ? path.join(real, ...tailSegments) : real)
+          .normalize('NFC')
+          .replace(/\\/g, '/')
+          .replace(/\/+$/, '');
+        return process.platform === 'win32' || process.platform === 'darwin' ? joined.toLowerCase() : joined;
+      }
+    } catch {}
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    tailSegments.unshift(path.basename(current));
+    current = parent;
   }
+  const abs = initial.normalize('NFC').replace(/\\/g, '/').replace(/\/+$/, '');
+  return process.platform === 'win32' || process.platform === 'darwin' ? abs.toLowerCase() : abs;
 }
 
 export interface HubVerificationResult {

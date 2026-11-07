@@ -58,18 +58,19 @@ export function detectGitBranch(cwd?: string): string | undefined {
 }
 
 function resolveCanonicalPath(p: string): string {
+  const realFn = typeof fs.realpathSync.native === 'function' ? fs.realpathSync.native : fs.realpathSync;
   const initial = path.resolve(p.normalize('NFC'));
   const tailSegments: string[] = [];
   let current = initial;
   while (true) {
     try {
       if (fs.existsSync(current)) {
-        const real = fs.realpathSync(current);
+        const real = realFn(current);
         return (tailSegments.length > 0 ? path.join(real, ...tailSegments) : real).normalize('NFC');
       }
       const nfdCurrent = current.normalize('NFD');
       if (nfdCurrent !== current && fs.existsSync(nfdCurrent)) {
-        const real = fs.realpathSync(nfdCurrent);
+        const real = realFn(nfdCurrent);
         return (tailSegments.length > 0 ? path.join(real, ...tailSegments) : real).normalize('NFC');
       }
     } catch {}

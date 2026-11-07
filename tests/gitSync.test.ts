@@ -14,6 +14,7 @@ import {
   getDataHubSyncStatus,
   globalGitSyncCoordinator,
   sanitizeGitLogText,
+  normalizeRealPath,
 } from '../src/sync/gitSync.js';
 import { FilesystemStorageAdapter } from '../src/storage/filesystem.js';
 import { HttpStorageAdapter } from '../src/storage/http.js';
@@ -679,6 +680,17 @@ describe('Esedre-6: Automatic Data Hub Git Sync', () => {
       expect(getSyncStatusBadgeMeta('offline', true).label).toBe('Offline (Local Commit)');
       expect(getSyncStatusBadgeMeta('conflict', true).label).toBe('Conflict');
       expect(getSyncStatusBadgeMeta('error', true).label).toBe('Error');
+    });
+
+    it('normalizes Windows 8.3 short paths (e.g. RUNNER~1 / PROGRA~1) to canonical long paths', () => {
+      if (process.platform === 'win32' && fs.existsSync('C:\\PROGRA~1')) {
+        expect(normalizeRealPath('C:\\PROGRA~1')).toBe(normalizeRealPath('C:\\Program Files'));
+        expect(normalizeRealPath('C:\\PROGRA~1\\sub-folder')).toBe(
+          normalizeRealPath('C:\\Program Files\\sub-folder')
+        );
+      } else {
+        expect(normalizeRealPath(tempRoot)).toBe(normalizeRealPath(path.join(tempRoot, '.')));
+      }
     });
   });
 });
