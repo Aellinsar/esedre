@@ -36,6 +36,7 @@
     "net": "node tools/tunnel/run-net.js",
     "net:all": "node tools/tunnel/run-net.js --all",
     "test": "vitest run",
+    "test:docker": "node scripts/test-docker.js",
     "lint": "tsc --noEmit",
     "build:cli": "node scripts/build.js",
     "build:ui": "vite build --config vite.config.ts",
@@ -45,7 +46,7 @@
     "prepublishOnly": "npm run lint && npm run test && npm run build"
   },
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=20.0.0"
   },
   "license": "MPL-2.0",
   "dependencies": {
@@ -55,7 +56,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
-    "@types/node": "^24.13.3",
+    "@types/node": "^20.0.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.0.5",

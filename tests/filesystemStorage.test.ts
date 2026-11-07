@@ -715,5 +715,123 @@ describe('FilesystemStorageAdapter', () => {
 
     daemonAdapter.closeWatchers();
   });
+
+  it('parses overview paragraph directly under # Title without retaining Summary to be defined placeholder and supports summary in updateTicket (Ticket #94)', async () => {
+    const created = await adapter.createTicket({
+      title: 'Placeholder Summary Ticket',
+      type: 'Feature',
+      projectCode: 'Core',
+    });
+    expect(created.detail?.summary).toBe('Summary to be defined.');
+
+    const updatedFromDoc = await adapter.updateTicket(created.meta.id, {
+      detail: [
+        '# Ticket #1: Placeholder Summary Ticket',
+        '',
+        'Overview paragraph placed directly beneath the H1 title without a Summary heading.',
+        '',
+        '### Feature Breakdown',
+        '1. Parse preamble paragraph cleanly.',
+        '2. Strip placeholder summary text.',
+      ].join('\n'),
+    });
+
+    expect(updatedFromDoc.detail?.summary).toBe(
+      'Overview paragraph placed directly beneath the H1 title without a Summary heading.'
+    );
+    expect(updatedFromDoc.detail?.summary).not.toContain('Summary to be defined.');
+    expect(updatedFromDoc.detail?.raw).not.toContain('Summary to be defined.');
+    expect(updatedFromDoc.detail?.breakdown).toEqual([
+      'Parse preamble paragraph cleanly.',
+      'Strip placeholder summary text.',
+    ]);
+
+    const updatedViaFlag = await adapter.updateTicket(created.meta.id, {
+      summary: 'Direct summary updated via --summary flag.',
+    });
+    expect(updatedViaFlag.detail?.summary).toBe('Direct summary updated via --summary flag.');
+    expect(updatedViaFlag.detail?.raw).toContain('### Summary\nDirect summary updated via --summary flag.');
+    expect(updatedViaFlag.detail?.breakdown).toEqual([
+      'Parse preamble paragraph cleanly.',
+      'Strip placeholder summary text.',
+    ]);
+
+    const ticketDetailPath = path.join(tempDir, 'src', 'data', 'planning', 'tickets', '1', 'detail.md');
+    fs.writeFileSync(
+      ticketDetailPath,
+      [
+        '# Ticket #1: Placeholder Summary Ticket',
+        '**Type**: Feature  ',
+        '**Complexity**: Medium  ',
+        '**Estimated Effort**: 2.0 - 4.0 hours  ',
+        '',
+        '### Summary',
+        'Summary to be defined.',
+        'Recovered real summary paragraph after placeholder.',
+      ].join('\n'),
+      'utf-8'
+    );
+    const freshAdapter = new FilesystemStorageAdapter(tempDir);
+    const reread = await freshAdapter.getTicket(1);
+    expect(reread?.detail?.summary).toBe('Recovered real summary paragraph after placeholder.');
+    freshAdapter.closeWatchers();
+
+    // Ticket #102: Fallback heading aliases (Problem, Proposed Solution, Root Cause, non-canonical ## sections, and prose paragraphs)
+    const ideaTicket = await adapter.createTicket({
+      title: 'Idea With Problem And Proposed Solution',
+      type: 'Idea',
+      projectCode: 'Core',
+      detail: [
+        '## Problem',
+        'Calling createTicket with custom headings previously returned empty breakdown arrays.',
+        '',
+        '## Proposed Solution',
+        '- Support fallback heading aliases for Summary, Breakdown, and Technical Details.',
+        '- Preserve custom non-canonical sections in breakdown.',
+        '',
+        '## Root Cause',
+        'Parser regex only matched exact canonical heading strings.',
+      ].join('\n'),
+    });
+
+    expect(ideaTicket.detail?.summary).toBe(
+      'Calling createTicket with custom headings previously returned empty breakdown arrays.'
+    );
+    expect(ideaTicket.detail?.breakdown).toEqual([
+      'Support fallback heading aliases for Summary, Breakdown, and Technical Details.',
+      'Preserve custom non-canonical sections in breakdown.',
+    ]);
+    expect(ideaTicket.detail?.technicalDetails).toEqual([
+      'Parser regex only matched exact canonical heading strings.',
+    ]);
+
+    const bugTicketCustom = await adapter.updateTicket(ideaTicket.meta.id, {
+      type: 'Bug',
+      summary: 'Explicit concise bug summary.',
+      detail: [
+        '## Problem',
+        'Detailed symptom when authoring Bug tickets.',
+        '',
+        '## Steps to Reproduce',
+        '1. Call esedre_create_ticket with custom headings.',
+        '2. Inspect returned detail.breakdown array.',
+        '',
+        '## Proposed Fix',
+        'Extract prose and list items from fallback and non-canonical headings.',
+        '',
+        '## User Impact',
+        '- Prevents silent section drops in MCP responses.',
+      ].join('\n'),
+    });
+
+    expect(bugTicketCustom.detail?.summary).toBe('Explicit concise bug summary.');
+    expect(bugTicketCustom.detail?.breakdown).toEqual([
+      '**Problem**: Detailed symptom when authoring Bug tickets.',
+      'Call esedre_create_ticket with custom headings.',
+      'Inspect returned detail.breakdown array.',
+      'Extract prose and list items from fallback and non-canonical headings.',
+      'Prevents silent section drops in MCP responses.',
+    ]);
+  });
 });
 

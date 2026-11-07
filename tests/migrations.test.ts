@@ -22,6 +22,7 @@ import { FilesystemStorageAdapter } from '../src/storage/filesystem.js';
 import { SecurityFilter } from '../src/securityFilter.js';
 import { EsedreMcpServer } from '../src/mcp/server.js';
 import { upgradeProjectData, upgradeAllWorkspaces } from '../src/upgrade.js';
+import { normalizeDashesAndMojibake, normalizeComplexity } from '../src/utils/formatter.js';
 
 describe('Storage Migration and Compatibility Engine (Ticket #85)', () => {
   let tmpDir: string;
@@ -393,6 +394,162 @@ describe('Storage Migration and Compatibility Engine (Ticket #85)', () => {
         failedAsExpected = true;
         expect(err.stderr || err.message).toContain('Version Compatibility Error:');
         expect(err.stderr || err.message).toContain("Project 'Omega' is on Esedre schema v9.9.0");
+      }
+      expect(failedAsExpected).toBe(true);
+    });
+
+    it('normalizes 2-byte UTF-8 mojibake and complexity enums in v1.1.0 migration (Ticket #97)', async () => {
+      expect(normalizeDashesAndMojibake('Favorited PokÃ©mon')).toBe('Favorited Pokémon');
+      expect(normalizeDashesAndMojibake('CafÃ© & NaÃ¯ve Ã¡ Ã³ Ãº Ã±')).toBe('Café & Naïve á ó ú ñ');
+      expect(normalizeComplexity('3')).toBe('Medium');
+      expect(normalizeComplexity('1')).toBe('Low');
+      expect(normalizeComplexity('5')).toBe('High');
+      expect(normalizeComplexity('Medium')).toBe('Medium');
+
+      const sleepDir = path.join(hubDir, 'projects', 'Sleep');
+      const t31Dir = path.join(sleepDir, 'tickets', '31');
+      const t119Dir = path.join(sleepDir, 'tickets', '119');
+      fs.mkdirSync(t31Dir, { recursive: true });
+      fs.mkdirSync(t119Dir, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(sleepDir, 'project.json'),
+        JSON.stringify({ code: 'Sleep', name: 'Sleep PokÃ©mon Tracker', schemaVersion: '1.0.0' }, null, 2) + '\n',
+        'utf-8'
+      );
+      fs.writeFileSync(
+        path.join(sleepDir, 'milestones.json'),
+        JSON.stringify([{ id: 'v1', name: 'PokÃ©mon Milestone', description: 'Tracks PokÃ©mon' }], null, 2) + '\n',
+        'utf-8'
+      );
+      fs.writeFileSync(
+        path.join(t31Dir, 'meta.json'),
+        JSON.stringify(
+          {
+            ticketNumber: 31,
+            title: 'Favorited PokÃ©mon',
+            status: 'Planned',
+            type: 'Feature',
+            complexity: 'Medium',
+            revision: 1,
+            schemaVersion: '1.0.0',
+          },
+          null,
+          2
+        ) + '\n',
+        'utf-8'
+      );
+      fs.writeFileSync(
+        path.join(t31Dir, 'detail.md'),
+        '# Favorited PokÃ©mon\n\n## Summary\nAllow starring PokÃ©mon.\n',
+        'utf-8'
+      );
+      fs.writeFileSync(
+        path.join(t119Dir, 'meta.json'),
+        JSON.stringify(
+          {
+            ticketNumber: 119,
+            title: 'Tier List Analyzer',
+            status: 'Planned',
+            type: 'Feature',
+            complexity: '3',
+            estimatedEffort: '1 week',
+            revision: 2,
+            schemaVersion: '1.0.0',
+          },
+          null,
+          2
+        ) + '\n',
+        'utf-8'
+      );
+
+      const storage = new FilesystemStorageAdapter(tmpDir, { dataDir: hubDir, projectCode: 'Sleep' });
+      const res = await upgradeProjectData(storage, 'Sleep', { backupRootDir: backupDir });
+      expect(res.appliedMigrations.map((m) => m.version)).toContain('1.1.0');
+      expect(res.currentSchemaVersion).toBe('1.1.0');
+
+      const pJson = JSON.parse(fs.readFileSync(path.join(sleepDir, 'project.json'), 'utf-8'));
+      expect(pJson.name).toBe('Sleep Pokémon Tracker');
+      expect(pJson.schemaVersion).toBe('1.1.0');
+
+      const m31 = JSON.parse(fs.readFileSync(path.join(t31Dir, 'meta.json'), 'utf-8'));
+      expect(m31.title).toBe('Favorited Pokémon');
+      expect(m31.schemaVersion).toBe('1.1.0');
+
+      const d31 = fs.readFileSync(path.join(t31Dir, 'detail.md'), 'utf-8');
+      expect(d31).toContain('Favorited Pokémon');
+      expect(d31).not.toContain('PokÃ©mon');
+
+      const m119 = JSON.parse(fs.readFileSync(path.join(t119Dir, 'meta.json'), 'utf-8'));
+      expect(m119.complexity).toBe('Medium');
+      expect(m119.schemaVersion).toBe('1.1.0');
+
+      const milestones = JSON.parse(fs.readFileSync(path.join(sleepDir, 'milestones.json'), 'utf-8'));
+      expect(milestones[0].name).toBe('Pokémon Milestone');
+    });
+
+    it('enforces the 4-rule non-intrusive migration pattern on unstamped, v1.0.0, and pinned projects (Ticket #97)', async () => {
+      const storage = new FilesystemStorageAdapter(tmpDir, { dataDir: hubDir, projectCode: 'Legacy' });
+
+      // Rule 1 & Rule 2: Unstamped legacy project (no schemaVersion in project.json)
+      const legacyDir = path.join(hubDir, 'projects', 'Legacy');
+      const legacyT1Dir = path.join(legacyDir, 'tickets', '1');
+      fs.mkdirSync(legacyT1Dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(legacyDir, 'project.json'),
+        JSON.stringify({ code: 'Legacy', name: 'Legacy Unstamped Project' }, null, 2) + '\n',
+        'utf-8'
+      );
+      fs.writeFileSync(
+        path.join(legacyT1Dir, 'meta.json'),
+        JSON.stringify({ ticketNumber: 1, title: 'Minimal Legacy Ticket', status: 'Planned', type: 'Feature' }, null, 2) + '\n',
+        'utf-8'
+      );
+
+      // Updating only status on a minimal legacy ticket must NOT inject schemaVersion, esedreVersion, complexity, or estimatedEffort
+      await storage.updateTicket(1, { status: 'In Development' });
+      const rawT1 = JSON.parse(fs.readFileSync(path.join(legacyT1Dir, 'meta.json'), 'utf-8'));
+      expect(rawT1.status).toBe('In Development');
+      expect(rawT1.schemaVersion).toBeUndefined();
+      expect(rawT1.esedreVersion).toBeUndefined();
+      expect(rawT1.complexity).toBeUndefined();
+      expect(rawT1.estimatedEffort).toBeUndefined();
+      expect(rawT1.project).toBeUndefined();
+
+      // Creating a new ticket in an unstamped project also respects the unstamped project.json
+      await storage.createTicket({ title: 'Second Legacy Ticket', project: 'Legacy' });
+      const rawT2 = JSON.parse(fs.readFileSync(path.join(legacyDir, 'tickets', '2', 'meta.json'), 'utf-8'));
+      expect(rawT2.schemaVersion).toBeUndefined();
+      expect(rawT2.esedreVersion).toBeUndefined();
+
+      // Rule 1b: Project on v1.0.0 keeps ticket schemaVersion at '1.0.0' rather than stamping '1.1.0'
+      const v10Dir = path.join(hubDir, 'projects', 'Pinned10');
+      fs.mkdirSync(path.join(v10Dir, 'tickets'), { recursive: true });
+      fs.writeFileSync(
+        path.join(v10Dir, 'project.json'),
+        JSON.stringify(
+          { code: 'Pinned10', name: 'Pinned v1.0.0 Project', schemaVersion: '1.0.0', pinSchemaVersion: true },
+          null,
+          2
+        ) + '\n',
+        'utf-8'
+      );
+      await storage.createTicket({ title: 'Ticket on v1.0.0 Project', projectCode: 'Pinned10' });
+      const rawPinnedT1 = JSON.parse(fs.readFileSync(path.join(v10Dir, 'tickets', '1', 'meta.json'), 'utf-8'));
+      expect(rawPinnedT1.schemaVersion).toBe('1.0.0');
+
+      // Rule 3: pinSchemaVersion: true skips migration during runProjectMigrations unless forceStamp: true
+      const skipRes = await upgradeProjectData(storage, 'Pinned10', { backupRootDir: backupDir });
+      expect(skipRes.pinned).toBe(true);
+      expect(skipRes.alreadyUpToDate).toBe(true);
+      expect(skipRes.appliedMigrations).toHaveLength(0);
+      expect(skipRes.currentSchemaVersion).toBe('1.0.0');
+
+      const forceRes = await upgradeProjectData(storage, 'Pinned10', { backupRootDir: backupDir, forceStamp: true });
+      expect(forceRes.appliedMigrations.map((m) => m.version)).toContain('1.1.0');
+      expect(forceRes.currentSchemaVersion).toBe('1.1.0');
+      const failedAsExpected = true;
+      if (false) {
       }
       expect(failedAsExpected).toBe(true);
     });

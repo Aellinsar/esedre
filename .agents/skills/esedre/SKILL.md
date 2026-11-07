@@ -12,11 +12,11 @@ Esedre is the developer ticketing and LLM coding partner coordination platform. 
 All ticket discovery, inspection, and state management strictly follow this positive ingress hierarchy:
 
 1. **Step 1 (Default for Read-Only Inspection) - Local Snapshot Projection**:
-   Always read `.esedre/snapshot.json` in the workspace root first. It provides an immediate, zero-latency local projection containing all active and completed tickets, summaries, implementation plans, revision numbers, completion dates (`completedAt`), and staleness metrics (`daysSinceUpdate`).
+   Always read `.esedre/snapshot.json` in the workspace root first. It provides an immediate, zero-latency local projection containing all active and completed tickets, summaries (for non-terminal tickets), plan presence (`hasPlan: boolean`; full plans are fetched via `esedre_get_plan` or `.esedre/ese plan <id>`, or projected with `--include-plans`), revision numbers, completion dates (`completedAt`), and staleness metrics (`daysSinceUpdate`).
 2. **Step 2 (Dynamic Queries & State Mutations) - Esedre MCP Tools**:
    Use first-class MCP tools when active in the session (`esedre_list_tickets`, `esedre_get_ticket`, `esedre_get_plan`, `esedre_save_plan`, `esedre_update_ticket`, `esedre_claim_ticket`, `esedre_renew_lease`, `esedre_release_ticket`, `esedre_list_leases`, `esedre_add_comment`).
 3. **Step 3 (Terminal & Script Fallback) - In-Repo CLI Wrapper**:
-   - **POSIX (macOS, Linux, Git Bash, WSL)**: `.esedre/ese <command>` (e.g. `.esedre/ese get`, `.esedre/ese plan`, `.esedre/ese update`, `.esedre/ese lease`, `.esedre/ese snapshot`).
+   - **POSIX (macOS, Linux, Git Bash, WSL)**: `.esedre/ese <command>` (e.g. `.esedre/ese get`, `.esedre/ese plan`, `.esedre/ese update`, `.esedre/ese lease`, `.esedre/ese snapshot [--include-plans]`).
    - **Windows (PowerShell / CMD)**: `.\.esedre\ese.cmd <command>` or `.\.esedre\ese.ps1 <command>` (do not invoke the extensionless POSIX script `.esedre/ese` directly in PowerShell or `cmd.exe`, as Windows will fail or prompt to select an application to open the file).
 4. **Storage Boundary**:
    Backing ticket hubs (such as `esedre-data`) represent data storage managed by the engine. All agent interactions with roadmap tickets flow through the snapshot projection, MCP tools, or CLI wrappers.
@@ -27,22 +27,22 @@ When Esedre MCP is active in your agent session (`.agents/mcp.json` or `.agents/
 
 | Tool | Purpose | Key Arguments |
 |---|---|---|
-| `esedre_list_tickets` | List roadmap tickets with filters | `project` (e.g. `Profe`, `Esedre`, `Alce`), `status`, `type`, `priority`, `milestone`, `isBlocked`, `linkedTo`, `search`, `includePlan` |
+| `esedre_list_tickets` | List roadmap tickets with filters | `project` (e.g. `Profe`, `Esedre`, `Alce`), `status`, `type`, `priority`, `milestone`, `featureFlag`, `leased`, `leasedBy`, `isBlocked`, `linkedTo`, `search`, `includePlan`, `compact`, `includeCompleted` |
 | `esedre_get_ticket` | Full specification, summary, comments, links, lease, revision & sha1 | `ticketId` (numeric e.g. `96` or compound e.g. `Profe-96`) |
 | `esedre_get_plan` | Active implementation plan markdown | `ticketId` (numeric or compound) |
 | `esedre_save_plan` | Save implementation plan markdown with OCC | `ticketId`, `planMarkdown`, `lastHash` |
-| `esedre_create_ticket` | Mint a new ticket with auto sequential ID | `title` (max 48 chars), `type`, `project`, `priority`, `milestone`, `effort`, `summary`, `detail` |
-| `esedre_update_ticket` | Update ticket attributes with OCC | `ticketId`, `status`, `type`, `priority`, `milestone`, `title`, `detail`, `detailMarkdown`, `complexity`, `effort`, `inDevelopment`, `featureFlag`, `lastHash` |
+| `esedre_create_ticket` | Mint a new ticket with auto sequential ID | `title` (max 48 chars), `type`, `project`, `priority`, `milestone`, `featureFlag`, `effort`, `summary`, `detail`, `links` (`[{ relation, targetTicketId }]`) |
+| `esedre_update_ticket` | Update ticket attributes with OCC | `ticketId`, `status`, `type`, `priority`, `milestone`, `title`, `summary`, `detail`, `detailMarkdown`, `complexity`, `effort`, `inDevelopment`, `featureFlag`, `lastHash` |
 | `esedre_claim_ticket` | Claim an ephemeral TTL lease on a ticket (`In Development`) | `ticketId`, `holder`/`workerId`, `agentType`/`system`, `ttlMinutes`, `branch`, `worktree`, `force` |
 | `esedre_renew_lease` | Extend an active ticket lease TTL | `ticketId`, `holder`/`workerId`, `system`, `ttlMinutes` |
 | `esedre_release_ticket` | Release a ticket lease and optionally transition status | `ticketId`, `holder`/`workerId`, `system`, `finalStatus`, `notes`, `force` |
 | `esedre_list_leases` | List all active unexpired ticket leases | `project` |
-| `esedre_link_ticket` | Establish bi-directional ticket relationship | `sourceTicketId`/`id`, `relation` (`relates-to` \| `blocks` \| `parent-of` \| `duplicates`), `targetTicketId`/`targetId`, `author` |
-| `esedre_unlink_ticket` | Remove bi-directional ticket relationship | `sourceTicketId`/`id`, `targetTicketId`/`targetId`, `relation` |
+| `esedre_link_ticket` | Establish bi-directional ticket relationship(s) | `sourceTicketId`/`id`, `relation` (`relates-to` \| `blocks` \| `parent-of` \| `duplicates`), `targetTicketId`/`targetTicketIds`, `author` |
+| `esedre_unlink_ticket` | Remove bi-directional ticket relationship(s) | `sourceTicketId`/`id`, `targetTicketId`/`targetTicketIds`, `relation` |
 | `esedre_list_milestones` | List project milestones and deliverables progress | `project` |
-| `esedre_get_milestone` | Get milestone specs, umbrella flag, and member tickets | `milestoneId`/`id` (`<string\|number>`: numeric ID, title, or `Project:Title`), `project` |
+| `esedre_get_milestone` | Get milestone specs, umbrella flag, and member tickets | `milestoneId` (numeric or title), `project` |
 | `esedre_create_milestone` | Create a project milestone with optional umbrella flag | `title`, `project`, `featureFlag`, `status`, `targetDate`, `description` |
-| `esedre_update_milestone` | Update milestone status, umbrella flag, or title | `milestoneId`/`id` (`<string\|number>`), `project`, `title`, `featureFlag`, `status`, `targetDate`, `description` |
+| `esedre_update_milestone` | Update milestone status, umbrella flag, or title | `milestoneId`, `project`, `title`, `featureFlag`, `status`, `targetDate`, `description` |
 | `esedre_add_comment` | Append developer or agent comment | `ticketId`, `text`, `file`, `author` |
 
 ## 2. Core CLI Commands (Fallback via `run_command`)
@@ -51,7 +51,7 @@ Both `esedre` and `ese` work interchangeably. On POSIX shells use `.esedre/ese <
 
 ### List Tickets
 ```bash
-.esedre/ese list [-p|--project <code|all>] [-s|--status <status>] [-t|--type <type>] [-P|--priority <priority>] [-m|--milestone <name>] [--blocked] [--linked-to <ticketKey>] [-q|--search <q>] [--json]
+.esedre/ese list [-p|--project <code|all>] [-s|--status <status>] [-t|--type <type>] [-P|--priority <priority>] [-m|--milestone <name|none>] [--flag <flag|none>] [--blocked] [--leased] [--leased-by <holder>] [--linked-to <ticketKey>] [-q|--search <q>] [--compact] [--include-completed] [--json]
 ```
 
 ### Read Ticket Details
@@ -68,7 +68,7 @@ Both `esedre` and `ese` work interchangeably. On POSIX shells use `.esedre/ese <
 
 ### Create a Ticket
 ```bash
-.esedre/ese create --title "..." [-p|--project <code>] [-t|--type Feature] [-P|--priority High] [-m|--milestone <name>] [--complexity Medium] [--effort "2.0 - 4.0 hours"] [--detail "<md>"] [--file <path>] [--json]
+.esedre/ese create --title "..." [-p|--project <code>] [-t|--type Feature] [-P|--priority High] [-m|--milestone <name>] [--flag <flag>] [--complexity Medium] [--effort "2.0 - 4.0 hours"] [--detail "<md>"] [--file <path>] [--link <relation>:<targetId>] [--json]
 ```
 
 ### Update Ticket Status & Attributes
@@ -79,12 +79,13 @@ Both `esedre` and `ese` work interchangeably. On POSIX shells use `.esedre/ese <
 .esedre/ese update <ticketId> -P none           # Clears priority
 .esedre/ese update <ticketId> -m "Release 1.0"  # Links ticket to milestone (inherits umbrella feature flag)
 .esedre/ese update <ticketId> -m none           # Unlinks ticket from milestone
+.esedre/ese update <ticketId> --summary "Concise summary"   # Updates ticket summary section
 .esedre/ese update <ticketId> --detail "<markdownContent>"  # Updates specification markdown
 .esedre/ese update <ticketId> --file <detailFilePath>       # Overwrites specification from file
 ```
 
 ### Ticket Specification (`detail.md`) Sections
-When authoring or updating a ticket's `detail.md` (via `--detail`, `--file`, or `esedre_update_ticket`), the snapshot compiler and UI parser recognize the following canonical `###` headings:
+When authoring or updating a ticket's `detail.md` (via `--detail`, `--file`, or `esedre_update_ticket`), the snapshot compiler and UI parser recognize both `##` and `###` headings (and preserve custom headings such as `## Problem`, `## Proposed Solution`, or `## Acceptance Criteria` in `detail.breakdown`):
 - `### Summary`: Concise overview of the problem or feature.
 - `### Feature Breakdown` (or aliases `### Task Breakdown`, `### Fix Breakdown`, `### Implementation Breakdown`): Numbered or bulleted deliverables and fix steps (indented sub-bullets are preserved under their parent item). Use `### Fix Breakdown` or `### Task Breakdown` naturally for `Bug` and `Tools` tickets.
 - `### Technical Details` (or `### Technical Details & Architecture`): Bold-keyed architectural notes (e.g. `- **Architecture**: ...`, `- **Key Modules**: ...`, `- **Root Cause**: ...`, `- **Technical Detail**: ...`).
@@ -108,8 +109,8 @@ When authoring or updating a ticket's `detail.md` (via `--detail`, `--file`, or 
 
 ### Link or Unlink Tickets
 ```bash
-.esedre/ese link <sourceId> <relation> <targetId> [--author "..."]
-.esedre/ese unlink <sourceId> <targetId> [--relation <relation>]
+.esedre/ese link <sourceId> <relation> <targetId...> [--author "..."]
+.esedre/ese unlink <sourceId> <targetId...> [--relation <relation>]
 # Supported relations: relates-to, blocks, parent-of, duplicates
 # Inverse reciprocal links are automatically synchronized.
 ```
@@ -125,8 +126,8 @@ When authoring or updating a ticket's `detail.md` (via `--detail`, `--file`, or 
 
 ### Regenerate Snapshot
 ```bash
-.esedre/ese snapshot
-.esedre/ese refresh
+.esedre/ese snapshot [--include-plans]
+.esedre/ese refresh [--include-plans]
 ```
 
 ### Server Lifecycle & Daemon Management

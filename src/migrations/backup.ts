@@ -1,6 +1,6 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { getGlobalConfigDir } from '../config.js';
 
 export interface ProjectBackupInput {
   projectCode: string;
@@ -32,7 +32,7 @@ function copyDirectoryRecursive(srcDir: string, destDir: string): void {
  * and tickets/) inside ~/.esedre/backups/ (or custom backupRootDir) before executing schema migrations.
  */
 export function createProjectMigrationBackup(input: ProjectBackupInput): string {
-  const rootDir = input.backupRootDir || path.join(os.homedir(), '.esedre', 'backups');
+  const rootDir = input.backupRootDir || path.join(getGlobalConfigDir(), 'backups');
   const safeFrom = input.fromVersion.replace(/[^0-9A-Za-z._-]/g, '_');
   const safeTo = input.toVersion.replace(/[^0-9A-Za-z._-]/g, '_');
   const safeCode = input.projectCode.replace(/[^0-9A-Za-z._-]/g, '_');

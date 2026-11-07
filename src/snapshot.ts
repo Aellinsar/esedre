@@ -1,8 +1,24 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { EsedreTicket, TicketType, TicketCategory, TicketStatus, TicketPriority, Milestone, MilestoneStatus, CURRENT_ESEDRE_VERSION, TicketLink, TicketLease } from './types.js';
+import {
+  EsedreTicket,
+  TicketType,
+  TicketCategory,
+  TicketStatus,
+  TicketPriority,
+  Milestone,
+  MilestoneStatus,
+  CURRENT_ESEDRE_VERSION,
+  TicketLink,
+  TicketLease,
+  isTerminalTicketStatus,
+} from './types.js';
 import { StorageAdapter } from './storage/adapter.js';
+
+export interface GenerateSnapshotOptions {
+  includePlans?: boolean;
+}
 
 export interface TicketSnapshotEntry {
   id: number;
@@ -30,7 +46,7 @@ export interface TicketSnapshotEntry {
   updatedAt?: string;
   completedAt?: string;
   revision: number;
-  daysSinceUpdate: number;
+  daysSinceUpdate?: number;
 
   sha1: string;
 }
@@ -91,8 +107,8 @@ export function computeTicketHash(ticket: {
     links: (ticket.meta as any).links || [],
     revision: ticket.meta.revision || 1,
     completedAt: ticket.meta.completedAt || '',
-    detailRaw: (ticket.detail?.raw || '').trim(),
-    planMarkdown: (ticket.planMarkdown || '').trim(),
+    detailRaw: (ticket.detail?.raw || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim(),
+    planMarkdown: (ticket.planMarkdown || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim(),
   });
   hash.update(payload, 'utf-8');
   return hash.digest('hex');
@@ -110,8 +126,10 @@ export function verifyTicketHash(currentHash: string, lastHash?: string): boolea
 export async function generateProjectSnapshot(
   storage: StorageAdapter,
   projectCode: string,
-  outputDir: string
+  outputDir: string,
+  options?: GenerateSnapshotOptions
 ): Promise<ProjectSnapshot> {
+  const includePlans = Boolean(options?.includePlans);
   const tickets = await storage.listTickets({ project: projectCode });
   const entries: TicketSnapshotEntry[] = [];
   const now = Date.now();
@@ -130,7 +148,9 @@ export async function generateProjectSnapshot(
     const updatedAt = ticketObj.meta.updatedAt || ticketObj.meta.timestamp || createdAt;
     const completedAt =
       ticketObj.meta.completedAt ||
-      (ticketObj.meta.status === 'Completed' ? ticketObj.meta.timestamp : undefined);
+      (ticketObj.meta.status === 'Completed' || (ticketObj.meta.status as string) === 'Complete'
+        ? ticketObj.meta.timestamp
+        : undefined);
     const revision = ticketObj.meta.revision || 1;
 
     let daysSinceUpdate = 0;
@@ -148,33 +168,63 @@ export async function generateProjectSnapshot(
           return cleanLease;
         })()
       : undefined;
-    entries.push({
-      id: ticketObj.meta.id,
-      ticketKey,
-      title: ticketObj.meta.title,
-      type: (ticketObj.meta.type || ticketObj.meta.category || 'Feature') as TicketType,
-      category: (ticketObj.meta.type || ticketObj.meta.category || 'Feature') as TicketType,
-      priority: ticketObj.meta.priority,
-      status: ticketObj.meta.status,
-      complexity: ticketObj.meta.complexity,
-      estimatedEffort: ticketObj.meta.estimatedEffort,
-      project: pCode,
-      summary: ticketObj.detail?.summary,
-      milestone: ticketObj.meta.milestone,
-      featureFlag: ticketObj.meta.featureFlag,
-      inheritedFeatureFlag: ticketObj.meta.inheritedFeatureFlag,
-      links: ticketObj.meta.links || [],
-      isBlocked: ticketObj.isBlocked || false,
-      ...(sanitizedLease ? { lease: sanitizedLease } : {}),
-      hasPlan: Boolean(plan && plan.trim().length > 0),
-      planMarkdown: plan && plan.trim().length > 0 ? plan : undefined,
-      createdAt,
-      updatedAt,
-      completedAt,
-      revision,
-      daysSinceUpdate,
-      sha1,
-    });
+
+    const hasPlan = Boolean(plan && plan.trim().length > 0);
+    const normalizedPlan =
+      includePlans && hasPlan && plan ? plan.replace(/\r\n/g, '\n').replace(/\r/g, '\n') : undefined;
+    const ticketType = (ticketObj.meta.type || ticketObj.meta.category || 'Feature') as TicketType;
+
+    if (isTerminalTicketStatus(ticketObj.meta.status)) {
+      entries.push({
+        id: ticketObj.meta.id,
+        ticketKey,
+        title: ticketObj.meta.title,
+        type: ticketType,
+        category: ticketType,
+        ...(ticketObj.meta.priority ? { priority: ticketObj.meta.priority } : {}),
+        status: ticketObj.meta.status,
+        project: pCode,
+        ...(ticketObj.meta.milestone ? { milestone: ticketObj.meta.milestone } : {}),
+        ...(ticketObj.meta.featureFlag ? { featureFlag: ticketObj.meta.featureFlag } : {}),
+        ...(ticketObj.meta.inheritedFeatureFlag
+          ? { inheritedFeatureFlag: ticketObj.meta.inheritedFeatureFlag }
+          : {}),
+        ...(sanitizedLease ? { lease: sanitizedLease } : {}),
+        hasPlan,
+        ...(normalizedPlan ? { planMarkdown: normalizedPlan } : {}),
+        ...(completedAt ? { completedAt } : {}),
+        revision,
+        sha1,
+      });
+    } else {
+      entries.push({
+        id: ticketObj.meta.id,
+        ticketKey,
+        title: ticketObj.meta.title,
+        type: ticketType,
+        category: ticketType,
+        priority: ticketObj.meta.priority,
+        status: ticketObj.meta.status,
+        complexity: ticketObj.meta.complexity,
+        estimatedEffort: ticketObj.meta.estimatedEffort,
+        project: pCode,
+        summary: ticketObj.detail?.summary,
+        milestone: ticketObj.meta.milestone,
+        featureFlag: ticketObj.meta.featureFlag,
+        inheritedFeatureFlag: ticketObj.meta.inheritedFeatureFlag,
+        links: ticketObj.meta.links || [],
+        isBlocked: ticketObj.isBlocked || false,
+        ...(sanitizedLease ? { lease: sanitizedLease } : {}),
+        hasPlan,
+        ...(normalizedPlan ? { planMarkdown: normalizedPlan } : {}),
+        createdAt,
+        updatedAt,
+        completedAt,
+        revision,
+        daysSinceUpdate,
+        sha1,
+      });
+    }
   }
 
   let milestoneSnapshots: MilestoneSnapshotEntry[] | undefined;
@@ -187,7 +237,9 @@ export async function generateProjectSnapshot(
           (t.milestone.toLowerCase() === String(m.id).toLowerCase() ||
             t.milestone.toLowerCase() === m.title.toLowerCase())
       );
-      const completed = mTickets.filter((t) => t.status === 'Completed').length;
+      const completed = mTickets.filter(
+        (t) => t.status === 'Completed' || (t.status as string) === 'Complete'
+      ).length;
       const total = mTickets.length;
       const progressPercent = total > 0 ? Math.round((completed / total) * 100) : 0;
       return {
@@ -238,8 +290,6 @@ export async function generateProjectSnapshot(
       try { fs.unlinkSync(tempSnapshotPath); } catch {}
     }
   }
-
-
 
   return snapshot;
 }

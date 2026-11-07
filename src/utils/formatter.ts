@@ -1,4 +1,4 @@
-import { EsedreTicket, TicketPriority, Milestone, TicketLease } from '../types.js';
+import { EsedreTicket, TicketPriority, TicketType, TicketStatus, MilestoneStatus, Milestone, TicketLease } from '../types.js';
 
 const isColorSupported = !process.env.NO_COLOR && (process.stdout.isTTY || process.env.FORCE_COLOR);
 
@@ -15,6 +15,19 @@ export const colors = {
 };
 
 /**
+ * Checks whether an input value represents an explicit clear sentinel
+ * (null, empty string, "none", "clear", or "null" case-insensitively).
+ */
+export function isClearSentinel(val: unknown): boolean {
+  if (val === null) return true;
+  if (typeof val === 'string') {
+    const trimmed = val.trim().toLowerCase();
+    return trimmed === '' || trimmed === 'none' || trimmed === 'clear' || trimmed === 'null';
+  }
+  return false;
+}
+
+/**
  * Normalizes priority casing to canonical 'Critical' | 'High' | 'Medium' | 'Low'.
  */
 export function normalizePriority(val?: string | null): TicketPriority | undefined {
@@ -24,7 +37,84 @@ export function normalizePriority(val?: string | null): TicketPriority | undefin
   if (lower === 'high') return 'High';
   if (lower === 'medium') return 'Medium';
   if (lower === 'low') return 'Low';
+
   return undefined;
+}
+
+/**
+ * Normalizes ticket type/category casing to canonical 'Feature' | 'Platform' | 'Tools' | 'Idea' | 'Bug'.
+ */
+export function normalizeTicketType(val?: string | null): TicketType | undefined {
+  if (!val) return undefined;
+  const lower = String(val).trim().toLowerCase();
+  if (lower === 'feature') return 'Feature';
+  if (lower === 'platform') return 'Platform';
+  if (lower === 'tools' || lower === 'tool') return 'Tools';
+  if (lower === 'idea') return 'Idea';
+  if (lower === 'bug') return 'Bug';
+  return undefined;
+}
+
+export function validateTicketType(val: string): TicketType {
+  const norm = normalizeTicketType(val);
+  if (!norm) {
+    throw new Error(`Invalid ticket type "${val}". Allowed values: Feature, Platform, Tools, Idea, Bug`);
+  }
+  return norm;
+}
+
+/**
+ * Normalizes ticket status casing and common shorthand aliases to canonical
+ * 'Planned' | 'In Development' | 'Completed' | 'Rejected'.
+ */
+export function normalizeTicketStatus(val?: string | null): TicketStatus | undefined {
+  if (!val) return undefined;
+  const lower = String(val).trim().toLowerCase();
+  if (lower === 'planned') return 'Planned';
+  if (
+    lower === 'in development' ||
+    lower === 'in-development' ||
+    lower === 'in_development' ||
+    lower === 'in-dev' ||
+    lower === 'indev' ||
+    lower === 'in progress' ||
+    lower === 'in-progress' ||
+    lower === 'in_progress'
+  ) {
+    return 'In Development';
+  }
+  if (lower === 'completed' || lower === 'complete') return 'Completed';
+  if (lower === 'rejected') return 'Rejected';
+  return undefined;
+}
+
+export function validateTicketStatus(val: string): TicketStatus {
+  const norm = normalizeTicketStatus(val);
+  if (!norm) {
+    throw new Error(`Invalid ticket status "${val}". Allowed values: Planned, In Development, Completed, Rejected`);
+  }
+  return norm;
+}
+
+/**
+ * Normalizes milestone status casing to canonical 'Planned' | 'Active' | 'Completed' | 'Closed'.
+ */
+export function normalizeMilestoneStatus(val?: string | null): MilestoneStatus | undefined {
+  if (!val) return undefined;
+  const lower = String(val).trim().toLowerCase();
+  if (lower === 'planned') return 'Planned';
+  if (lower === 'active') return 'Active';
+  if (lower === 'completed' || lower === 'complete') return 'Completed';
+  if (lower === 'closed') return 'Closed';
+  return undefined;
+}
+
+export function validateMilestoneStatus(val: string): MilestoneStatus {
+  const norm = normalizeMilestoneStatus(val);
+  if (!norm) {
+    throw new Error(`Invalid milestone status "${val}". Allowed values: Planned, Active, Completed, Closed`);
+  }
+  return norm;
 }
 
 /**
@@ -32,11 +122,113 @@ export function normalizePriority(val?: string | null): TicketPriority | undefin
  * and double-encoded UTF-8 characters to clean ASCII hyphens and quotes.
  * Guarantees consistent terminal output without mojibake across all platforms.
  */
+const CP1252_HIGH_BYTE_TO_UTF8_OFFSET: Record<string, number> = {
+  '\u20ac': 0x80,
+  '\u0081': 0x81,
+  '\u201a': 0x82,
+  '\u0192': 0x83,
+  '\u201e': 0x84,
+  '\u2026': 0x85,
+  '\u2020': 0x86,
+  '\u2021': 0x87,
+  '\u02c6': 0x88,
+  '\u2030': 0x89,
+  '\u0160': 0x8a,
+  '\u2039': 0x8b,
+  '\u0152': 0x8c,
+  '\u008d': 0x8d,
+  '\u017d': 0x8e,
+  '\u008f': 0x8f,
+  '\u0090': 0x90,
+  '\u2018': 0x91,
+  '\u2019': 0x92,
+  '\u201c': 0x93,
+  '\u201d': 0x94,
+  '\u2022': 0x95,
+  '\u2013': 0x96,
+  '\u2014': 0x97,
+  '\u02dc': 0x98,
+  '\u2122': 0x99,
+  '\u0161': 0x9a,
+  '\u203a': 0x9b,
+  '\u0153': 0x9c,
+  '\u009d': 0x9d,
+  '\u017e': 0x9e,
+  '\u0178': 0x9f,
+};
+
+function decodeTwoByteUtf8MojibakePass(input: string): string {
+  return input
+    .replace(
+      /\u00c3([\u0080-\u00bf\u20ac\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u017d\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u017e\u0178])/g,
+      (_match, second: string) => {
+        const rawCode = second.charCodeAt(0);
+        const lowByte =
+          rawCode >= 0x80 && rawCode <= 0xbf
+            ? rawCode
+            : CP1252_HIGH_BYTE_TO_UTF8_OFFSET[second];
+        if (lowByte === undefined) return _match;
+        return String.fromCharCode(lowByte + 0x40);
+      }
+    )
+    .replace(/\u00c2([\u00a0-\u00bf])/g, (_match, second: string) =>
+      second === '\u00a0' ? ' ' : second
+    );
+}
+
+/**
+ * Normalizes complexity values (including legacy numeric ratings '1'-'5')
+ * to canonical 'Low' | 'Medium' | 'High'.
+ */
+export function normalizeComplexity(val?: string | number | null): string {
+  if (val === undefined || val === null) return 'Medium';
+  const rawCleaned = normalizeDashesAndMojibake(String(val)).trim();
+  const cleaned = rawCleaned.toLowerCase();
+  if (!cleaned || cleaned === 'undefined' || cleaned === 'null') return 'Medium';
+  if (
+    cleaned === 'low' ||
+    cleaned === '1' ||
+    cleaned === '2' ||
+    cleaned === 'trivial' ||
+    cleaned === 'easy' ||
+    cleaned === 'simple'
+  ) {
+    return 'Low';
+  }
+  if (
+    cleaned === 'medium' ||
+    cleaned === 'med' ||
+    cleaned === '3' ||
+    cleaned === 'moderate' ||
+    cleaned === 'normal'
+  ) {
+    return 'Medium';
+  }
+  if (
+    cleaned === 'high' ||
+    cleaned === '4' ||
+    cleaned === '5' ||
+    cleaned === 'complex' ||
+    cleaned === 'hard' ||
+    cleaned === 'critical'
+  ) {
+    return 'High';
+  }
+  return rawCleaned;
+}
+
 export function normalizeDashesAndMojibake(text: string): string;
 export function normalizeDashesAndMojibake<T>(val: T): T;
 export function normalizeDashesAndMojibake(val: any): any {
   if (typeof val !== 'string') return val;
-  return val
+  const punctuationCleaned = val
+    // Double-encoded UTF-8 mojibake for dashes
+    .replace(/Ã¢â‚¬â€œ|Ã¢â‚¬â€”/g, '-')
+    // Double-encoded UTF-8 mojibake for quotes
+    .replace(/Ã¢â‚¬[Ëœâ„¢]/g, "'")
+    .replace(/Ã¢â‚¬[Å“Â ]/g, '"');
+  const decoded = decodeTwoByteUtf8MojibakePass(decodeTwoByteUtf8MojibakePass(punctuationCleaned));
+  return decoded
     // Double-encoded UTF-8 mojibake for dashes
     .replace(/Ã¢â‚¬â€œ|Ã¢â‚¬â€”/g, '-')
     // Double-encoded UTF-8 mojibake for quotes
@@ -66,7 +258,7 @@ export function normalizeTicketFields(ticket: EsedreTicket): EsedreTicket {
         delete ticket.meta.estimatedEffort;
       }
     }
-    if (ticket.meta.complexity) ticket.meta.complexity = normalizeDashesAndMojibake(ticket.meta.complexity);
+    if (ticket.meta.complexity) ticket.meta.complexity = normalizeComplexity(ticket.meta.complexity);
     if (ticket.meta.milestone) ticket.meta.milestone = normalizeDashesAndMojibake(ticket.meta.milestone);
     if (ticket.meta.featureFlag) ticket.meta.featureFlag = normalizeDashesAndMojibake(ticket.meta.featureFlag);
     if (ticket.meta.inheritedFeatureFlag) ticket.meta.inheritedFeatureFlag = normalizeDashesAndMojibake(ticket.meta.inheritedFeatureFlag);
@@ -81,6 +273,7 @@ export function normalizeTicketFields(ticket: EsedreTicket): EsedreTicket {
   }
   if (ticket.detail) {
     if (ticket.detail.title) ticket.detail.title = normalizeDashesAndMojibake(ticket.detail.title);
+    if (ticket.detail.complexity) ticket.detail.complexity = normalizeComplexity(ticket.detail.complexity);
     if (ticket.detail.estimatedEffort) {
       ticket.detail.estimatedEffort = normalizeDashesAndMojibake(ticket.detail.estimatedEffort);
       const lower = ticket.detail.estimatedEffort.trim().toLowerCase();

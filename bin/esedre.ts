@@ -5,7 +5,8 @@ import path from 'node:path';
 import { FilesystemStorageAdapter } from '../src/storage/filesystem.js';
 import { StorageAdapter } from '../src/storage/adapter.js';
 import { SecurityFilter } from '../src/securityFilter.js';
-import { formatTicketListTable, formatTicketDetail, formatMilestoneListTable, formatLeaseListTable, colors, normalizeDashesAndMojibake, normalizePriority } from '../src/utils/formatter.js';
+import { formatTicketListTable, formatTicketDetail, formatMilestoneListTable, formatLeaseListTable, colors, normalizeDashesAndMojibake, normalizePriority, isClearSentinel, validateTicketType } from '../src/utils/formatter.js';
+import { parseCliArgs, ParsedCliArgs } from '../src/utils/cliArgs.js';
 import { EsedreMcpServer } from '../src/mcp/server.js';
 import { handleAntigravityPreToolHookCli } from '../src/mcp/antigravityHook.js';
 import { TicketType, TicketCategory, TicketStatus, TicketPriority, Milestone, MilestoneStatus, ProjectDescriptor, EsedreConflictError, EsedreLeaseConflictError, TicketLinkRelation } from '../src/types.js';
@@ -52,6 +53,8 @@ import {
 } from '../src/migrations/index.js';
 import { startGatewayCluster } from '../src/server/gateway.js';
 import { startDaemon, stopDaemon, getDaemonStatus, printDaemonLogs } from '../src/server/daemon.js';
+function resolveCliFilePath(rawPath: string): string { const expanded = expandHome(rawPath.trim()); return path.resolve(process.platform === 'win32' ? expanded : expanded.replace(/\\/g, '/')); }
+function normalizeCliMultiline(val: string): string { const cleaned = normalizeDashesAndMojibake(val).replace(/\r\n/g, '\n').replace(/\r/g, '\n'); const unescaped = cleaned.replace(/\\r\\n/g, '\n').replace(/\\n\\n/g, '\n\n').replace(/\\n(?=\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```))/g, '\n').replace(/([.!?;\)\]`"'])\s*\\n/g, '$1\n'); return /[A-Za-z]:\\|\.\\|\.\.\\/.test(unescaped) ? unescaped : unescaped.replace(/\\n/g, '\n'); }
 
 function printHelp(config?: any): void {
   const port = config?.port || DEFAULT_ESEDRE_PORT;
@@ -85,8 +88,8 @@ ${colors.bold}ROADMAP COMMANDS (Pair Programming & LLM Agents):${colors.reset}
   ${colors.bold}create${colors.reset}      --title "..." [-p|--project <code>] [-t|--type <type>] [-P|--priority <prio>] [--complexity <c>] [--effort "<e>"] [--summary "<s>"] [--detail "<md>"] [--file <path>] [--plan "<md>"] [--plan-file <path>] [--json]
                Mint a new roadmap ticket with sequential numeric ID.
 
-  ${colors.bold}update${colors.reset}      <id> [-s|--status <status>] [-t|--type <type>] [-P|--priority <prio>] [--title "..."] [--complexity <c>] [--effort "<e>"] [--detail "<md>"] [--file <path>] [--plan "<md>"] [--plan-file <path>] [--in-dev] [--flag <name>] [--last-hash <sha1>] [--force] [--json]
-               Mutate ticket status, type, priority, title, complexity, effort, active state, or feature flag with OCC protection.
+  ${colors.bold}update${colors.reset}      <id> [-s|--status <status>] [-t|--type <type>] [-P|--priority <prio>] [--title "..."] [--complexity <c>] [--effort "<e>"] [--summary "<s>"] [--detail "<md>"] [--file <path>] [--plan "<md>"] [--plan-file <path>] [--in-dev] [--flag <name>] [--last-hash <sha1>] [--force] [--json]
+               Mutate ticket status, type, priority, title, complexity, effort, summary, detail, plan, active state, or feature flag with OCC protection.
 
   ${colors.bold}comment${colors.reset}     <id> ["<text>"] [--file <path>] [--text "..."] [--author "..."] [--json]
                Append a research finding, test verification, or note to ticket history.
@@ -171,6 +174,7 @@ ${colors.bold}OPTIONS:${colors.reset}
   --to <targetId>      Target ticket ID for link/unlink commands.
   --blocked            Filter tickets that are blocked by uncompleted tickets.
   --linked-to <key>    Filter tickets that are linked to a specific ticket.
+  --summary "<s>"      Concise feature or bug summary during create or update.
   --detail "<md>"      Specification markdown for ticket detail during create or update.
   --file <path>        Path to markdown file for detail (create, update), implementation plan (plan), or comment (comment).
   --plan "<md>"        Implementation plan markdown for ticket during create or update.
@@ -191,7 +195,9 @@ ${colors.bold}TYPICAL AGENT WORKFLOW:${colors.reset}
 `);
 }
 
-function parseArgs(rawArgs: string[]): { command: string; positionals: string[]; flags: Record<string, string | boolean> } {
+function parseArgs(rawArgs: string[]): ParsedCliArgs {
+  return parseCliArgs(rawArgs);
+  const multiFlags: Record<string, string[]> = {};
   const positionals: string[] = [];
   const flags: Record<string, string | boolean> = {};
 
@@ -204,6 +210,8 @@ function parseArgs(rawArgs: string[]): { command: string; positionals: string[];
       const next = rawArgs[i + 1];
       if (next !== undefined && !next.startsWith('-')) {
         flags[key] = next;
+        if (!multiFlags[key]) multiFlags[key] = [];
+        multiFlags[key].push(next);
         i++;
       } else {
         flags[key] = true;
@@ -218,6 +226,8 @@ function parseArgs(rawArgs: string[]): { command: string; positionals: string[];
         const next = rawArgs[i + 1];
         if (next !== undefined && !next.startsWith('-')) {
           flags[key] = next;
+        if (!multiFlags[key]) multiFlags[key] = [];
+        multiFlags[key].push(next);
           i++;
         } else {
           flags[key] = true;
@@ -246,7 +256,7 @@ function parseArgs(rawArgs: string[]): { command: string; positionals: string[];
   if (flags['f'] && !flags['foreground']) flags['foreground'] = flags['f'];
   if (flags['a'] && !flags['all']) flags['all'] = flags['a'];
 
-  return { command, positionals, flags };
+  return { command, positionals, flags, multiFlags };
 }
 
 function printDuplicateProjectWarnings(storage: StorageAdapter, isJson: boolean): void {
@@ -259,6 +269,64 @@ function printDuplicateProjectWarnings(storage: StorageAdapter, isJson: boolean)
   }
 }
 
+async function refreshCliSnapshotAfterMutation(
+  storage: StorageAdapter,
+  discovered: { workspaceRoot: string; config?: any },
+  projectCodes: (string | undefined | null)[]
+): Promise<void> {
+  const seen = new Set<string>();
+  for (const rawCode of projectCodes) {
+    if (!rawCode || typeof rawCode !== 'string' || !rawCode.trim()) continue;
+    const code = rawCode.trim();
+    const lower = code.toLowerCase();
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    try {
+      const targetOutputDir =
+        (discovered.config?.projectCode &&
+        discovered.config.projectCode.toLowerCase() === lower
+          ? discovered.workspaceRoot
+          : storage.getProjectRepoRoot?.(code)) ||
+        (fs.existsSync(path.join(discovered.workspaceRoot, '.esedre')) ? discovered.workspaceRoot : undefined);
+      if (targetOutputDir && fs.existsSync(targetOutputDir)) {
+        await generateProjectSnapshot(storage, code, targetOutputDir);
+      }
+    } catch {}
+  }
+}
+
+function parseCreateLinkSpecs(
+  multiFlags: Record<string, string[]>,
+  flags: Record<string, string | boolean>
+): Array<{ relation: TicketLinkRelation; targetTicketId: string }> | undefined {
+  const rawEntries: string[] = [
+    ...(multiFlags['link'] || []),
+    ...(multiFlags['links'] || []),
+  ];
+  if (rawEntries.length === 0) {
+    if (typeof flags['link'] === 'string') rawEntries.push(flags['link']);
+    if (typeof flags['links'] === 'string') rawEntries.push(flags['links']);
+  }
+  const specs: Array<{ relation: TicketLinkRelation; targetTicketId: string }> = [];
+  for (const raw of rawEntries) {
+    for (const part of raw.split(',')) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+      const colonIdx = trimmed.indexOf(':');
+      if (colonIdx > 0) {
+        const rel = trimmed.slice(0, colonIdx).trim().toLowerCase().replace(/_/g, '-') as TicketLinkRelation;
+        const target = trimmed.slice(colonIdx + 1).trim();
+        if (target) {
+          specs.push({ relation: rel, targetTicketId: target });
+        }
+      } else {
+        specs.push({ relation: 'relates-to', targetTicketId: trimmed });
+      }
+    }
+  }
+  return specs.length > 0 ? specs : undefined;
+}
+
 async function main(): Promise<void> {
   // Ensure UTF-8 output encoding for standard streams
   if (process.stdout && typeof (process.stdout as any).setDefaultEncoding === 'function') {
@@ -269,7 +337,12 @@ async function main(): Promise<void> {
   }
 
   const rawArgs = process.argv.slice(2);
-  const { command, positionals, flags } = parseArgs(rawArgs);
+  const parsedCli = parseArgs(rawArgs);
+  const { command, positionals, flags, multiFlags } = parsedCli;
+  if (parsedCli.error) {
+    console.error(`${colors.red}Error: ${parsedCli.error}${colors.reset}`);
+    process.exit(1);
+  }
   initLogger({ debug: Boolean(flags['debug']) });
 
   try {
@@ -799,7 +872,7 @@ async function main(): Promise<void> {
           if (!isProjectAuthorized(cleanCode, discovered.config?.allowedProjects)) {
             throw new EsedreAuthorizationError(cleanCode);
           }
-          const migration = await upgradeProjectData(rawStorage, cleanCode);
+          const migration = await upgradeProjectData(rawStorage, cleanCode, { forceStamp: isForce });
           let snapshotTickets: number | undefined;
           const targetSnapshotDir =
             discovered.config?.projectCode &&
@@ -866,7 +939,7 @@ async function main(): Promise<void> {
         const rawTargetStorage = targetDir === discovered.workspaceRoot
           ? rawStorage
           : new FilesystemStorageAdapter(targetDir, targetDiscovered.config);
-        const migration = await upgradeProjectData(rawTargetStorage, projectCode);
+        const migration = await upgradeProjectData(rawTargetStorage, projectCode, { forceStamp: isForce });
         const targetStorage = targetDir === discovered.workspaceRoot
           ? storage
           : new SecurityFilter(rawTargetStorage, targetDiscovered.config);
@@ -925,7 +998,8 @@ async function main(): Promise<void> {
           discovered.config.projectCode.toLowerCase() === projectCode.toLowerCase()
             ? discovered.workspaceRoot
             : storage.getProjectRepoRoot?.(projectCode)) || discovered.workspaceRoot;
-        const snapshot = await generateProjectSnapshot(storage, projectCode, targetOutputDir);
+        const includePlans = Boolean(flags['include-plans'] || flags['includePlans']);
+        const snapshot = await generateProjectSnapshot(storage, projectCode, targetOutputDir, { includePlans });
         if (isJson) {
           console.log(JSON.stringify(snapshot, null, 2));
         } else {
@@ -945,7 +1019,7 @@ async function main(): Promise<void> {
           workspaceRoot: discovered.workspaceRoot,
           config: discovered.config,
           projectCode: discovered.config?.projectCode,
-          useGlobalContextBridge: Boolean(discovered.isGlobalFallback),
+          useGlobalContextBridge: true,
         });
         mcpServer.start();
         return;
@@ -988,7 +1062,7 @@ async function main(): Promise<void> {
           console.log(`  • Portfolio:   http://localhost:${ports.gateway}/app?project=all`);
           console.log(`  • Press Ctrl+C to stop.`);
 
-          process.on('SIGINT', async () => {
+          const shutdownCluster = async () => { console.log(`\n${colors.dim}Shutting down Esedre cluster...${colors.reset}`); await cluster.close(); process.exit(0); }; process.on('SIGTERM', shutdownCluster); process.on('SIGINT', async () => {
             console.log(`\n${colors.dim}Shutting down Esedre cluster...${colors.reset}`);
             await cluster.close();
             process.exit(0);
@@ -1213,12 +1287,13 @@ async function main(): Promise<void> {
         }
         const search = (flags['search'] as string) || undefined;
         const milestone = (flags['milestone'] as string) || (flags['m'] as string) || undefined;
-        const isBlocked = flags['blocked'] ? true : undefined;
+        const featureFlag = ((flags['flag'] as string) || (flags['feature-flag'] as string)) || undefined;
+        const isBlocked = flags['blocked'] !== undefined ? Boolean(flags['blocked']) : undefined;
         const linkedTo = (flags['linked-to'] as string) || (flags['linkedTo'] as string) || undefined;
         const leased = flags['leased'] !== undefined ? Boolean(flags['leased']) : undefined;
         const leasedBy = (flags['leased-by'] as string) || (flags['leasedBy'] as string) || undefined;
 
-        const tickets = await storage.listTickets({ project, status, type, category, priority, milestone, search, isBlocked, linkedTo, leased, leasedBy });
+        const tickets = await storage.listTickets({ project, status, type, category, priority, milestone, featureFlag, search, isBlocked, linkedTo, leased, leasedBy });
         if (isJson) {
           console.log(JSON.stringify(tickets.map((t) => ({
             id: t.meta.id,
@@ -1301,23 +1376,27 @@ async function main(): Promise<void> {
         const isForce = Boolean(flags['force']);
         const lastHash = isForce ? undefined : (flags['last-hash'] as string);
 
-        if (setPlan || filePath) {
-          let content = setPlan;
+        if (flags['set'] !== undefined || filePath) {
+          let content = setPlan !== undefined ? normalizeCliMultiline(String(setPlan)) : '';
           if (filePath) {
-            if (!fs.existsSync(filePath)) {
+            const resolvedPlanFile = resolveCliFilePath(filePath); if (!fs.existsSync(resolvedPlanFile)) {
               console.error(`${colors.red}Error: Plan file "${filePath}" not found.${colors.reset}`);
               process.exit(1);
             }
-            content = fs.readFileSync(filePath, 'utf-8');
+            content = normalizeDashesAndMojibake(fs.readFileSync(resolveCliFilePath(filePath), 'utf-8')).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
           }
           await storage.savePlan(id, content, lastHash);
+          const updatedAfterPlan = await storage.getTicket(id);
+          await refreshCliSnapshotAfterMutation(storage, discovered, [
+            updatedAfterPlan?.projectDescriptor?.code || updatedAfterPlan?.meta?.project || projectFlag || discovered.config?.projectCode,
+          ]);
           if (isJson) {
             const updated = await storage.getTicket(id);
             console.log(JSON.stringify({
               success: true,
               ticketId: id,
               project: updated?.projectDescriptor?.code || updated?.meta?.project || 'UNASSIGNED',
-              planMarkdown: content,
+              planMarkdown: isClearSentinel(content) ? null : content,
               sha1: updated?.sha1 || updated?.meta?.sha1,
             }, null, 2));
           } else {
@@ -1346,13 +1425,13 @@ async function main(): Promise<void> {
 
       case 'create': {
         const rawTitle = flags['title'] as string;
-        if (!rawTitle) {
+        if (!rawTitle || !String(rawTitle).trim()) {
           console.error(`${colors.red}Error: --title is required${colors.reset}`);
           process.exit(1);
         }
         const title = normalizeDashesAndMojibake(rawTitle);
 
-        const type = ((flags['type'] as string) || (flags['category'] as string) || 'Feature') as TicketType;
+        const type = validateTicketType((flags['type'] as string) || (flags['category'] as string) || 'Feature');
         const category = type;
         const rawPriority = flags['priority'] as string;
         let priority: TicketPriority | undefined;
@@ -1372,7 +1451,7 @@ async function main(): Promise<void> {
         }
         const complexity = normalizeDashesAndMojibake((flags['complexity'] as string) || 'Medium');
         const estimatedEffort = normalizeDashesAndMojibake((flags['effort'] as string) || '2.0 - 4.0 hours');
-        const summary = flags['summary'] ? normalizeDashesAndMojibake(flags['summary'] as string) : undefined;
+        const summary = flags['summary'] ? normalizeCliMultiline(flags['summary'] as string) : undefined;
         const submittedBy = (flags['author'] as string) || 'Developer';
 
         const val = validateProjectCode(projectCode);
@@ -1384,10 +1463,11 @@ async function main(): Promise<void> {
         const detailArg = flags['detail'] as string;
         const fileArg = flags['file'] as string;
         const milestone = (flags['milestone'] as string) || (flags['m'] as string) || undefined;
+        const featureFlag = ((flags['flag'] as string) || (flags['feature-flag'] as string)) || undefined;
 
-        let detailMarkdown: string | undefined = detailArg ? normalizeDashesAndMojibake(detailArg) : undefined;
+        let detailMarkdown: string | undefined = detailArg ? normalizeCliMultiline(detailArg) : undefined;
         if (fileArg) {
-          const filePath = path.resolve(fileArg);
+          const filePath = resolveCliFilePath(fileArg);
           if (!fs.existsSync(filePath)) {
             if (isJson) {
               console.error(JSON.stringify({ error: `Detail file "${fileArg}" not found` }));
@@ -1401,9 +1481,9 @@ async function main(): Promise<void> {
 
         const planArg = flags['plan'] as string;
         const planFileArg = (flags['plan-file'] || flags['planFile']) as string;
-        let planMarkdown: string | undefined = planArg ? normalizeDashesAndMojibake(planArg) : undefined;
+        let planMarkdown: string | undefined = planArg ? normalizeCliMultiline(planArg) : undefined;
         if (planFileArg) {
-          const planFilePath = path.resolve(planFileArg);
+          const planFilePath = resolveCliFilePath(planFileArg);
           if (!fs.existsSync(planFilePath)) {
             if (isJson) {
               console.error(JSON.stringify({ error: `Plan file "${planFileArg}" not found` }));
@@ -1430,6 +1510,14 @@ async function main(): Promise<void> {
           plan: planMarkdown,
           planMarkdown,
           milestone,
+          featureFlag,
+          links: parseCreateLinkSpecs(multiFlags, flags),
+        });
+        await refreshCliSnapshotAfterMutation(storage, discovered, [
+          created.projectDescriptor?.code || created.meta.project || projectCode,
+          ...(created.meta.links || []).map((l) => l.targetProject),
+        ]);
+        if (false) ({
         });
 
         if (isJson) {
@@ -1450,11 +1538,11 @@ async function main(): Promise<void> {
         const lookupKey = projectFlag && /^\d+$/.test(idStr) ? `${projectFlag}-${idStr}` : idStr;
 
         const status = flags['status'] as TicketStatus;
-        const title = flags['title'] ? normalizeDashesAndMojibake(flags['title'] as string) : undefined;
+        const title = flags['title'] !== undefined ? normalizeDashesAndMojibake(String(flags['title'])) : undefined;
         const complexity = flags['complexity'] ? normalizeDashesAndMojibake(flags['complexity'] as string) : undefined;
         const effort = flags['effort'] ? normalizeDashesAndMojibake(flags['effort'] as string) : undefined;
         const inDev = flags['in-dev'] !== undefined ? Boolean(flags['in-dev']) : undefined;
-        const flag = flags['flag'] as string;
+        const flag = (flags['flag'] !== undefined ? flags['flag'] : flags['feature-flag']) as string | undefined;
         const rawMilestone = flags['milestone'] !== undefined ? flags['milestone'] : flags['m'];
         const isForce = Boolean(flags['force']);
         const lastHash = isForce ? undefined : (flags['last-hash'] as string);
@@ -1476,18 +1564,21 @@ async function main(): Promise<void> {
             updates.priority = norm;
           }
         }
-        if (title) updates.title = title;
+        if (title !== undefined) updates.title = title;
         if (complexity) updates.complexity = complexity;
         if (effort) updates.estimatedEffort = effort;
         if (inDev !== undefined) updates.isActivePlanning = inDev;
-        if (flag) updates.featureFlag = flag;
+        if (flag !== undefined) updates.featureFlag = String(flag);
         if (rawMilestone !== undefined) updates.milestone = rawMilestone as string;
+        if (flags['summary'] !== undefined && typeof flags['summary'] === 'string') {
+          updates.summary = normalizeCliMultiline(flags['summary']);
+        }
 
         const detailArg = flags['detail'] as string;
         const fileArg = flags['file'] as string;
-        let detailMarkdown: string | undefined = detailArg ? normalizeDashesAndMojibake(detailArg) : undefined;
+        let detailMarkdown: string | undefined = detailArg ? normalizeCliMultiline(detailArg) : undefined;
         if (fileArg) {
-          const filePath = path.resolve(fileArg);
+          const filePath = resolveCliFilePath(fileArg);
           if (!fs.existsSync(filePath)) {
             if (isJson) {
               console.error(JSON.stringify({ error: `Detail file "${fileArg}" not found` }));
@@ -1502,9 +1593,9 @@ async function main(): Promise<void> {
 
         const planArg = flags['plan'] as string;
         const planFileArg = (flags['plan-file'] || flags['planFile']) as string;
-        let planMarkdown: string | undefined = planArg ? normalizeDashesAndMojibake(planArg) : undefined;
+        let planMarkdown: string | undefined = planArg ? normalizeCliMultiline(planArg) : undefined;
         if (planFileArg) {
-          const planFilePath = path.resolve(planFileArg);
+          const planFilePath = resolveCliFilePath(planFileArg);
           if (!fs.existsSync(planFilePath)) {
             if (isJson) {
               console.error(JSON.stringify({ error: `Plan file "${planFileArg}" not found` }));
@@ -1520,7 +1611,14 @@ async function main(): Promise<void> {
           updates.plan = planMarkdown;
         }
 
+        if (Object.keys(updates).length === 0) {
+          console.error(`${colors.red}Error: No update fields specified for Ticket #${lookupKey}${colors.reset}`);
+          process.exit(1);
+        }
         const updated = await storage.updateTicket(lookupKey, updates, lastHash);
+        await refreshCliSnapshotAfterMutation(storage, discovered, [
+          updated.projectDescriptor?.code || updated.meta.project || projectFlag || discovered.config?.projectCode,
+        ]);
         if (isJson) {
           console.log(JSON.stringify(updated, null, 2));
         } else {
@@ -1591,7 +1689,7 @@ async function main(): Promise<void> {
 
         if (subAction === 'create') {
           const rawTitle = (flags['title'] as string) || positionals.slice(1).join(' ').trim();
-          if (!rawTitle) {
+          if (!rawTitle || !String(rawTitle).trim()) {
             console.error(`${colors.red}Error: --title is required to create a milestone (e.g. ese milestone create --title "v0.2.0")${colors.reset}`);
             process.exit(1);
           }
@@ -1630,8 +1728,8 @@ async function main(): Promise<void> {
             process.exit(1);
           }
           const updates: any = {};
-          if (flags['title']) updates.title = flags['title'] as string;
-          if (flags['desc'] || flags['description']) updates.description = (flags['desc'] || flags['description']) as string;
+          if (flags['title'] !== undefined) updates.title = String(flags['title']);
+          if (flags['desc'] !== undefined || flags['description'] !== undefined) updates.description = String(flags['desc'] !== undefined ? flags['desc'] : flags['description']);
           if (flags['status']) updates.status = flags['status'];
           if (flags['flag'] !== undefined || flags['feature-flag'] !== undefined) {
             updates.featureFlag = flags['flag'] !== undefined ? flags['flag'] : flags['feature-flag'];
@@ -1685,7 +1783,7 @@ async function main(): Promise<void> {
         let text: string | undefined;
         const filePath = flags['file'] as string | undefined;
         if (filePath) {
-          const resolvedPath = path.resolve(process.cwd(), filePath);
+          const resolvedPath = resolveCliFilePath(filePath);
           if (!fs.existsSync(resolvedPath)) {
             console.error(`${colors.red}Error: File not found: ${filePath}${colors.reset}`);
             process.exit(1);
@@ -1702,7 +1800,7 @@ async function main(): Promise<void> {
           text = fileContent;
         } else {
           const positionalText = positionals.slice(1).join(' ').trim();
-          text = (flags['text'] as string) || (positionalText || undefined);
+          const rawText = (flags['text'] as string) || (positionalText || undefined); text = rawText ? normalizeCliMultiline(rawText) : undefined;
         }
 
         if (!text) {
@@ -1711,7 +1809,11 @@ async function main(): Promise<void> {
         }
         const author = (flags['author'] as string) || 'User';
 
-        const comment = await storage.addComment(lookupKey, { author, text });
+          const comment = await storage.addComment(lookupKey, { author, text });
+          const commentedTicket = await storage.getTicket(lookupKey);
+          await refreshCliSnapshotAfterMutation(storage, discovered, [
+            commentedTicket?.projectDescriptor?.code || commentedTicket?.meta?.project || projectFlag || discovered.config?.projectCode,
+          ]);
         if (isJson) {
           console.log(JSON.stringify(comment, null, 2));
         } else {
@@ -1721,6 +1823,77 @@ async function main(): Promise<void> {
       }
 
       case 'link': {
+        let sourceId = positionals[0];
+        let relationArg = flags['relation'] as string;
+        const targetIds: string[] = [];
+        if (typeof flags['to'] === 'string' && flags['to'].trim()) {
+          targetIds.push(...flags['to'].split(',').map((s) => s.trim()).filter(Boolean));
+        }
+
+        const validRels = ['blocks', 'blocked-by', 'relates-to', 'parent-of', 'child-of', 'duplicates', 'duplicated-by'];
+        if (positionals.length >= 2) {
+          const secondNorm = positionals[1].toLowerCase().replace(/_/g, '-');
+          if (!flags['relation'] && validRels.includes(secondNorm)) {
+            relationArg = secondNorm;
+            targetIds.push(...positionals.slice(2));
+          } else {
+            relationArg = relationArg || 'relates-to';
+            targetIds.push(...positionals.slice(1));
+          }
+        }
+
+        if (!sourceId || targetIds.length === 0) {
+          console.error(`${colors.red}Error: Both source and target ticket IDs are required.${colors.reset}`);
+          console.error(`${colors.dim}Usage: ese link <sourceId> <relation> <targetId...> [options]${colors.reset}`);
+          console.error(`${colors.dim}Relations: blocks, blocked-by, relates-to, parent-of, child-of, duplicates, duplicated-by${colors.reset}`);
+          process.exit(1);
+        }
+
+        const relation = (relationArg || 'relates-to').toLowerCase().replace(/_/g, '-') as TicketLinkRelation;
+        const project = (flags['project'] as string) || discovered.config?.projectCode;
+        const author = (flags['author'] as string) || 'User';
+
+        const batchRes = storage.addTicketLinks
+          ? await storage.addTicketLinks(sourceId, relation, targetIds, { author, project })
+          : await (async () => {
+              const targets = [];
+              let lastSource!: any;
+              for (const tId of targetIds) {
+                const r = await storage.addTicketLink(sourceId, relation, tId, { author, project });
+                lastSource = r.source;
+                targets.push(r.target);
+              }
+              return { source: lastSource, targets };
+            })();
+
+        await refreshCliSnapshotAfterMutation(storage, discovered, [
+          batchRes.source.projectDescriptor?.code || batchRes.source.meta.project || project,
+          ...batchRes.targets.map((t) => t?.projectDescriptor?.code || t?.meta?.project),
+        ]);
+
+        if (isJson) {
+          console.log(
+            JSON.stringify(
+              {
+                source: batchRes.source,
+                target: batchRes.targets[0] ?? null,
+                targets: batchRes.targets,
+                sourceSha1: batchRes.source.sha1,
+                targetSha1: batchRes.targets[0]?.sha1,
+              },
+              null,
+              2
+            )
+          );
+        } else {
+          console.log(
+            `${colors.green}✔ Linked #${batchRes.source.meta.id} (${batchRes.source.meta.project || 'Project'}) -> ${relation} -> ${targetIds.map((t) => `#${t}`).join(', ')}${colors.reset}`
+          );
+        }
+        return;
+      }
+
+      case '__legacy_link__': {
         let sourceId = positionals[0];
         let relationArg = flags['relation'] as string;
         let targetId = (flags['to'] as string) || positionals[1];
@@ -1761,6 +1934,63 @@ async function main(): Promise<void> {
       }
 
       case 'unlink': {
+        const sourceId = positionals[0];
+        const targetIds: string[] = [];
+        if (typeof flags['to'] === 'string' && flags['to'].trim()) {
+          targetIds.push(...flags['to'].split(',').map((s) => s.trim()).filter(Boolean));
+        }
+        if (positionals.length >= 2) {
+          targetIds.push(...positionals.slice(1));
+        }
+
+        if (!sourceId || targetIds.length === 0) {
+          console.error(`${colors.red}Error: Both source and target ticket IDs are required.${colors.reset}`);
+          console.error(`${colors.dim}Usage: ese unlink <sourceId> <targetId...> [options]${colors.reset}`);
+          process.exit(1);
+        }
+
+        const project = (flags['project'] as string) || discovered.config?.projectCode;
+        const batchRes = storage.removeTicketLinks
+          ? await storage.removeTicketLinks(sourceId, targetIds, { project })
+          : await (async () => {
+              const targets = [];
+              let lastSource!: any;
+              for (const tId of targetIds) {
+                const r = await storage.removeTicketLink(sourceId, tId, { project });
+                lastSource = r.source;
+                targets.push(r.target);
+              }
+              return { source: lastSource, targets };
+            })();
+
+        await refreshCliSnapshotAfterMutation(storage, discovered, [
+          batchRes.source.projectDescriptor?.code || batchRes.source.meta.project || project,
+          ...batchRes.targets.map((t) => t?.projectDescriptor?.code || t?.meta?.project),
+        ]);
+
+        if (isJson) {
+          console.log(
+            JSON.stringify(
+              {
+                source: batchRes.source,
+                target: batchRes.targets[0] ?? null,
+                targets: batchRes.targets,
+                sourceSha1: batchRes.source.sha1,
+                targetSha1: batchRes.targets[0]?.sha1,
+              },
+              null,
+              2
+            )
+          );
+        } else {
+          console.log(
+            `${colors.green}✔ Unlinked #${batchRes.source.meta.id} from ${targetIds.map((t) => `#${t}`).join(', ')}${colors.reset}`
+          );
+        }
+        return;
+      }
+
+      case '__legacy_unlink__': {
         const sourceId = positionals[0];
         const targetId = (flags['to'] as string) || positionals[1];
 
@@ -1847,6 +2077,11 @@ async function main(): Promise<void> {
             force: isForce,
             project,
           });
+          await refreshCliSnapshotAfterMutation(storage, discovered, [
+            project,
+          ]);
+          if (false) ({
+          });
           if (isJson) {
             console.log(JSON.stringify(res, null, 2));
           } else {
@@ -1872,6 +2107,11 @@ async function main(): Promise<void> {
             force: isForce,
             project,
           });
+          await refreshCliSnapshotAfterMutation(storage, discovered, [
+            project,
+          ]);
+          if (false) ({
+          });
           if (isJson) {
             console.log(JSON.stringify({ success: true, lease }, null, 2));
           } else {
@@ -1895,6 +2135,11 @@ async function main(): Promise<void> {
             force: isForce,
             project,
           });
+          await refreshCliSnapshotAfterMutation(storage, discovered, [
+            project,
+          ]);
+          if (false) ({
+          });
           let updatedTicket;
           if (finalStatus) {
             const isTerminalStatus = finalStatus === 'Completed' || finalStatus === 'Rejected';
@@ -1907,6 +2152,13 @@ async function main(): Promise<void> {
             await storage.addComment(res.ticketKey || targetArg, {
               author: holder || res.previousLease?.holder || discovered.config?.defaultAuthor || 'Agent',
               text: notes,
+            });
+          }
+          await refreshCliSnapshotAfterMutation(storage, discovered, [
+            updatedTicket?.projectDescriptor?.code || updatedTicket?.meta?.project || res.previousLease?.project || project,
+          ]);
+          if (false) {
+            ({
             });
           }
           if (isJson) {
@@ -1995,4 +2247,22 @@ async function main(): Promise<void> {
   }
 }
 
-main();
+export function createHotMcpDelegate(options: any) {
+  const workspaceRoot = options?.workspaceRoot || process.cwd();
+  const discovered = findEsedreConfig(workspaceRoot);
+  const effectiveConfig = options?.config || discovered.config;
+  const rawStorage = new FilesystemStorageAdapter(discovered.workspaceRoot, effectiveConfig);
+  const storage = new SecurityFilter(rawStorage, effectiveConfig);
+  return new EsedreMcpServer(storage, {
+    ...options,
+    workspaceRoot: discovered.workspaceRoot,
+    config: effectiveConfig,
+    projectCode: options?.projectCode || effectiveConfig?.projectCode,
+    useGlobalContextBridge: true,
+    isHotDelegate: true,
+  });
+}
+
+if (!import.meta.url.includes('?hotReload=')) {
+  main();
+}

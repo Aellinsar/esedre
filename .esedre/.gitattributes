@@ -1,0 +1,6 @@
+# Ensure POSIX shell wrappers and universal Node launchers always use LF line endings
+ese text eol=lf
+esedre text eol=lf
+*.mjs text eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

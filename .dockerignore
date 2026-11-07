@@ -1,0 +1,14 @@
+node_modules
+dist
+coverage
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*
+!.env.example
+tools/tunnel/token.txt
+tools/tunnel/config.yml
+!tools/tunnel/config.yml.example
+.bridge-dest
+.worktrees

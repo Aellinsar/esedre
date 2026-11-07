@@ -6,7 +6,7 @@ export { CURRENT_ESEDRE_VERSION };
  * Current on-disk data schema version for Esedre project directories, tickets, and milestones.
  * Decoupled from CURRENT_ESEDRE_VERSION so CLI/UI patch releases do not force data schema bumps.
  */
-export const CURRENT_DATA_VERSION = '1.0.0';
+export const CURRENT_DATA_VERSION = '1.1.0';
 
 /**
  * Minimum on-disk data schema version that this Esedre engine can mutate without running 'ese upgrade'.

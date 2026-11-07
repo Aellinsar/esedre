@@ -115,17 +115,17 @@ Core day-to-day workflow commands for scoping, viewing, planning, and verifying 
 
 | Command | Usage | Description |
 |---|---|---|
-| `list` | `ese list [-p\|--project <code\|all>] [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name>] [--blocked] [--leased] [--leased-by <holder>] [--linked-to <key>] [--json]` | List roadmap tickets with optional filters. Defaults to the active project. |
+| `list` | `ese list [-p\|--project <code\|all>] [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name\|none>] [--flag <flag\|none>] [--blocked] [--leased] [--leased-by <holder>] [--linked-to <key>] [--compact] [--include-completed] [--json]` | List roadmap tickets with optional filters. Defaults to the active project. |
 | `get` | `ese get <id...> [--json]` | View ticket specifications, feature/task/fix breakdown, comments, links, active lease, and SHA-1 hash for one or more tickets. |
-| `plan` | `ese plan <id> [--set "<markdown>"] [--file <path>] [--last-hash <h>]` | Read or update the active implementation plan markdown. |
-| `create` | `ese create --title "..." [-p\|--project <code>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name>] [--detail "<md>"] [--file <path>] [--plan "<md>"] [--plan-file <path>]` | Create a new ticket with auto-sequential ID, optional priority, optional milestone, specification markdown, and optional implementation plan. Title strictly capped at 48 chars. |
-| `update` | `ese update <id> [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority\|none>] [-m\|--milestone <name\|none>] [--title "..."] [--detail "<md>"] [--file <path>] [--plan "<md>"] [--plan-file <path>] [--last-hash <h>]` | Update ticket status, type, priority, milestone, title, specification markdown, or implementation plan with optimistic concurrency protection and header sync. |
+| `plan` | `ese plan <id> [--set "<markdown\|none>"] [--file <path>] [--last-hash <h>]` | Read, update, or clear the active implementation plan markdown. |
+| `create` | `ese create --title "..." [-p\|--project <code>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name>] [--flag <flag>] [--detail "<md>"] [--file <path>] [--plan "<md>"] [--plan-file <path>] [--link <rel>:<targetId>]` | Create a new ticket with auto-sequential ID, optional priority, optional milestone, optional feature flag, specification markdown, optional implementation plan, and optional atomic initial links (`--link` repeatable). Title strictly capped at 48 chars. |
+| `update` | `ese update <id> [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority\|none>] [-m\|--milestone <name\|none>] [--flag <flag\|none>] [--title "..."] [--summary "..."] [--detail "<md>"] [--file <path>] [--plan "<md>"] [--plan-file <path>] [--last-hash <h>]` | Update ticket status, type, priority, milestone, feature flag, title, summary, specification markdown, or implementation plan with optimistic concurrency protection and header sync. |
 | `lease` | `ese lease [claim\|renew\|release\|list] [args...]` | Claim, renew, release, or list TTL-backed advisory ticket leases (aliases: `ese claim`, `ese renew`, `ese release`, `ese leases`). |
-| `link` | `ese link <sourceId> <relation> <targetId> [--author "..."]` | Establish a bi-directional link between two tickets. Relations: `relates-to`, `blocks`, `parent-of`, `duplicates`. |
-| `unlink` | `ese unlink <sourceId> <targetId> [--relation <relation>]` | Remove a bi-directional link between two tickets. |
+| `link` | `ese link <sourceId> <relation> <targetId...> [--author "..."]` | Establish bi-directional links between a source ticket and one or more target tickets (`relates-to`, `blocks`, `parent-of`, `duplicates`). |
+| `unlink` | `ese unlink <sourceId> <targetId...> [--relation <relation>]` | Remove bi-directional links between a source ticket and one or more target tickets. |
 | `milestone` | `ese milestone [list\|get\|create\|update\|delete] [args...]` | Manage project milestones and umbrella feature flags with deliverables tracking. |
 | `comment` | `ese comment <id> ["<text>"] [--file <path>] [--text "..."] [--author "..."]` | Append a developer or LLM agent note to ticket history. |
-| `snapshot`, `refresh` | `ese snapshot [--project <code>] [--json]` | Generate or refresh projection `.esedre/snapshot.json` (`totalTickets`, `lastTicketId`, `activeLeases`, `tickets`) for zero-latency agent context. |
+| `snapshot`, `refresh` | `ese snapshot [--project <code>] [--include-plans] [--json]` | Generate or refresh projection `.esedre/snapshot.json` (`totalTickets`, `lastTicketId`, `activeLeases`, `tickets` with `hasPlan: boolean`) for zero-latency agent context. |
 | `projects` | `ese projects [--json]` | List registered projects within authorized scope. |
 
 ### Service Daemon Commands
@@ -203,11 +203,11 @@ To connect Esedre to **Google Antigravity**, **Claude Code**, **Cursor**, or any
 ```
 
 ### Registered Tools
-- `esedre_list_tickets`: List tickets with optional project, status, type, priority, milestone, isBlocked, leased, leasedBy, linkedTo, search, or includePlan filter.
+- `esedre_list_tickets`: List tickets with optional project, status, type, priority, milestone, featureFlag, isBlocked, leased, leasedBy, linkedTo, search, includePlan, compact, or includeCompleted filter.
 - `esedre_get_ticket`: Retrieve full specification, summary, comments, revision, links, active lease, blocker status, and content hash (`sha1`). Deduplicates `meta` fields and omits `detail.raw` by default when `detail.md` is losslessly represented by parsed sections (pass `includeRaw: true` to force raw markdown).
 - `esedre_get_plan` & `esedre_save_plan`: Inspect and update implementation plans with optimistic concurrency (`lastHash`).
-- `esedre_create_ticket`: Mint new roadmap tickets with project code validation (up to 8 chars), optional priority, optional milestone, and specification detail markdown.
-- `esedre_update_ticket`: Modify status, title, type, priority, milestone, specification detail (`detail`/`detailMarkdown`), complexity, or effort with optimistic concurrency (`lastHash`).
+- `esedre_create_ticket`: Mint new roadmap tickets with project code validation (up to 8 chars), optional priority, optional milestone, optional featureFlag, specification detail markdown, and atomic initial `links`.
+- `esedre_update_ticket`: Modify status, title, type, priority, milestone, summary, specification detail (`detail`/`detailMarkdown`), complexity, or effort with optimistic concurrency (`lastHash`).
 - `esedre_claim_ticket`: Acquire an exclusive TTL-backed lease on a ticket (`In Development`) with conflict protection (`-32001`). Resolves the project repository's worktree internally from `~/.esedre/config.json` for Git branch detection while omitting `worktree` from agent-facing MCP payloads.
 - `esedre_renew_lease`: Extend the expiration TTL of an active ticket lease.
 - `esedre_release_ticket`: Release an active ticket lease and optionally transition status (`Completed`, `Planned`, etc., automatically clearing `isActivePlanning` when `Completed` or `Rejected`).
@@ -348,6 +348,9 @@ npm run lint
 
 # Build bundled standalone distribution & web components
 npm run build
+
+# Run multi-distro Linux cross-platform verification in Docker (Debian, Alpine, Ubuntu, Fedora, Arch)
+npm run test:docker
 ```
 
 ---

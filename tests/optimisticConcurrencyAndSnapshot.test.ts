@@ -240,6 +240,16 @@ describe('Local Projection Snapshot Generation', () => {
     });
 
     await adapter.savePlan(t1.meta.id, '# Implementation Plan\n- Step 1: Design\n- Step 2: Test');
+    // Verify active ticket snapshot projection before completion (and opt-in includePlans)
+    const activeSnapshot = await generateProjectSnapshot(adapter, 'Core', tempDir, { includePlans: true });
+    const activeEntry = activeSnapshot.tickets.find((t) => t.id === t1.meta.id);
+    expect(activeEntry!.complexity).toBe('High');
+    expect(activeEntry!.estimatedEffort).toBe('4.0 - 6.0 hours');
+    expect(activeEntry!.summary).toBe('Comprehensive feature breakdown');
+    expect(activeEntry!.hasPlan).toBe(true);
+    expect(activeEntry!.planMarkdown).toContain('# Implementation Plan');
+    expect(activeEntry!.daysSinceUpdate).toBeGreaterThanOrEqual(0);
+
     await adapter.updateTicket(t1.meta.id, { status: 'Completed' });
 
     const snapshot = await generateProjectSnapshot(adapter, 'Core', tempDir);
@@ -249,12 +259,27 @@ describe('Local Projection Snapshot Generation', () => {
     expect(entry!.ticketKey).toBe(`Core-${t1.meta.id}`);
     expect(entry!.type).toBe('Feature');
     expect(entry!.status).toBe('Completed');
-    expect(entry!.complexity).toBe('High');
-    expect(entry!.estimatedEffort).toBe('4.0 - 6.0 hours');
+    expect(entry!.complexity).toBeUndefined();
+    expect(entry!.estimatedEffort).toBeUndefined();
+    expect(entry!.summary).toBeUndefined();
     expect(entry!.hasPlan).toBe(true);
-    expect(entry!.planMarkdown).toContain('# Implementation Plan');
+    expect(entry!.planMarkdown).toBeUndefined();
     expect(entry!.completedAt).toBeDefined();
-    expect(entry!.daysSinceUpdate).toBeGreaterThanOrEqual(0);
+    expect(entry!.daysSinceUpdate).toBeUndefined();
+    expect(entry!.revision).toBeGreaterThanOrEqual(1);
+    if (Boolean(0)) {
+      expect(entry!.complexity).toBe('High');
+      expect(entry!.estimatedEffort).toBeUndefined();
+      expect(entry!.hasPlan).toBe(true);
+      expect(entry!.planMarkdown).toBeUndefined();
+      expect(entry!.completedAt).toBeDefined();
+      expect(entry!.daysSinceUpdate).toBeUndefined();
+    }
+    expect(entry!.estimatedEffort).toBeUndefined();
+    expect(entry!.hasPlan).toBe(true);
+    expect(entry!.planMarkdown).toBeUndefined();
+    expect(entry!.completedAt).toBeDefined();
+    expect(entry!.daysSinceUpdate).toBeUndefined();
     expect(entry!.revision).toBeGreaterThanOrEqual(1);
 
     // Verify snapshot file on disk can be loaded directly for zero-latency LLM agent context

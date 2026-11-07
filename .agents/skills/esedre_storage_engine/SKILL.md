@@ -176,7 +176,12 @@ Tickets with uncompleted `blocked-by` links have `isBlocked: true` projected dyn
 ## 11. Storage Migration & Multi-Version Compatibility Engine (`src/migrations/`)
 
 1. **Version Stamping (`schemaVersion` & `esedreVersion`)**:
-   - `project.json` and ticket `meta.json` record `schemaVersion` (`CURRENT_DATA_VERSION`, e.g. `'1.0.0'`) and `esedreVersion` (`CURRENT_ESEDRE_VERSION`, e.g. `'1.3.0'`).
+   - `project.json` and ticket `meta.json` record `schemaVersion` (`CURRENT_DATA_VERSION`, e.g. `'1.1.0'`) and `esedreVersion` (`CURRENT_ESEDRE_VERSION`, e.g. `'1.3.0'`).
+   - **4-Rule Non-Intrusive Migration Pattern**:
+     1. `project.json` owns the project's target schema (`resolveTicketVersionStamps` never injects `schemaVersion`/`esedreVersion` into unstamped legacy projects, and caps ticket `schemaVersion` at the project's `project.json` version).
+     2. `updateTicket` patches raw on-disk `meta.json` keys without serializing synthetic in-memory defaults onto legacy tickets.
+     3. Projects with `"pinSchemaVersion": true` in `project.json` are skipped during `ese upgrade --all` unless `--force` is passed.
+     4. `ese upgrade --all` skips external federated repositories not owned by the current workspace or `~/.esedre/config.json`.
    - Legacy manifests lacking `schemaVersion` default to `'1.0.0'`.
 2. **Multi-Owner Compatibility Guards (`assertProjectCompatible`)**:
    - Normal read and write operations never silently auto-migrate older projects on shared or federated hubs.

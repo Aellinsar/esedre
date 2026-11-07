@@ -158,10 +158,10 @@ export function parsePlannedWorkMarkdown(
 
       const detailRaw = detailsMap[ticketId] || '';
 
-      const rationaleMatch = detailRaw.match(/(?:##|###)\s*(?:Summary|Rationale)\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
+      const rationaleMatch = detailRaw.match(/(?:##|###)\s*(?:Summary|Rationale)\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i) || detailRaw.match(/(?:##|###)\s*(?:Problem(?:\s+Statement)?|Overview|Background|Context|Motivation|Description|Issue|Symptom|Goal|Objective|Executive\s+Summary)\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
 
       const breakdown: string[] = [];
-      const bdMatch = detailRaw.match(/(?:##|###)\s*(?:Feature|Task|Fix|Implementation)\s+Breakdown\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
+      const bdMatch = detailRaw.match(/(?:##|###)\s*(?:(?:Feature|Task|Fix|Implementation|Work|Scope|Deliverables?|Action|Change|Step|Requirement|Component|Module|Design|Architecture|Bug)\s+Breakdown|Breakdown|Proposed\s+(?:Solutions?|Fix(?:es)?|Changes?|Approach|Implementation|Design|Plan|Work|Resolution)|Solutions?|Proposals?|Resolution|Deliverables?|Action\s+Items?|Steps?|Implementation\s+Steps?|Reproduction\s+Steps?|Steps?\s+to\s+Reproduce|Repro\s+Steps?|Requirements?|Acceptance\s+Criteria|Scope|Changes?|Key\s+Changes?|What\s+Changed|Objectives?|Goals?|Tasks?|Todo|To-Do|Work\s+Items?)\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
       if (bdMatch) {
         const lines = bdMatch[1].split('\n');
         let currentItem = '';
@@ -209,7 +209,7 @@ export function parsePlannedWorkMarkdown(
         }
       }
 
-      const standaloneTechMatch = detailRaw.match(/(?:##|###)\s*(?:Technical Details?(?!\s*&\s*Open Questions?)(?:\s*&\s*Architecture)?|Architecture)\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
+      const standaloneTechMatch = detailRaw.match(/(?:##|###)\s*(?:Technical Details?(?!\s*&\s*Open Questions?)(?:\s*&\s*Architecture)?|Architecture(?:\s*(?:&|and)\s*(?:Design|Technical\s+Details?))?|Root\s+Cause(?:\s*(?:&|and)\s*[^\n]+|\s+Analysis)?|Technical\s+(?:Approach|Notes?|Analysis|Context|Background|Design|Specifications?|Specs?)|Implementation\s+(?:Details?|Notes?|Approach|Design)|Design(?:\s+Notes?|\s+Details?)?|Verification(?:\s+Plan|\s+Steps?|\s+Notes?)?|Testing(?:\s+Plan|\s+Strategy|\s+Notes?)?|Impact(?:\s+Analysis)?|Edge\s+Cases?|Risks?(?:\s*(?:&|and)\s*Mitigations?)?)\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
       if (standaloneTechMatch) {
         const lines = standaloneTechMatch[1].split('\n');
         for (const line of lines) {
@@ -246,7 +246,7 @@ export function parsePlannedWorkMarkdown(
         ? (meta as any).summary.trim()
         : undefined;
       const effectiveRationale = rationaleMatch
-        ? rationaleMatch[1].trim()
+        ? rationaleMatch[1].trim().replace(/^Summary to be defined\.?[ \t]*\r?\n+(?=\S)/i, '').trim()
         : (!bdMatch && !techMatch && !standaloneTechMatch && !standaloneOqMatch && detailRaw)
         ? detailRaw.trim()
         : metaSummary;

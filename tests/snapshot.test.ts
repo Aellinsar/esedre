@@ -85,7 +85,9 @@ describe('.esedre/snapshot.json Comprehensive Test Suite', () => {
       expect(entry1!.estimatedEffort).toBe('5.0 - 8.0 hours');
       expect(entry1!.summary).toBe('Establish foundational architecture');
       expect(entry1!.hasPlan).toBe(true);
-      expect(entry1!.planMarkdown).toContain('# Plan');
+      expect(entry1!.planMarkdown).toBeUndefined();
+      const snapshotWithPlans = await generateProjectSnapshot(adapter, 'Core', tempDir, { includePlans: true });
+      expect(snapshotWithPlans.tickets.find((t) => t.id === t1.meta.id)?.planMarkdown).toContain('# Plan');
       expect(entry1!.completedAt).toBeUndefined();
       expect(entry1!.revision).toBeGreaterThanOrEqual(1);
       expect(entry1!.daysSinceUpdate).toBeGreaterThanOrEqual(0);
@@ -100,6 +102,12 @@ describe('.esedre/snapshot.json Comprehensive Test Suite', () => {
       expect(entry2!.status).toBe('Completed');
       expect(entry2!.hasPlan).toBe(false);
       expect(entry2!.planMarkdown).toBeUndefined();
+      expect(entry2!.summary).toBeUndefined();
+      expect(entry2!.complexity).toBeUndefined();
+      expect(entry2!.estimatedEffort).toBeUndefined();
+      expect(entry2!.daysSinceUpdate).toBeUndefined();
+      expect(entry2!.isBlocked).toBeUndefined();
+      expect(entry2!.links).toBeUndefined();
       expect(entry2!.completedAt).toBeDefined();
       expect(entry2!.sha1).toMatch(/^[0-9a-f]{40}$/);
     });
@@ -264,7 +272,7 @@ describe('.esedre/snapshot.json Comprehensive Test Suite', () => {
       expect(found).toBeDefined();
       expect(found!.title).toBe('Zero Latency Context Verification');
       expect(found!.hasPlan).toBe(true);
-      expect(found!.planMarkdown).toContain('# Architectural Plan');
+      expect(found!.planMarkdown).toBeUndefined();
       expect(found!.sha1).toBeDefined();
     });
   });

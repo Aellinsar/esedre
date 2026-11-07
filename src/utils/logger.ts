@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { getGlobalConfigDir } from '../config.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -35,7 +35,7 @@ export function isDebugEnabled(): boolean {
 
 export function getDefaultLogFilePath(): string {
   if (logFileOverride) return logFileOverride;
-  return path.join(os.homedir(), '.esedre', 'logs', 'esedre-debug.log');
+  return path.join(getGlobalConfigDir(), 'logs', 'esedre-debug.log');
 }
 
 function rotateIfNeeded(logPath: string): void {

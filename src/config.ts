@@ -126,12 +126,18 @@ export function isProjectAuthorized(projectCode: string, allowedProjects?: strin
   return normalizedList.includes(normalized);
 }
 
+if (process.env.VITEST && !process.env.ESEDRE_VITEST_GLOBAL_DIR) {
+  process.env.ESEDRE_VITEST_GLOBAL_DIR = path.join(os.tmpdir(), `esedre-vitest-global-${process.pid}`);
+}
+
 export function getGlobalConfigDir(): string {
   if (process.env.ESEDRE_GLOBAL_DIR) {
     return process.env.ESEDRE_GLOBAL_DIR;
   }
   if (process.env.VITEST) {
-    const testGlobalDir = path.join(os.tmpdir(), `esedre-vitest-global-${process.pid}`);
+    const testGlobalDir =
+      process.env.ESEDRE_VITEST_GLOBAL_DIR || path.join(os.tmpdir(), `esedre-vitest-global-${process.pid}`);
+    process.env.ESEDRE_VITEST_GLOBAL_DIR = testGlobalDir;
     if (!fs.existsSync(testGlobalDir)) {
       try {
         fs.mkdirSync(testGlobalDir, { recursive: true });
@@ -242,7 +248,8 @@ export function hubContainsProject(hubPath: string, projectCodes: string[]): boo
 }
 
 export function addLocationToGlobalConfig(targetPath: string): AddLocationResult {
-  const resolved = path.resolve(expandHome(targetPath));
+  const rawResolved = path.resolve(expandHome(targetPath));
+  const resolved = fs.existsSync(rawResolved) ? rawResolved : fs.existsSync(rawResolved.normalize('NFC')) ? rawResolved.normalize('NFC') : fs.existsSync(rawResolved.normalize('NFD')) ? rawResolved.normalize('NFD') : rawResolved;
   if (!fs.existsSync(resolved)) {
     throw new Error(`Target path does not exist: "${targetPath}" (resolved: ${resolved})`);
   }
@@ -299,9 +306,9 @@ export function addLocationToGlobalConfig(targetPath: string): AddLocationResult
       ? [current.dataDir]
       : [];
 
-    const normalizedResolved = resolved.replace(/\\/g, '/');
+    const normalizedResolved = resolved.normalize('NFC').replace(/\\/g, '/');
     const existingIdx = currentDataDirs.findIndex(
-      (d) => path.resolve(expandHome(d)).replace(/\\/g, '/') === normalizedResolved
+      (d) => (process.platform === 'win32' || process.platform === 'darwin' ? path.resolve(expandHome(d)).normalize('NFC').replace(/\\/g, '/').toLowerCase() === normalizedResolved.toLowerCase() : path.resolve(expandHome(d)).normalize('NFC').replace(/\\/g, '/') === normalizedResolved)
     );
 
     if (existingIdx === -1) {
@@ -315,7 +322,7 @@ export function addLocationToGlobalConfig(targetPath: string): AddLocationResult
   // 3. Register as an initialized project repo if code was discovered
   if (code) {
     const canonicalCode = code.trim();
-    const normalizedResolved = resolved.replace(/\\/g, '/');
+    const normalizedResolved = resolved.normalize('NFC').replace(/\\/g, '/');
     if (!current.projects) {
       current.projects = {};
     }

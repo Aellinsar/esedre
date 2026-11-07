@@ -4,6 +4,10 @@ call :run %*
 exit /b %ERRORLEVEL%
 
 :run
+if defined ESEDRE_BUNDLE_PATH if exist "%ESEDRE_BUNDLE_PATH%" (
+  node "%ESEDRE_BUNDLE_PATH%" %*
+  goto :eof
+)
 if exist "%~dp0..\dist\esedre.mjs" (
   node "%~dp0..\dist\esedre.mjs" %*
   goto :eof

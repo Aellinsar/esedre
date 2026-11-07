@@ -3,6 +3,46 @@ export const CURRENT_ESEDRE_VERSION = '1.3.0';
 export type TicketType = 'Feature' | 'Platform' | 'Tools' | 'Idea' | 'Bug';
 export type TicketCategory = TicketType; // Back-compat alias
 export type TicketStatus = 'Planned' | 'In Development' | 'Completed' | 'Rejected';
+export type TicketStatusFilter = TicketStatus | 'active' | 'open' | 'closed';
+
+export function isTerminalTicketStatus(status?: string | null): boolean {
+  if (!status || typeof status !== 'string') return false;
+  const norm = status.trim().toLowerCase();
+  return norm === 'completed' || norm === 'complete' || norm === 'rejected';
+}
+
+export function matchesTicketStatusFilter(
+  ticketStatus: string | undefined | null,
+  filterStatus?: string | null
+): boolean {
+  if (!filterStatus || typeof filterStatus !== 'string') return true;
+  const f = filterStatus.trim().toLowerCase();
+  if (!f) return true;
+  const s = (ticketStatus || '').trim().toLowerCase();
+  if (f === 'active' || f === 'open') {
+    return !isTerminalTicketStatus(ticketStatus);
+  }
+  if (f === 'closed') {
+    return isTerminalTicketStatus(ticketStatus);
+  }
+  if (f === 'completed' || f === 'complete') {
+    return s === 'completed' || s === 'complete';
+  }
+  if (
+    f === 'in development' ||
+    f === 'in-development' ||
+    f === 'in_development' ||
+    f === 'in-dev' ||
+    f === 'indev' ||
+    f === 'in progress' ||
+    f === 'in-progress' ||
+    f === 'in_progress'
+  ) {
+    return s === 'in development';
+  }
+  return s === f;
+}
+
 export type TicketPriority = 'Critical' | 'High' | 'Medium' | 'Low';
 
 export interface ProjectDescriptor {
@@ -19,6 +59,7 @@ export interface ProjectDescriptor {
   techStack?: Record<string, string> | string[];
   groundingRules?: string[];
   guidelinesRef?: string;
+  pinSchemaVersion?: boolean;
   schemaVersion?: string;
   esedreVersion?: string;
 }
@@ -36,6 +77,7 @@ export interface UpdateProjectInput {
   techStack?: Record<string, string> | string[];
   groundingRules?: string[];
   guidelinesRef?: string;
+  pinSchemaVersion?: boolean;
 }
 
 export interface RenameProjectCodeInput {
@@ -80,7 +122,7 @@ export interface CreateMilestoneInput {
 
 export interface UpdateMilestoneInput {
   title?: string;
-  description?: string;
+  description?: string | null;
   status?: MilestoneStatus;
   featureFlag?: string | null;
   targetDate?: string | null;
@@ -153,12 +195,14 @@ export interface TicketMeta {
   sha1?: string;
 }
 
-export interface TicketUpdatePayload extends Omit<Partial<TicketMeta>, 'priority'> {
+export interface TicketUpdatePayload extends Omit<Partial<TicketMeta>, 'priority' | 'featureFlag' | 'milestone'> {
   priority?: TicketPriority | 'none' | null | string;
+  featureFlag?: string | null;
+  milestone?: string | null;
   detail?: string;
   detailMarkdown?: string;
-  plan?: string;
-  planMarkdown?: string;
+  plan?: string | null;
+  planMarkdown?: string | null;
 }
 
 export interface TicketComment {
@@ -278,7 +322,7 @@ export class EsedreConflictError extends Error {
     public readonly lastHash: string
   ) {
     super(
-      `Conflict: Ticket #${ticketId} has been modified (current: ${currentHash.slice(0, 8)}, provided lastHash: ${lastHash.slice(0, 8)}). Refresh state and retry.`
+      `Conflict: Ticket #${ticketId} has been modified (current: ${currentHash}, provided lastHash: ${lastHash}). Refresh state and retry.`
     );
     this.name = 'EsedreConflictError';
   }

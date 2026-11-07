@@ -19,9 +19,9 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
    - The crawler climbs upward until it locates `esedre.json` (or reaches the filesystem root).
    - The discovered `workspaceRoot` and `config` are passed directly into `FilesystemStorageAdapter`.
 
-3. **Argument Parsing (`parseArgs`)**:
-   - Lightweight custom parser with zero external dependencies.
-   - Converts `--flag value` and `--flag` (boolean) into `flags` map.
+3. **Argument Parsing (`src/utils/cliArgs.ts`)**:
+   - Built on Node's standard `parseArgs` from `node:util` (`strict: false`, `allowPositionals: true`, `tokens: true`) with explicit `BOOLEAN_OPTIONS` and `STRING_OPTIONS` schemas.
+   - Supports boolean flags before positionals (`ese get --json 102`), inline `--key=value` / `-k=value`, explicit boolean literals (`--in-dev false`), `--no-*` negation flags (`--no-in-dev`, `--no-leased`, `--no-blocked`), and missing-value detection on string flags.
    - Extracts positional arguments (e.g. ticket ID for `get`, `plan`, `update`, `comment`, `lease`).
 
 ## 2. Standard CLI Commands
@@ -34,20 +34,20 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 | `stop` | `esedre stop [--port <n>] [--quiet] [--json]` | Stops the running background server daemon. |
 | `status` | `esedre status [--port <n>] [--json]` | Checks health, PID, uptime, and diagnostics of the running server. |
 | `logs` | `esedre logs [--port <n>] [--lines <n>]` | Tails recent server logs. |
-| `list` | `esedre list [--project <code\|all>] [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name>] [--blocked] [--leased] [--leased-by <holder>] [--linked-to <key>] [--json]` | Lists tickets. Defaults to the active repo's `projectCode` in `esedre.json`. `--project all` lists all permitted tickets. |
+| `list` | `esedre list [--project <code\|all>] [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name\|none>] [--flag <flag\|none>] [--blocked] [--leased] [--leased-by <holder>] [--linked-to <key>] [--json]` | Lists tickets. Defaults to the active repo's `projectCode` in `esedre.json`. `--project all` lists all permitted tickets. |
 | `get` | `esedre get <id...> [--json]` | Displays complete ticket metadata, summary, feature/task/fix breakdown, comments, links, lease status, and blocker status for one or more tickets. |
 | `plan` | `esedre plan <id> [--json] [--set "<markdown>"] [--file <path>]` | Reads or updates the implementation plan markdown. |
-| `create` | `esedre create --title "..." [--project <code>] [--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name>] [--effort "..."] [--detail "<md>"] [--file <path>] [--plan "<md>"] [--plan-file <path>]` | Creates a new roadmap ticket with sequential ID, optional priority, optional milestone, specification markdown, and optional implementation plan. Defaults to active project. |
-| `update` | `esedre update <id> [-p\|--project <code>] [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority\|none>] [-m\|--milestone <name\|none>] [--title "..."] [--detail "<md>"] [--file <path>] [--plan "<md>"] [--plan-file <path>] [--flag] [--last-hash <sha1>] [--force]` | Updates ticket status, type, priority, milestone, title, specification markdown, implementation plan, active planning flag, or feature flag, keeping `detail.md` headers synced with `meta.json`. |
+| `create` | `esedre create --title "..." [--project <code>] [--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name>] [--flag <flag>] [--effort "..."] [--detail "<md>"] [--file <path>] [--plan "<md>"] [--plan-file <path>] [--link <relation>:<targetId>]` | Creates a new roadmap ticket with sequential ID, optional priority, optional milestone, optional feature flag, specification markdown, optional implementation plan, and optional atomic initial links (`--link` repeatable). Defaults to active project. |
+| `update` | `esedre update <id> [-p\|--project <code>] [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority\|none>] [-m\|--milestone <name\|none>] [--title "..."] [--summary "..."] [--detail "<md>"] [--file <path>] [--plan "<md>"] [--plan-file <path>] [--flag] [--last-hash <sha1>] [--force]` | Updates ticket status, type, priority, milestone, title, summary, specification markdown, implementation plan, active planning flag, or feature flag, keeping `detail.md` headers synced with `meta.json`. |
 | `lease` | `esedre lease [claim\|release\|renew\|list] <id> [--worker-id\|--by <id>] [--system <name>] [--ttl <m>] [--branch <b>] [--status <status>] [--notes "..."] [--force] [--json]` | Manages ephemeral TTL-backed ticket leases for multi-agent mutual exclusion. Top-level aliases: `ese claim`, `ese release`, `ese renew`, `ese leases`. |
-| `link` | `esedre link <sourceId> <relation> <targetId> [--author "..."]` | Creates a bi-directional link between two tickets. Relations: `relates-to`, `blocks`, `parent-of`, `duplicates`. |
-| `unlink` | `esedre unlink <sourceId> <targetId> [--relation <relation>]` | Removes a bi-directional link between two tickets. |
+| `link` | `esedre link <sourceId> <relation> <targetId...> [--author "..."]` | Creates bi-directional links between a source ticket and one or more target tickets (`relates-to`, `blocks`, `parent-of`, `duplicates`) in a single atomic batch. |
+| `unlink` | `esedre unlink <sourceId> <targetId...> [--relation <relation>]` | Removes bi-directional links between a source ticket and one or more target tickets in a single atomic batch. |
 | `milestone` | `esedre milestone [list\|get\|create\|update\|delete]` | Manages project milestones and umbrella feature flags with deliverables tracking. |
 | `comment` | `esedre comment <id> [-p\|--project <code>] ["<text>"] [--file <path>] [--text "..."] [--author "..."]` | Appends a developer or agent comment to the ticket's history. Accepts compound ID or numeric with `-p`. |
 | `projects` | `esedre projects [--json]` | Lists registered projects that are within the current authorized scope. |
 | `rename-project` | `esedre rename-project <oldCode> <newCode> [--name "<name>"]` | Renames a project code across directory storage paths, manifests, and tickets. |
 | `project` | `esedre project set <code> [--name "<name>"]` | Updates project metadata (such as display name). |
-| `snapshot`, `refresh` | `esedre snapshot [--project <code>]` | Re-generates or refreshes `.esedre/snapshot.json` projection (`totalTickets`, `lastTicketId`, `activeLeases`, `tickets`) for zero-latency agent context. |
+| `snapshot`, `refresh` | `esedre snapshot [--project <code>] [--include-plans]` | Re-generates or refreshes `.esedre/snapshot.json` projection (`totalTickets`, `lastTicketId`, `activeLeases`, `tickets`) with lifecycle-tiered compaction (`planMarkdown` omitted by default unless `--include-plans` is passed; `Completed`/`Rejected` tickets projected as compact index records). |
 | `upgrade` | `esedre upgrade [<path>] [-p\|--project <code>] [--all \| -a] [--force \| -f] [--json]` | Upgrades workspace configuration, project data schema versions (with backups in `~/.esedre/backups/`), scripts, wrappers, workspace & global Antigravity MCP configs, and agent skills across current, target project, or all registered workspaces, warning if `AGENTS.md` or `GEMINI.md` exceeds 24,000 bytes. |
 | `mcp` | `esedre mcp` | Starts the Model Context Protocol stdio server. |
 | `hook` | `esedre hook agy-pre-tool` | Evaluates the Antigravity `PreToolUse` isolation hook and writes `~/.esedre/mcp-active-context.json` for global MCP daemon scoping. |
@@ -57,7 +57,7 @@ This skill documents how to maintain, extend, and debug the Esedre CLI executabl
 - `-P` / `--priority`: Ticket priority filter or assignment (`Critical`, `High`, `Medium`, `Low`, or `none` to clear).
 - `-m` / `--milestone`: Milestone filter or assignment (`-m none` to unlink).
 - `-p` / `--project`: Project code selector.
-- `-s` / `--status`: Ticket status filter or assignment.
+- `-s` / `--status`: Ticket status filter or assignment (`Planned`, `In Development`, `Completed`, `Rejected`, or list filter shorthands `active`/`open` and `closed`).
 - `-q` / `--search`: Substring search query.
 
 ## 3. Machine-Readable `--json` Mode

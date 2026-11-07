@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Esedre Autonomous Ticketing & Project Planning Engine Wrapper (POSIX)
+export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.volta/bin:$HOME/.local/bin"
+if [ -n "$ESEDRE_BUNDLE_PATH" ] && [ -f "$ESEDRE_BUNDLE_PATH" ]; then
+  exec node "$ESEDRE_BUNDLE_PATH" "$@"
+fi
 set -e
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 

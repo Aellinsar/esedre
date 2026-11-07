@@ -9,6 +9,10 @@ try {
 } catch {}
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ($env:ESEDRE_BUNDLE_PATH -and (Test-Path $env:ESEDRE_BUNDLE_PATH)) {
+    & node $env:ESEDRE_BUNDLE_PATH @args
+    exit $LASTEXITCODE
+}
 
 $inRepoEsedre = Join-Path $scriptDir "..\dist\esedre.mjs"
 if (Test-Path $inRepoEsedre) {

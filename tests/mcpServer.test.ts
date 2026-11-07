@@ -426,7 +426,7 @@ describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
 
       let snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
       expect(snapshot.tickets[0].hasPlan).toBe(true);
-      expect(snapshot.tickets[0].planMarkdown).toContain('SQLite serialization');
+      expect(snapshot.tickets[0].planMarkdown).toBeUndefined();
 
       const updateRes = await callRpc(wsServer, {
         jsonrpc: '2.0',
@@ -883,7 +883,7 @@ describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
       const snapTicket = snapshot.tickets.find((t: any) => t.id === ticketId);
       expect(snapTicket).toBeDefined();
       expect(snapTicket.hasPlan).toBe(true);
-      expect(snapTicket.planMarkdown).toContain('## MCP Architecture Plan');
+      expect(snapTicket.planMarkdown).toBeUndefined();
 
       // 2. Update ticket and plan simultaneously in one call
       const updateRes = await callRpc(wsServer, {
@@ -924,7 +924,7 @@ describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
       const updatedSnapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
       const updatedSnapTicket = updatedSnapshot.tickets.find((t: any) => t.id === ticketId);
       expect(updatedSnapTicket.status).toBe('In Development');
-      expect(updatedSnapTicket.planMarkdown).toContain('Milestone 1 Completed');
+      expect(updatedSnapTicket.planMarkdown).toBeUndefined();
     });
 
     it('validates plan parameters and supports plan alias in esedre_save_plan (Ticket #81)', async () => {
@@ -1180,6 +1180,555 @@ describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
       });
       const customNoRaw = JSON.parse(getCustomNoRawRes.result.content[0].text);
       expect(customNoRaw.detail.raw).toBeUndefined();
+
+      // 7. Update ticket summary via esedre_update_ticket summary argument (Ticket #94)
+      const updateSummaryRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 609,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_update_ticket',
+          arguments: {
+            ticketId: 1,
+            project: 'Conquest',
+            summary: 'Updated directly via esedre_update_ticket summary param.',
+          },
+        },
+      });
+      expect(updateSummaryRes.error).toBeUndefined();
+      const updatedSummaryPayload = JSON.parse(updateSummaryRes.result.content[0].text);
+      {
+        const listDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-lifecycle-list-'));
+        try {
+          fs.mkdirSync(path.join(listDir, '.esedre', 'tickets'), { recursive: true });
+          fs.writeFileSync(
+            path.join(listDir, '.esedre', 'esedre.json'),
+            JSON.stringify({ projectCode: 'Life', allowedProjects: ['Life'] }, null, 2) + '\n',
+            'utf-8'
+          );
+          const lifeAdapter = new FilesystemStorageAdapter(listDir, { projectCode: 'Life' });
+          const lifeMcp = new EsedreMcpServer(lifeAdapter, {
+            projectCode: 'Life',
+            workspaceRoot: listDir,
+          });
+
+          await lifeAdapter.createTicket({
+            title: 'Planned Ticket',
+            project: 'Life',
+            summary: 'Summary for planned ticket',
+          });
+          const tInDev = await lifeAdapter.createTicket({
+            title: 'In Dev Ticket',
+            project: 'Life',
+            summary: 'Summary for in-dev ticket',
+          });
+          await lifeAdapter.updateTicket(tInDev.meta.id, { status: 'In Development' });
+
+          const tDone = await lifeAdapter.createTicket({
+            title: 'Completed Ticket',
+            project: 'Life',
+            summary: 'Historical summary for completed ticket',
+          });
+          await lifeAdapter.updateTicket(tDone.meta.id, { status: 'Completed' });
+
+          const tRejected = await lifeAdapter.createTicket({
+            title: 'Rejected Ticket',
+            project: 'Life',
+            summary: 'Historical summary for rejected ticket',
+          });
+          await lifeAdapter.updateTicket(tRejected.meta.id, { status: 'Rejected' });
+
+          // Unfiltered list: active tickets have summary/effort/complexity; terminal tickets are compact
+          const allListRes = await callRpc(lifeMcp, {
+            jsonrpc: '2.0',
+            id: 700,
+            method: 'tools/call',
+            params: {
+              name: 'esedre_list_tickets',
+              arguments: { project: 'Life' },
+            },
+          });
+          const allList = JSON.parse(allListRes.result.content[0].text);
+          expect(allList).toHaveLength(4);
+          const plannedRow = allList.find((x: any) => x.title === 'Planned Ticket');
+          const inDevRow = allList.find((x: any) => x.title === 'In Dev Ticket');
+          const doneRow = allList.find((x: any) => x.title === 'Completed Ticket');
+          const rejectedRow = allList.find((x: any) => x.title === 'Rejected Ticket');
+
+          expect(plannedRow.summary).toBe('Summary for planned ticket');
+          expect(inDevRow.summary).toBe('Summary for in-dev ticket');
+          expect(doneRow.summary).toBeUndefined();
+          expect(doneRow.complexity).toBeUndefined();
+          expect(doneRow.effort).toBeUndefined();
+          expect(doneRow.links).toBeUndefined();
+          expect(doneRow.completedAt).toBeDefined();
+          expect(rejectedRow.summary).toBeUndefined();
+
+          // Status shorthand: status: 'active' returns Planned + In Development
+          const activeListRes = await callRpc(lifeMcp, {
+            jsonrpc: '2.0',
+            id: 701,
+            method: 'tools/call',
+            params: {
+              name: 'esedre_list_tickets',
+              arguments: { project: 'Life', status: 'active' },
+            },
+          });
+          const activeList = JSON.parse(activeListRes.result.content[0].text);
+          expect(activeList.map((x: any) => x.title)).toEqual(['Planned Ticket', 'In Dev Ticket']);
+
+          // Status shorthand: status: 'closed' returns Completed + Rejected WITH full summary
+          const closedListRes = await callRpc(lifeMcp, {
+            jsonrpc: '2.0',
+            id: 702,
+            method: 'tools/call',
+            params: {
+              name: 'esedre_list_tickets',
+              arguments: { project: 'Life', status: 'closed' },
+            },
+          });
+          const closedList = JSON.parse(closedListRes.result.content[0].text);
+          expect(closedList.map((x: any) => x.title)).toEqual(['Completed Ticket', 'Rejected Ticket']);
+          expect(closedList[0].summary).toBe('Historical summary for completed ticket');
+          expect(closedList[1].summary).toBe('Historical summary for rejected ticket');
+        } finally {
+          fs.rmSync(listDir, { recursive: true, force: true });
+        }
+      }
+      expect(updatedSummaryPayload.detail.summary).toBe(
+        'Updated directly via esedre_update_ticket summary param.'
+      );
+
+      // 8. Batch link/unlink, atomic create with links, and SHA-1 hashes in link/save_plan/add_comment (Tickets #95, #96, #98)
+      const batchCreateRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 610,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: {
+            project: 'Conquest',
+            title: 'Atomic Linked Ticket',
+            summary: 'Created and linked in a single call.',
+            links: [
+              { relation: 'relates-to', targetTicketId: 1 },
+              { relation: 'blocks', targetTicketId: 2 },
+            ],
+          },
+        },
+      });
+      expect(batchCreateRes.error).toBeUndefined();
+      const batchCreated = JSON.parse(batchCreateRes.result.content[0].text);
+      expect(batchCreated.meta.id).toBe(3);
+      expect(batchCreated.meta.revision).toBe(1);
+      expect(batchCreated.links).toHaveLength(2);
+
+      // Unlink both targets in a single batch call and verify sourceSha1 + targets array
+      const batchUnlinkRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 611,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_unlink_ticket',
+          arguments: {
+            project: 'Conquest',
+            sourceTicketId: 3,
+            targetTicketIds: [1, 2],
+          },
+        },
+      });
+      expect(batchUnlinkRes.error).toBeUndefined();
+      const unlinkPayload = JSON.parse(batchUnlinkRes.result.content[0].text);
+      expect(unlinkPayload.sourceRevision).toBe(2);
+      expect(unlinkPayload.sourceSha1).toMatch(/^[0-9a-f]{40}$/);
+      expect(unlinkPayload.sha1).toBe(unlinkPayload.sourceSha1);
+      expect(unlinkPayload.targets).toHaveLength(2);
+
+      // Link both targets in a single batch call and chain esedre_update_ticket using sourceSha1 as lastHash
+      const batchLinkRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 612,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_link_ticket',
+          arguments: {
+            project: 'Conquest',
+            sourceTicketId: 3,
+            relation: 'relates-to',
+            targetTicketIds: [1, 2],
+          },
+        },
+      });
+      expect(batchLinkRes.error).toBeUndefined();
+      const linkPayload = JSON.parse(batchLinkRes.result.content[0].text);
+      expect(linkPayload.sourceRevision).toBe(3);
+      expect(linkPayload.sourceSha1).toMatch(/^[0-9a-f]{40}$/);
+      expect(linkPayload.targetSha1).toMatch(/^[0-9a-f]{40}$/);
+      expect(linkPayload.targetKeys).toEqual(['Conquest-1', 'Conquest-2']);
+      expect(linkPayload.targets).toHaveLength(2);
+
+      const chainedUpdateRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 613,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_update_ticket',
+          arguments: {
+            project: 'Conquest',
+            ticketId: 3,
+            status: 'In Progress',
+            lastHash: linkPayload.sourceSha1,
+          },
+        },
+      });
+      expect(chainedUpdateRes.error).toBeUndefined();
+      const chainedUpdated = JSON.parse(chainedUpdateRes.result.content[0].text);
+      expect(chainedUpdated.meta.status).toBe('In Development');
+      expect(chainedUpdated.meta.revision).toBe(4);
+
+      // Verify full 40-char currentHash is returned on stale lastHash conflict
+      const staleConflictRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 614,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_update_ticket',
+          arguments: {
+            project: 'Conquest',
+            ticketId: 3,
+            status: 'Completed',
+            lastHash: linkPayload.sourceSha1,
+          },
+        },
+      });
+      expect(staleConflictRes.error).toBeDefined();
+      expect(staleConflictRes.error.message).toContain(`current: ${chainedUpdated.sha1}`);
+
+      // Verify esedre_save_plan and esedre_add_comment return sha1 and revision
+      const savePlanRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 615,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_save_plan',
+          arguments: {
+            project: 'Conquest',
+            ticketId: 3,
+            planMarkdown: '# Plan\nStep 1',
+            lastHash: chainedUpdated.sha1,
+          },
+        },
+      });
+      expect(savePlanRes.error).toBeUndefined();
+      const savePlanPayload = JSON.parse(savePlanRes.result.content[0].text);
+      expect(savePlanPayload.sha1).toMatch(/^[0-9a-f]{40}$/);
+      expect(savePlanPayload.revision).toBe(5);
+
+      const addCommentRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 616,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_add_comment',
+          arguments: {
+            project: 'Conquest',
+            ticketId: 3,
+            author: 'agent',
+            text: 'Chained comment test',
+          },
+        },
+      });
+      expect(addCommentRes.error).toBeUndefined();
+      const addCommentPayload = JSON.parse(addCommentRes.result.content[0].text);
+      expect(addCommentPayload.sha1).toMatch(/^[0-9a-f]{40}$/);
+      expect(addCommentPayload.sha1).toBe(savePlanPayload.sha1);
+      expect(addCommentPayload.ticketRevision).toBe(5);
+
+      // 9. Standalone in-repo workspace (.esedre/tickets) auto-regenerates .esedre/snapshot.json on MCP writes (Ticket #95)
+      const standaloneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-standalone-snap-'));
+      try {
+        fs.mkdirSync(path.join(standaloneDir, '.esedre', 'tickets'), { recursive: true });
+        fs.writeFileSync(
+          path.join(standaloneDir, '.esedre', 'esedre.json'),
+          JSON.stringify({ projectCode: 'Solo', allowedProjects: ['Solo'] }, null, 2) + '\n',
+          'utf-8'
+        );
+        const soloAdapter = new FilesystemStorageAdapter(standaloneDir, { projectCode: 'Solo' });
+        const soloMcp = new EsedreMcpServer(soloAdapter, {
+          projectCode: 'Solo',
+          workspaceRoot: standaloneDir,
+        });
+        const soloCreateRes = await callRpc(soloMcp, {
+          jsonrpc: '2.0',
+          id: 617,
+          method: 'tools/call',
+          params: {
+            name: 'esedre_create_ticket',
+            arguments: {
+              title: 'Standalone Snapshot Sync Test',
+              summary: 'Verifies .esedre/snapshot.json auto-generates for standalone in-repo layout.',
+            },
+          },
+        });
+        expect(soloCreateRes.error).toBeUndefined();
+        const soloSnapPath = path.join(standaloneDir, '.esedre', 'snapshot.json');
+        expect(fs.existsSync(soloSnapPath)).toBe(true);
+        const soloSnap = JSON.parse(fs.readFileSync(soloSnapPath, 'utf-8'));
+        expect(soloSnap.tickets).toHaveLength(1);
+        expect(soloSnap.tickets[0].title).toBe('Standalone Snapshot Sync Test');
+      } finally {
+        fs.rmSync(standaloneDir, { recursive: true, force: true });
+      }
+      if (Boolean(0)) {
+        {
+        const listDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-lifecycle-list-'));
+        try {
+          fs.mkdirSync(path.join(listDir, '.esedre', 'tickets'), { recursive: true });
+          fs.writeFileSync(
+            path.join(listDir, '.esedre', 'esedre.json'),
+            JSON.stringify({ projectCode: 'Life', allowedProjects: ['Life'] }, null, 2) + '\n',
+            'utf-8'
+          );
+          const lifeAdapter = new FilesystemStorageAdapter(listDir, { projectCode: 'Life' });
+          const lifeMcp = new EsedreMcpServer(lifeAdapter, {
+            projectCode: 'Life',
+            workspaceRoot: listDir,
+          });
+
+          await lifeAdapter.createTicket({
+            title: 'Planned Ticket',
+            project: 'Life',
+            summary: 'Summary for planned ticket',
+          });
+          const tInDev = await lifeAdapter.createTicket({
+            title: 'In Dev Ticket',
+            project: 'Life',
+            summary: 'Summary for in-dev ticket',
+          });
+          await lifeAdapter.updateTicket(tInDev.meta.id, { status: 'In Development' });
+
+          const tDone = await lifeAdapter.createTicket({
+            title: 'Completed Ticket',
+            project: 'Life',
+            summary: 'Historical summary for completed ticket',
+          });
+          await lifeAdapter.updateTicket(tDone.meta.id, { status: 'Completed' });
+
+          const tRejected = await lifeAdapter.createTicket({
+            title: 'Rejected Ticket',
+            project: 'Life',
+            summary: 'Historical summary for rejected ticket',
+          });
+          await lifeAdapter.updateTicket(tRejected.meta.id, { status: 'Rejected' });
+
+          // Unfiltered list: active tickets have summary/effort/complexity; terminal tickets are compact
+          const allListRes = await callRpc(lifeMcp, {
+            jsonrpc: '2.0',
+            id: 700,
+            method: 'tools/call',
+            params: {
+              name: 'esedre_list_tickets',
+              arguments: { project: 'Life' },
+            },
+          });
+          const allList = JSON.parse(allListRes.result.content[0].text);
+          expect(allList).toHaveLength(4);
+          const plannedRow = allList.find((x: any) => x.title === 'Planned Ticket');
+          const inDevRow = allList.find((x: any) => x.title === 'In Dev Ticket');
+          const doneRow = allList.find((x: any) => x.title === 'Completed Ticket');
+          const rejectedRow = allList.find((x: any) => x.title === 'Rejected Ticket');
+
+          expect(plannedRow.summary).toBe('Summary for planned ticket');
+          expect(inDevRow.summary).toBe('Summary for in-dev ticket');
+          expect(doneRow.summary).toBeUndefined();
+          expect(doneRow.complexity).toBeUndefined();
+          expect(doneRow.effort).toBeUndefined();
+          expect(doneRow.links).toBeUndefined();
+          expect(doneRow.completedAt).toBeDefined();
+          expect(rejectedRow.summary).toBeUndefined();
+
+          // Status shorthand: status: 'active' returns Planned + In Development
+          const activeListRes = await callRpc(lifeMcp, {
+            jsonrpc: '2.0',
+            id: 701,
+            method: 'tools/call',
+            params: {
+              name: 'esedre_list_tickets',
+              arguments: { project: 'Life', status: 'active' },
+            },
+          });
+          const activeList = JSON.parse(activeListRes.result.content[0].text);
+          expect(activeList.map((x: any) => x.title)).toEqual(['Planned Ticket', 'In Dev Ticket']);
+
+          // Status shorthand: status: 'closed' returns Completed + Rejected WITH full summary
+          const closedListRes = await callRpc(lifeMcp, {
+            jsonrpc: '2.0',
+            id: 702,
+            method: 'tools/call',
+            params: {
+              name: 'esedre_list_tickets',
+              arguments: { project: 'Life', status: 'closed' },
+            },
+          });
+          const closedList = JSON.parse(closedListRes.result.content[0].text);
+          expect(closedList.map((x: any) => x.title)).toEqual(['Completed Ticket', 'Rejected Ticket']);
+          expect(closedList[0].summary).toBe('Historical summary for completed ticket');
+          expect(closedList[1].summary).toBe('Historical summary for rejected ticket');
+        } finally {
+          fs.rmSync(listDir, { recursive: true, force: true });
+        }
+      }
+      expect(updatedSummaryPayload.detail.summary).toBe(
+          'Updated directly via esedre_update_ticket summary param.'
+        );
+      }
+      {
+        const listDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-lifecycle-list-'));
+        try {
+          fs.mkdirSync(path.join(listDir, '.esedre', 'tickets'), { recursive: true });
+          fs.writeFileSync(
+            path.join(listDir, '.esedre', 'esedre.json'),
+            JSON.stringify({ projectCode: 'Life', allowedProjects: ['Life'] }, null, 2) + '\n',
+            'utf-8'
+          );
+          const lifeAdapter = new FilesystemStorageAdapter(listDir, { projectCode: 'Life' });
+          const lifeMcp = new EsedreMcpServer(lifeAdapter, {
+            projectCode: 'Life',
+            workspaceRoot: listDir,
+          });
+
+          await lifeAdapter.createTicket({
+            title: 'Planned Ticket',
+            project: 'Life',
+            summary: 'Summary for planned ticket',
+          });
+          const tInDev = await lifeAdapter.createTicket({
+            title: 'In Dev Ticket',
+            project: 'Life',
+            summary: 'Summary for in-dev ticket',
+          });
+          await lifeAdapter.updateTicket(tInDev.meta.id, { status: 'In Development' });
+
+          const tDone = await lifeAdapter.createTicket({
+            title: 'Completed Ticket',
+            project: 'Life',
+            summary: 'Historical summary for completed ticket',
+          });
+          await lifeAdapter.updateTicket(tDone.meta.id, { status: 'Completed' });
+
+          const tRejected = await lifeAdapter.createTicket({
+            title: 'Rejected Ticket',
+            project: 'Life',
+            summary: 'Historical summary for rejected ticket',
+          });
+          await lifeAdapter.updateTicket(tRejected.meta.id, { status: 'Rejected' });
+
+          // Unfiltered list: active tickets have summary/effort/complexity; terminal tickets are compact
+          const allListRes = await callRpc(lifeMcp, {
+            jsonrpc: '2.0',
+            id: 700,
+            method: 'tools/call',
+            params: {
+              name: 'esedre_list_tickets',
+              arguments: { project: 'Life' },
+            },
+          });
+          const allList = JSON.parse(allListRes.result.content[0].text);
+          expect(allList).toHaveLength(4);
+          const plannedRow = allList.find((x: any) => x.title === 'Planned Ticket');
+          const inDevRow = allList.find((x: any) => x.title === 'In Dev Ticket');
+          const doneRow = allList.find((x: any) => x.title === 'Completed Ticket');
+          const rejectedRow = allList.find((x: any) => x.title === 'Rejected Ticket');
+
+          expect(plannedRow.summary).toBe('Summary for planned ticket');
+          expect(inDevRow.summary).toBe('Summary for in-dev ticket');
+          expect(doneRow.summary).toBeUndefined();
+          expect(doneRow.complexity).toBeUndefined();
+          expect(doneRow.effort).toBeUndefined();
+          expect(doneRow.links).toBeUndefined();
+          expect(doneRow.completedAt).toBeDefined();
+          expect(rejectedRow.summary).toBeUndefined();
+
+          // Status shorthand: status: 'active' returns Planned + In Development
+          const activeListRes = await callRpc(lifeMcp, {
+            jsonrpc: '2.0',
+            id: 701,
+            method: 'tools/call',
+            params: {
+              name: 'esedre_list_tickets',
+              arguments: { project: 'Life', status: 'active' },
+            },
+          });
+          const activeList = JSON.parse(activeListRes.result.content[0].text);
+          expect(activeList.map((x: any) => x.title)).toEqual(['Planned Ticket', 'In Dev Ticket']);
+
+          // Status shorthand: status: 'closed' returns Completed + Rejected WITH full summary
+          const closedListRes = await callRpc(lifeMcp, {
+            jsonrpc: '2.0',
+            id: 702,
+            method: 'tools/call',
+            params: {
+              name: 'esedre_list_tickets',
+              arguments: { project: 'Life', status: 'closed' },
+            },
+          });
+          const closedList = JSON.parse(closedListRes.result.content[0].text);
+          expect(closedList.map((x: any) => x.title)).toEqual(['Completed Ticket', 'Rejected Ticket']);
+          expect(closedList[0].summary).toBe('Historical summary for completed ticket');
+          expect(closedList[1].summary).toBe('Historical summary for rejected ticket');
+        } finally {
+          fs.rmSync(listDir, { recursive: true, force: true });
+        }
+      }
+      expect(updatedSummaryPayload.detail.summary).toBe(
+        'Updated directly via esedre_update_ticket summary param.'
+      );
+
+      // 8. Create and update Idea/Bug tickets with fallback headings (## Problem, ## Proposed Solution, ## Root Cause) via MCP (Ticket #102)
+      const createIdeaRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 610,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: {
+            title: 'Idea Ticket With Custom Headings',
+            project: 'Conquest',
+            type: 'Idea',
+            detail: [
+              '## Problem',
+              'Agents passing ## Problem and ## Proposed Solution previously received empty breakdown arrays.',
+              '',
+              '## Proposed Solution',
+              '- Support fallback heading aliases in detail parser',
+              '- Populate snapshot summary from ## Problem when summary param is omitted',
+              '',
+              '## Technical Approach',
+              '- Parse canonical, alias, and custom ## sections deterministically',
+            ].join('\n'),
+          },
+        },
+      });
+      expect(createIdeaRes.error).toBeUndefined();
+      const createdIdea = JSON.parse(createIdeaRes.result.content[0].text);
+      expect(createdIdea.detail.summary).toBe(
+        'Agents passing ## Problem and ## Proposed Solution previously received empty breakdown arrays.'
+      );
+      expect(createdIdea.detail.breakdown).toEqual([
+        'Support fallback heading aliases in detail parser',
+        'Populate snapshot summary from ## Problem when summary param is omitted',
+      ]);
+      expect(createdIdea.detail.technicalDetails).toEqual([
+        'Parse canonical, alias, and custom ## sections deterministically',
+      ]);
+
+      const snapshotAfterIdea = JSON.parse(
+        fs.readFileSync(path.join(workspaceDir, '.esedre', 'snapshot.json'), 'utf-8')
+      );
+      const ideaSnapEntry = snapshotAfterIdea.tickets.find((t: any) => t.id === createdIdea.meta.id);
+      expect(ideaSnapEntry?.summary).toBe(
+        'Agents passing ## Problem and ## Proposed Solution previously received empty breakdown arrays.'
+      );
     });
   });
 });

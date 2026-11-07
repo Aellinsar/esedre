@@ -370,4 +370,54 @@ describe('Project Binding & End-to-End Workflow', () => {
     });
     expect(comment.author).toBe('LLMCodingPartner');
   });
+
+  it('supports ese update --file with preamble paragraph under # Title and ese update --summary (Ticket #94)', () => {
+    const sampleDir = path.join(tempRoot, 'sample-update-summary');
+    fs.mkdirSync(sampleDir, { recursive: true });
+
+    initWorkspace(sampleDir, {
+      projectCode: 'USUM',
+      projectName: 'Update Summary Project',
+    });
+
+    const created = runCli(
+      ['create', '--title', 'Initial ticket without summary', '--type', 'Feature', '--json'],
+      sampleDir
+    ).json();
+    expect(created.detail.summary).toBe('Summary to be defined.');
+
+    const specFilePath = path.join(sampleDir, 'spec-update.md');
+    fs.writeFileSync(
+      specFilePath,
+      [
+        '# Initial ticket without summary',
+        '',
+        'Overview paragraph directly under H1 without an explicit Summary header.',
+        '',
+        '### Feature Breakdown',
+        '1. Promote preamble paragraph into Summary.',
+        '2. Support --summary flag on ese update.',
+      ].join('\n'),
+      'utf-8'
+    );
+
+    const updatedFromFile = runCli(
+      ['update', String(created.meta.id), '--file', specFilePath, '--json'],
+      sampleDir
+    ).json();
+    expect(updatedFromFile.detail.summary).toBe(
+      'Overview paragraph directly under H1 without an explicit Summary header.'
+    );
+    expect(updatedFromFile.detail.summary).not.toContain('Summary to be defined.');
+
+    const updatedWithFlag = runCli(
+      ['update', String(created.meta.id), '--summary', 'Updated via CLI --summary flag.', '--json'],
+      sampleDir
+    ).json();
+    expect(updatedWithFlag.detail.summary).toBe('Updated via CLI --summary flag.');
+    expect(updatedWithFlag.detail.breakdown).toEqual([
+      'Promote preamble paragraph into Summary.',
+      'Support --summary flag on ese update.',
+    ]);
+  });
 });

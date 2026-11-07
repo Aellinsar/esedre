@@ -14,8 +14,11 @@ This skill establishes the mandatory verification standards, testing practices, 
 You are strictly and absolutely required to execute test and build checks whenever modifying code:
 
 ```bash
-# Run complete test suite (20 test files, 208+ unit and integration tests)
+# Run complete test suite (34+ test files including cross-platform contracts and E2E integration)
 npm test
+
+# Run multi-distro Linux Docker verification matrix (Debian slim Node 22, Alpine Node 22, Debian Node 20 LTS)
+npm run test:docker
 
 # Run full production build verification (lint + UI build + CLI bundling)
 npm run build
@@ -75,3 +78,24 @@ npm run pub -- --dry-run
 - **STRICTLY GET OUT OF THE UI UNLESS DIRECTED**: NEVER launch browser subagents, Chrome DevTools MCP sessions, or open/navigate browser URLs for UI testing/verification unless the user explicitly and directly commands you to do so in that specific turn.
 - The developer will conduct UI verification manually unless they instruct otherwise.
 - Do NOT perform autonomous visual checks, browser recordings, or UI inspection on your own initiative.
+
+---
+
+## 5. Multi-Tier Cross-Platform & Docker Testing Architecture
+
+Esedre enforces cross-platform compatibility across Windows, Linux, macOS, WSL2, and Docker via a 4-tier testing architecture:
+
+1. **Tier 1: Cross-Platform Contract Suite (`tests/crossPlatformContracts.test.ts`)**:
+   - Verifies OS-agnostic `.agents/mcp.json` generation, POSIX wrapper LF line endings (`\n`), `.gitattributes` rules, git index executable modes (`100755`), hermetic `ESEDRE_GLOBAL_DIR` routing (zero `os.homedir()` leaks), platform-aware path containment (`isPathInside`), CRLF vs LF parser/snapshot equivalence, and Node engine floor contracts.
+
+2. **Tier 2: Black-Box Subprocess, MCP Pipe & Daemon E2E Suite (`tests/integration/crossPlatformE2E.test.ts`)**:
+   - Spawns `dist/esedre.mjs` and platform-native wrappers (`.esedre/ese.mjs`, `.esedre/ese.cmd`, `.esedre/ese.ps1`, `./.esedre/ese`) across a full end-to-end workspace lifecycle.
+   - Exercises stdio MCP JSON-RPC initialization via the tracked `.agents/mcp.json` configuration, tests fragmented/delayed `stdin` pipe reads in `agy-pre-tool-hook.mjs`, verifies `SIGTERM` graceful daemon shutdown, and tests unrecorded daemon stop recovery without requiring `lsof`.
+
+3. **Tier 3: Local Docker Multi-Image Linux Verification (`npm run test:docker`)**:
+   - Defined in `tools/docker/Dockerfile.test` and `scripts/test-docker.js` (with `.dockerignore` excluding host `node_modules` and `dist`).
+   - Copies the worktree into native container `ext4`/`overlayfs` storage (`/tmp/esedre-linux-worktree`) under non-root user `node` with `/home/node/.esedre` locked down (`mode 0000`) to catch any `os.homedir()` leaks.
+   - Runs across 6 Linux distribution images: `node:22-slim` (Debian Bookworm `glibc` + `dash` without `lsof`), `node:22-alpine` (Alpine `musl` + BusyBox `ash`), `node:20-slim` (Node 20 LTS), `ubuntu:24.04` (Ubuntu Noble LTS with UID 1000 `ubuntu` user), `fedora:41` (Red Hat / RPM family `dnf` + OpenSSL 3 crypto policy), and `archlinux:latest` (Arch Linux rolling `pacman`). Supports `--quick`/`--slim`, `--alpine`, `--ubuntu`, `--fedora`, `--arch`, or `--image <tag>`.
+
+4. **Tier 4: GitHub Actions Multi-OS Matrix (`.github/workflows/ci.yml`)**:
+   - Runs automated `npm ci`, `npm run build`, and `npm test` across `ubuntu-latest`, `windows-latest`, and `macos-latest` on Node 20 and Node 22.

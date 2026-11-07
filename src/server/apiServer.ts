@@ -291,7 +291,7 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
     try {
       if (req.method === 'GET') {
         if (pathname === '/api/ping') {
-          sendJson(res, 200, { status: 'ok', esedre: true });
+          sendJson(res, 200, { status: 'ok', esedre: true, pid: process.pid });
           return true;
         }
 

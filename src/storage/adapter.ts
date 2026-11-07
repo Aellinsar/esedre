@@ -2,6 +2,7 @@ import {
   EsedreTicket,
   TicketMeta,
   TicketStatus,
+  TicketStatusFilter,
   ProjectDescriptor,
   TicketComment,
   TicketType,
@@ -19,6 +20,12 @@ import {
   ReleaseLeaseInput,
   ClaimLeaseResult,
 } from '../types.js';
+
+export interface CreateTicketLinkInput {
+  relation: TicketLinkRelation;
+  targetTicketId?: number | string;
+  targetId?: number | string;
+}
 
 export interface CreateTicketInput {
   title: string;
@@ -39,15 +46,17 @@ export interface CreateTicketInput {
   planMarkdown?: string;
   milestone?: string;
   featureFlag?: string;
+  links?: CreateTicketLinkInput[];
 }
 
 export interface ListTicketsFilter {
   project?: string;
-  status?: TicketStatus;
+  status?: TicketStatusFilter | string;
   type?: TicketType;
   category?: TicketType;
   priority?: TicketPriority | 'none' | string;
   milestone?: string;
+  featureFlag?: string;
   isBlocked?: boolean;
   linkedTo?: string;
   leased?: boolean;
@@ -74,12 +83,15 @@ export interface DuplicateProjectWarning {
   duplicateHub: string;
 }
 
-export interface UpdateTicketInput extends Omit<Partial<TicketMeta>, 'priority'> {
+export interface UpdateTicketInput extends Omit<Partial<TicketMeta>, 'priority' | 'featureFlag' | 'milestone'> {
   priority?: TicketPriority | 'none' | null | string;
+  featureFlag?: string | null;
+  milestone?: string | null;
+  summary?: string;
   detail?: string;
   detailMarkdown?: string;
-  plan?: string;
-  planMarkdown?: string;
+  plan?: string | null;
+  planMarkdown?: string | null;
 }
 
 export interface StorageAdapter {
@@ -100,6 +112,17 @@ export interface StorageAdapter {
     targetId: number | string,
     options?: { author?: string; project?: string }
   ): Promise<{ source: EsedreTicket; target?: EsedreTicket }>;
+  addTicketLinks?(
+    sourceId: number | string,
+    relation: TicketLinkRelation,
+    targetIds: Array<number | string>,
+    options?: { author?: string; project?: string }
+  ): Promise<{ source: EsedreTicket; targets: EsedreTicket[] }>;
+  removeTicketLinks?(
+    sourceId: number | string,
+    targetIds: Array<number | string>,
+    options?: { relation?: TicketLinkRelation; project?: string }
+  ): Promise<{ source: EsedreTicket; targets: EsedreTicket[] }>;
   removeTicketLink(
     sourceId: number | string,
     targetId: number | string,
@@ -147,4 +170,3 @@ export interface StorageAdapter {
   getTicketLease(id: number | string, projectCode?: string): Promise<TicketLease | null>;
   listLeases(projectCode?: string): Promise<TicketLease[]>;
 }
-

@@ -396,6 +396,79 @@ export class SecurityFilter implements StorageAdapter {
     };
   }
 
+  public async addTicketLinks(
+    sourceId: number | string,
+    relation: TicketLinkRelation,
+    targetIds: Array<number | string>,
+    options?: { author?: string; project?: string }
+  ): Promise<{ source: EsedreTicket; targets: EsedreTicket[] }> {
+    const lookupSourceId = this.qualifyTicketId(sourceId, options?.project);
+    const lookupTargetIds = targetIds.map((t) => this.qualifyTicketId(t, options?.project));
+    const sourceTicket = await this.target.getTicket(lookupSourceId);
+    if (sourceTicket) {
+      const code = sourceTicket.projectDescriptor?.code || sourceTicket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    } else if (options?.project && !isProjectAuthorized(options.project, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(options.project);
+    }
+    if (this.target.addTicketLinks) {
+      const result = await this.target.addTicketLinks(lookupSourceId, relation, lookupTargetIds, options);
+      return {
+        source: this.redactLinks(result.source),
+        targets: result.targets.map((t) => this.redactLinks(t)),
+      };
+    }
+    let lastSource: EsedreTicket | undefined;
+    const targets: EsedreTicket[] = [];
+    for (const tid of lookupTargetIds) {
+      const res = await this.target.addTicketLink(lookupSourceId, relation, tid, options);
+      lastSource = res.source;
+      if (res.target) targets.push(this.redactLinks(res.target));
+    }
+    return {
+      source: this.redactLinks(lastSource || (await this.target.getTicket(lookupSourceId))!),
+      targets,
+    };
+  }
+
+  public async removeTicketLinks(
+    sourceId: number | string,
+    targetIds: Array<number | string>,
+    options?: { relation?: TicketLinkRelation; project?: string }
+  ): Promise<{ source: EsedreTicket; targets: EsedreTicket[] }> {
+    const lookupSourceId = this.qualifyTicketId(sourceId, options?.project);
+    const lookupTargetIds = targetIds.map((t) => this.qualifyTicketId(t, options?.project));
+    const sourceTicket = await this.target.getTicket(lookupSourceId);
+    if (sourceTicket) {
+      const code = sourceTicket.projectDescriptor?.code || sourceTicket.meta.project;
+      if (code && !isProjectAuthorized(code, this.config.allowedProjects)) {
+        throw new EsedreAuthorizationError(code);
+      }
+    } else if (options?.project && !isProjectAuthorized(options.project, this.config.allowedProjects)) {
+      throw new EsedreAuthorizationError(options.project);
+    }
+    if (this.target.removeTicketLinks) {
+      const result = await this.target.removeTicketLinks(lookupSourceId, lookupTargetIds, options);
+      return {
+        source: this.redactLinks(result.source),
+        targets: result.targets.map((t) => this.redactLinks(t)),
+      };
+    }
+    let lastSource: EsedreTicket | undefined;
+    const targets: EsedreTicket[] = [];
+    for (const tid of lookupTargetIds) {
+      const res = await this.target.removeTicketLink(lookupSourceId, tid, options);
+      lastSource = res.source;
+      if (res.target) targets.push(this.redactLinks(res.target));
+    }
+    return {
+      source: this.redactLinks(lastSource || (await this.target.getTicket(lookupSourceId))!),
+      targets,
+    };
+  }
+
   public async getAnswers(id: number | string): Promise<Record<string, string>> {
     const { lookupId, ticket } = await this.resolveTicketLookup(id);
     if (ticket) {

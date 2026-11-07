@@ -22,6 +22,7 @@ import {
   assertProjectCompatible,
 } from './compatibility.js';
 import { createProjectMigrationBackup, type ProjectBackupInput } from './backup.js';
+import { normalizeDashesAndMojibake, normalizeComplexity } from '../utils/formatter.js';
 
 export {
   CURRENT_DATA_VERSION,
@@ -66,7 +67,162 @@ export interface StorageMigration {
  * Sequential registry of Esedre storage schema migrations.
  * Sorted in ascending SemVer order by version.
  */
-export const MIGRATIONS: StorageMigration[] = [];
+export const MIGRATION_V1_1_0_MOJIBAKE_AND_COMPLEXITY: StorageMigration = {
+  version: '1.1.0',
+  description: 'Normalize UTF-8 / Windows-1252 mojibake in ticket/milestone text and standardize complexity enums',
+  migrate: async (ctx) => {
+    const pJsonPath = path.join(ctx.projectDir, 'project.json');
+    if (fs.existsSync(pJsonPath)) {
+      try {
+        const pObj = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8'));
+        if (pObj && typeof pObj === 'object') {
+          let pChanged = false;
+          for (const k of ['name', 'description']) {
+            if (typeof pObj[k] === 'string') {
+              const norm = normalizeDashesAndMojibake(pObj[k]);
+              if (norm !== pObj[k]) {
+                pObj[k] = norm;
+                pChanged = true;
+              }
+            }
+          }
+          if (pChanged) {
+            fs.writeFileSync(pJsonPath, JSON.stringify(pObj, null, 2) + '\n', 'utf-8');
+          }
+        }
+      } catch {}
+    }
+
+    const milestonesCandidates = [
+      path.join(ctx.projectDir, 'milestones.json'),
+      path.join(path.dirname(ctx.ticketsDir), 'milestones.json'),
+    ];
+    for (const mPath of milestonesCandidates) {
+      if (fs.existsSync(mPath)) {
+        try {
+          const raw = fs.readFileSync(mPath, 'utf-8');
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            let mChanged = false;
+            for (const m of parsed) {
+              for (const mk of ['title', 'name', 'description', 'featureFlag']) {
+                if (typeof m[mk] === 'string') {
+                  const norm = normalizeDashesAndMojibake(m[mk]);
+                  if (norm !== m[mk]) {
+                    m[mk] = norm;
+                    mChanged = true;
+                  }
+                }
+              }
+            }
+            if (mChanged) {
+              fs.writeFileSync(mPath, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
+            }
+          }
+        } catch {}
+      }
+    }
+
+    if (!fs.existsSync(ctx.ticketsDir)) return;
+    const entries = fs.readdirSync(ctx.ticketsDir, { withFileTypes: true });
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue;
+      const ticketDir = path.join(ctx.ticketsDir, ent.name);
+
+      const metaPath = path.join(ticketDir, 'meta.json');
+      let metaObj: Record<string, any> | null = null;
+      if (fs.existsSync(metaPath)) {
+        try {
+          metaObj = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+          if (metaObj && typeof metaObj === 'object') {
+            let metaChanged = false;
+            const stringKeys = ['title', 'estimatedEffort', 'milestone', 'featureFlag', 'inheritedFeatureFlag', 'submittedBy'];
+            for (const key of stringKeys) {
+              if (typeof metaObj[key] === 'string') {
+                const norm = normalizeDashesAndMojibake(metaObj[key]);
+                if (norm !== metaObj[key]) {
+                  metaObj[key] = norm;
+                  metaChanged = true;
+                }
+              }
+            }
+            if (metaObj.complexity !== undefined && metaObj.complexity !== null) {
+              const normComp = normalizeComplexity(metaObj.complexity);
+              if (normComp !== metaObj.complexity) {
+                metaObj.complexity = normComp;
+                metaChanged = true;
+              }
+            }
+            if (metaChanged) {
+              fs.writeFileSync(metaPath, JSON.stringify(metaObj, null, 2) + '\n', 'utf-8');
+            }
+          }
+        } catch {}
+      }
+
+      const detailPath = path.join(ticketDir, 'detail.md');
+      if (fs.existsSync(detailPath)) {
+        try {
+          const rawDetail = fs.readFileSync(detailPath, 'utf-8');
+          let normDetail = normalizeDashesAndMojibake(rawDetail);
+          if (metaObj?.title) {
+            normDetail = normDetail.replace(/^(#\s+Ticket\s+#\d+:\s*).+$/m, `$1${metaObj.title}`);
+          }
+          if (metaObj?.complexity) {
+            normDetail = normDetail.replace(/^(\*\*Complexity\*\*:\s*).+$/m, `$1${metaObj.complexity}`);
+          }
+          if (normDetail !== rawDetail) {
+            fs.writeFileSync(detailPath, normDetail, 'utf-8');
+          }
+        } catch {}
+      }
+
+      const planPath = path.join(ticketDir, 'implementation_plan.md');
+      if (fs.existsSync(planPath)) {
+        try {
+          const rawPlan = fs.readFileSync(planPath, 'utf-8');
+          const normPlan = normalizeDashesAndMojibake(rawPlan);
+          if (normPlan !== rawPlan) {
+            fs.writeFileSync(planPath, normPlan, 'utf-8');
+          }
+        } catch {}
+      }
+
+      const commentsPath = path.join(ticketDir, 'comments.json');
+      if (fs.existsSync(commentsPath)) {
+        try {
+          const comments = JSON.parse(fs.readFileSync(commentsPath, 'utf-8'));
+          if (Array.isArray(comments)) {
+            let cChanged = false;
+            for (const c of comments) {
+              if (typeof c.text === 'string') {
+                const norm = normalizeDashesAndMojibake(c.text);
+                if (norm !== c.text) {
+                  c.text = norm;
+                  cChanged = true;
+                }
+              }
+              if (typeof c.author === 'string') {
+                const norm = normalizeDashesAndMojibake(c.author);
+                if (norm !== c.author) {
+                  c.author = norm;
+                  cChanged = true;
+                }
+              }
+            }
+            if (cChanged) {
+              fs.writeFileSync(commentsPath, JSON.stringify(comments, null, 2) + '\n', 'utf-8');
+            }
+          }
+        } catch {}
+      }
+    }
+  },
+};
+
+export const MIGRATIONS: StorageMigration[] = [
+  MIGRATION_V1_1_0_MOJIBAKE_AND_COMPLEXITY,
+];
 
 export interface ResolvedProjectMetadataPaths {
   projectDir: string;
@@ -133,6 +289,7 @@ export interface ProjectMigrationResult {
   stampedFilesCount: number;
   backupPath?: string;
   alreadyUpToDate: boolean;
+  pinned?: boolean;
 }
 
 /**
@@ -159,6 +316,22 @@ export async function runProjectMigrations(
 
   const wasStampedOnDisk = Boolean(diskProjectJson?.schemaVersion || loc.project.schemaVersion);
   const previousSchemaVersion = getProjectSchemaVersion(diskProjectJson || loc.project);
+  const isPinned = Boolean(diskProjectJson?.pinSchemaVersion ?? loc.project.pinSchemaVersion);
+
+  if (isPinned && !options.forceStamp) {
+    return {
+      projectCode: loc.project.code,
+      projectDir: paths.projectDir,
+      sourceType: loc.sourceType,
+      previousSchemaVersion,
+      currentSchemaVersion: previousSchemaVersion,
+      esedreVersion: diskProjectJson?.esedreVersion || loc.project.esedreVersion || CURRENT_ESEDRE_VERSION,
+      appliedMigrations: [],
+      stampedFilesCount: 0,
+      alreadyUpToDate: true,
+      pinned: true,
+    };
+  }
 
   // Forward version guard: never allow an older CLI to downgrade a newer project schema
   if (compareVersions(previousSchemaVersion, targetDataVersion) > 0) {
@@ -172,7 +345,7 @@ export async function runProjectMigrations(
 
   const pendingMigrations = allMigrations.filter(
     (m) =>
-      compareVersions(m.version, previousSchemaVersion) > 0 &&
+      (compareVersions(m.version, previousSchemaVersion) > 0 || Boolean(options.forceStamp)) &&
       compareVersions(m.version, targetDataVersion) <= 0
   );
 

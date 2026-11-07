@@ -57,10 +57,39 @@ export function detectGitBranch(cwd?: string): string | undefined {
   }
 }
 
+function resolveCanonicalPath(p: string): string {
+  const initial = path.resolve(p.normalize('NFC'));
+  const tailSegments: string[] = [];
+  let current = initial;
+  while (true) {
+    try {
+      if (fs.existsSync(current)) {
+        const real = fs.realpathSync(current);
+        return (tailSegments.length > 0 ? path.join(real, ...tailSegments) : real).normalize('NFC');
+      }
+      const nfdCurrent = current.normalize('NFD');
+      if (nfdCurrent !== current && fs.existsSync(nfdCurrent)) {
+        const real = fs.realpathSync(nfdCurrent);
+        return (tailSegments.length > 0 ? path.join(real, ...tailSegments) : real).normalize('NFC');
+      }
+    } catch {}
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    tailSegments.unshift(path.basename(current));
+    current = parent;
+  }
+  return initial;
+}
+
 export function isPathInside(childPath: string, parentPath: string): boolean {
   if (!childPath || !parentPath) return false;
-  const normParent = path.resolve(parentPath).toLowerCase();
-  const normChild = path.resolve(childPath).toLowerCase();
+  const isCaseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
+  const canonParent = resolveCanonicalPath(parentPath);
+  const canonChild = resolveCanonicalPath(childPath);
+  const normParent = isCaseInsensitive ? canonParent.toLowerCase() : canonParent;
+  const normChild = isCaseInsensitive ? canonChild.toLowerCase() : canonChild;
   if (normChild === normParent) return true;
   const rel = path.relative(normParent, normChild);
   return !rel.startsWith('..') && !path.isAbsolute(rel);

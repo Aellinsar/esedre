@@ -22,8 +22,8 @@ This skill details how the Esedre Model Context Protocol (MCP) server is structu
 The server registers the following tools in `tools/list`:
 
 1. `esedre_list_tickets`:
-   - Parameters: `{ project?: string, status?: string, type?: string, priority?: string, milestone?: string, isBlocked?: boolean, leased?: boolean, leasedBy?: string, linkedTo?: string, search?: string, includePlan?: boolean }`
-   - Returns a structured list of roadmap tickets matching filters, including `hasPlan` and `summary`, with optional `planMarkdown` hydration when `includePlan: true`.
+   - Parameters: `{ project?: string, status?: string, type?: string, priority?: string, milestone?: string, featureFlag?: string, isBlocked?: boolean, leased?: boolean, leasedBy?: string, linkedTo?: string, search?: string, includePlan?: boolean, compact?: boolean, includeCompleted?: boolean }`
+   - Returns a structured list of roadmap tickets matching filters (`status` supports `'Planned'`, `'In Development'`, `'Completed'`, `'Rejected'`, `'active'`/`'open'`, and `'closed'`), including `hasPlan` and `summary` for active tickets (with terminal `Completed`/`Rejected` tickets projected as compact index entries unless explicitly queried via `status`), and optional `planMarkdown` hydration when `includePlan: true`.
 2. `esedre_get_ticket`:
    - Parameters: `{ ticketId: number | string, id?: number | string, project?: string, includeRaw?: boolean }`
    - Returns full metadata (with `meta.links` and `meta.lease` deduplicated in favor of top-level enriched `links` and `lease`, and UI `projectDescriptor.colors` omitted), summary, feature/task/fix breakdown, technical details, comments, links, lease state, blocker status, and SHA-1 hash. By default, omits `detail.raw` when `detail.md` is losslessly represented by the parsed sections, while automatically preserving `detail.raw` when custom headings, code blocks, or tables exist (or when `includeRaw: true`).
@@ -34,10 +34,10 @@ The server registers the following tools in `tools/list`:
    - Parameters: `{ ticketId: number | string, planMarkdown?: string, plan?: string, lastHash?: string }`
    - Persists updated plan markdown with optimistic concurrency control. Accepts either `planMarkdown` or `plan` as alias with validated required parameter presence.
 5. `esedre_create_ticket`:
-   - Parameters: `{ title: string, type?: string, priority?: string, milestone?: string, project?: string, complexity?: string, effort?: string, summary?: string, detail?: string, plan?: string, planMarkdown?: string, author?: string, includeRaw?: boolean }`
+   - Parameters: `{ title: string, type?: string, priority?: string, milestone?: string, featureFlag?: string, project?: string, complexity?: string, effort?: string, summary?: string, detail?: string, plan?: string, planMarkdown?: string, links?: Array<{ relation: string, targetTicketId: number | string }>, author?: string, includeRaw?: boolean }`
    - Creates a new ticket with optional priority, milestone, specification markdown, and implementation plan in a single atomic call. By default, omits `detail.raw` to keep response payloads compact unless `includeRaw: true`.
 6. `esedre_update_ticket`:
-   - Parameters: `{ ticketId: number | string, status?: string, type?: string, priority?: string | null, milestone?: string, title?: string, detail?: string, detailMarkdown?: string, plan?: string, planMarkdown?: string, complexity?: string, effort?: string, inDevelopment?: boolean, featureFlag?: string, lastHash?: string, includeRaw?: boolean }`
+   - Parameters: `{ ticketId: number | string, status?: string, type?: string, priority?: string | null, milestone?: string, title?: string, summary?: string, detail?: string, detailMarkdown?: string, plan?: string, planMarkdown?: string, complexity?: string, effort?: string, inDevelopment?: boolean, featureFlag?: string, lastHash?: string, includeRaw?: boolean }`
    - Modifies ticket attributes, specification detail, and implementation plan with optimistic concurrency control and automatic `detail.md` header reconciliation. By default, omits `detail.raw` unless `includeRaw: true`.
 7. `esedre_claim_ticket`:
    - Parameters: `{ ticketId: number | string, holder?: string, workerId?: string, agentType?: string, system?: string, sessionId?: string, branch?: string, worktree?: string, workspace?: string, ttlMinutes?: number, force?: boolean, project?: string }`
@@ -52,11 +52,13 @@ The server registers the following tools in `tools/list`:
     - Parameters: `{ project?: string }`
     - Lists all active unexpired ticket leases across authorized projects.
 11. `esedre_link_ticket`:
-    - Parameters: `{ sourceTicketId: number | string, relation: string, targetTicketId: number | string, author?: string, project?: string }` (also accepts aliases `id`, `sourceId`, or `ticketId` for source, and `targetId` for target).
-    - Creates a bi-directional link between two tickets (`relates-to`, `blocks`, `parent-of`, `duplicates`). Returns a compact confirmation payload `{ success: true, sourceKey, relation, targetKey, sourceRevision, targetRevision, links }`.
+    - Parameters: `{ sourceTicketId: number | string, relation: string, targetTicketId?: number | string, targetTicketIds?: Array<number | string>, author?: string, project?: string }` (also accepts aliases `id`, `sourceId`, or `ticketId` for source, and `targetId` / `targetIds` for target).
+   - Creates bi-directional links between the source ticket and one or more targets (`relates-to`, `blocks`, `parent-of`, `duplicates`) in a single atomic revision bump and snapshot refresh. Returns `{ success: true, sourceKey, relation, targetKey, targetKeys, sourceRevision, sourceSha1, sha1, targetRevision, targetSha1, targets, links }`.
+
 12. `esedre_unlink_ticket`:
-    - Parameters: `{ sourceTicketId: number | string, targetTicketId: number | string, project?: string }` (also accepts aliases `id`, `sourceId`, or `ticketId` for source, and `targetId` for target).
-    - Removes a bi-directional link between two tickets. Returns a compact confirmation payload `{ success: true, sourceKey, targetKey, sourceRevision, targetRevision, links }`.
+    - Parameters: `{ sourceTicketId: number | string, targetTicketId?: number | string, targetTicketIds?: Array<number | string>, project?: string }` (also accepts aliases `id`, `sourceId`, or `ticketId` for source, and `targetId` / `targetIds` for target).
+   - Removes bi-directional links between the source ticket and one or more targets in a single atomic revision bump and snapshot refresh. Returns `{ success: true, sourceKey, targetKey, targetKeys, sourceRevision, sourceSha1, sha1, targetRevision, targetSha1, targets, links }`.
+
 13. `esedre_add_comment`:
     - Parameters: `{ ticketId: number | string, text?: string, file?: string, author?: string }`
     - Appends a developer or LLM agent verification note to the ticket.

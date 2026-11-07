@@ -1,0 +1,55 @@
+ARG BASE_IMAGE=node:22-slim
+FROM ${BASE_IMAGE}
+
+# Install git, bash, ca-certificates, and (for non-node distro images like Ubuntu/Fedora/Arch) Node.js >=20 + npm.
+# Intentionally do NOT install lsof so minimal container daemon stop recovery is tested.
+RUN if command -v apk >/dev/null 2>&1; then \
+      apk add --no-cache git bash ca-certificates && \
+      if ! command -v node >/dev/null 2>&1; then apk add --no-cache nodejs npm; fi; \
+    elif command -v apt-get >/dev/null 2>&1; then \
+      export DEBIAN_FRONTEND=noninteractive && \
+      apt-get update && \
+      if ! command -v node >/dev/null 2>&1; then \
+        apt-get install -y --no-install-recommends curl ca-certificates gnupg git bash && \
+        curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+        apt-get install -y --no-install-recommends nodejs; \
+      else \
+        apt-get install -y --no-install-recommends git bash ca-certificates; \
+      fi && \
+      rm -rf /var/lib/apt/lists/*; \
+    elif command -v dnf >/dev/null 2>&1; then \
+      dnf install -y git bash ca-certificates nodejs npm && dnf clean all; \
+    elif command -v pacman >/dev/null 2>&1; then \
+      pacman -Sy --noconfirm git bash ca-certificates nodejs npm && rm -rf /var/cache/pacman/pkg/*; \
+    fi
+
+# Ensure non-root 'node' user exists across all distros (Debian, Ubuntu 24.04, Alpine, Fedora, Arch)
+RUN if ! id -u node >/dev/null 2>&1; then \
+      useradd -m -s /bin/bash node || adduser -D -h /home/node -s /bin/bash node; \
+    fi && \
+    mkdir -p /home/node /tmp/esedre-linux-worktree && \
+    chown -R node:node /home/node /tmp/esedre-linux-worktree
+
+WORKDIR /tmp/esedre-linux-worktree
+
+USER node
+
+# Copy dependency manifests first for fast Docker BuildKit layer caching.
+# Fall back to clean npm install (removing out-of-sync package-lock.json) if npm ci fails
+# so the container still reaches the full Vitest test suite (where lockfile sync is asserted).
+COPY --chown=node:node package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund || (rm -rf node_modules package-lock.json && npm install --no-audit --no-fund --no-package-lock --legacy-peer-deps)
+
+# Copy full repository (excluding node_modules/dist via .dockerignore) into native Linux filesystem
+COPY --chown=node:node . .
+
+# Lock down /home/node/.esedre (owned by root with mode 0000) so any code that bypasses
+# ESEDRE_GLOBAL_DIR / getGlobalConfigDir() and touches os.homedir()/.esedre fails with EACCES.
+USER root
+RUN mkdir -p /home/node/.esedre && chown root:root /home/node/.esedre && chmod 0000 /home/node/.esedre
+USER node
+
+ENV CI=true
+
+# Build CLI & UI bundles inside Linux, then execute the cross-platform + full test suite
+CMD ["sh", "-c", "npm run build && npx vitest run tests/crossPlatformContracts.test.ts tests/integration/crossPlatformE2E.test.ts"]

@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
+import https from 'node:https';
 import { DEFAULT_ALLOW_LIST, GAMEDAY_ALLOW_LIST } from './constants.js';
 
 // 1. Parse Mode (npm run net:all passes --all)
@@ -37,8 +38,6 @@ function getCloudflaredPath() {
   }
   return 'cloudflared';
 }
-
-import https from 'node:https';
 
 // 3. Check if local ISP is actively intercepting Cloudflare Edge with fake certs (matchday block)
 function checkIspMatchBlock() {
@@ -123,10 +122,10 @@ async function main() {
   let allowedIpsEnv = '';
 
   if (isAllMode) {
-    console.log('ðŸ”“ [Security] PUBLIC MODE ACTIVE: Tunnel is open to ALL external IP addresses.\n');
+    console.log('🔓 [Security] PUBLIC MODE ACTIVE: Tunnel is open to ALL external IP addresses.\n');
     allowedIpsEnv = '*';
   } else {
-    console.log('ðŸ” [Security] Resolving current external IP addresses for whitelist...');
+    console.log('🔍 [Security] Resolving current external IP addresses for whitelist...');
     const isMatchBlockActive = await checkIspMatchBlock();
     const detectedIps = await getDetectedIps();
 
@@ -134,11 +133,11 @@ async function main() {
     if (process.env.EXTRA_ALLOWED_IPS) {
       extraIps = process.env.EXTRA_ALLOWED_IPS.split(',').map((s) => s.trim()).filter(Boolean);
     } else if (isMatchBlockActive) {
-      console.log('âš½ \x1b[33m[ISP Match-Day Block Detected]\x1b[0m Spanish ISP is actively dropping direct Cloudflare Edge packets.');
-      console.log('   ðŸ›¡ï¸  \x1b[32m[Auto-Profile: GAMEDAY_ALLOW_LIST]\x1b[0m Enabled Cloudflare WARP mobile subnet (2a09:bac0::/28).\n');
+      console.log('⚽ \x1b[33m[ISP Match-Day Block Detected]\x1b[0m Spanish ISP is actively dropping direct Cloudflare Edge packets.');
+      console.log('   🛡️  \x1b[32m[Auto-Profile: GAMEDAY_ALLOW_LIST]\x1b[0m Enabled Cloudflare WARP mobile subnet (2a09:bac0::/28).\n');
       extraIps = [...DEFAULT_ALLOW_LIST, ...GAMEDAY_ALLOW_LIST];
     } else {
-      console.log('ðŸ  \x1b[32m[Auto-Profile: DEFAULT_ALLOW_LIST]\x1b[0m No ISP match block detected. Enforcing strict Home IP whitelist.\n');
+      console.log('🏠 \x1b[32m[Auto-Profile: DEFAULT_ALLOW_LIST]\x1b[0m No ISP match block detected. Enforcing strict Home IP whitelist.\n');
       extraIps = [...DEFAULT_ALLOW_LIST];
     }
 
@@ -148,13 +147,13 @@ async function main() {
 
     if (detectedIps.length > 0) {
       allowedIpsEnv = detectedIps.join(',');
-      console.log('ðŸ”’ [Security] IP WHITELIST ACTIVE:');
+      console.log('🔒 [Security] IP WHITELIST ACTIVE:');
       console.log(`   - Allowed IP(s)/Ranges: ${detectedIps.join(', ')}`);
       console.log('   - Direct Connections: Localhost & Local LAN');
       console.log('   - External requests from other IPs will receive HTTP 403 Forbidden.');
       console.log('   (Tip: Run "npm run net:all" to allow all external IPs)\n');
     } else {
-      console.warn('âš ï¸ [Security] Could not resolve external IP addresses. Permissive mode enabled.\n');
+      console.warn('⚠️  [Security] Could not resolve external IP addresses. Permissive mode enabled.\n');
       allowedIpsEnv = '*';
     }
   }
@@ -206,13 +205,13 @@ async function main() {
   let esedre = null;
 
   if (isEsedreDisabled) {
-    console.log('ðŸ“Œ [Esedre] Daemon skipped (--no-esedre active).\n');
+    console.log('📌 [Esedre] Daemon skipped (--no-esedre active).\n');
   } else if (!esedrePath || !esedreConfigPath) {
     // Project does not have Esedre configured or built; skip silently
   } else {
     const portBusy = await isPortInUse(5674);
     if (portBusy) {
-      console.log('âš¡ [Esedre] Existing server detected on port 5674. Reusing running daemon.\n');
+      console.log('⚡ [Esedre] Existing server detected on port 5674. Reusing running daemon.\n');
     } else {
       esedre = spawn(process.execPath, [esedrePath, 'start', '--foreground'], {
         stdio: 'inherit',

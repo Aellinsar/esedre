@@ -43,7 +43,7 @@
 6. **Monorepo / In-Workspace Hub**: Auto-discovers `projects/` at `workspaceRoot`, `./data`, or `./.esedre` when `dataDir` is omitted.
 
 **Authoritative Ingress Hierarchy (Zero-Latency Snapshot First)**:
-1. **Primary Read-Only Inspection**: Always check `.esedre/snapshot.json` in the workspace root first for zero-latency access to all tickets, summaries, plans, and revision hashes.
+1. **Primary Read-Only Inspection**: Always check `.esedre/snapshot.json` in the workspace root first for zero-latency access to all tickets, summaries, plan presence (`hasPlan`), and revision hashes.
 2. **Dynamic Lookups & Mutations (MCP)**: Use Esedre MCP tools (`esedre_list_tickets`, `esedre_get_ticket`, `esedre_get_plan`, `esedre_save_plan`, `esedre_create_ticket`, `esedre_update_ticket`, `esedre_claim_ticket`, `esedre_renew_lease`, `esedre_release_ticket`, `esedre_list_leases`, `esedre_link_ticket`, `esedre_unlink_ticket`, `esedre_list_milestones`, `esedre_get_milestone`, `esedre_create_milestone`, `esedre_update_milestone`, `esedre_add_comment`) when MCP is active.
 3. **CLI Ingress**: Use `.esedre/ese` or global `ese` (`get`, `list`, `plan`, `update`, `comment`, `create`, `lease`, `link`, `unlink`, `milestone`, `snapshot`, `refresh`).
 4. **Storage Boundary**: Backing hubs (`esedre-data`) are managed strictly through the snapshot projection, MCP tools, or `ese` CLI.

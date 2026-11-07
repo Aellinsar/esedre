@@ -20,6 +20,7 @@ import {
   TicketDetail,
   TicketType,
   TicketCategory,
+  matchesTicketStatusFilter,
   EsedreConflictError,
   UpdateProjectInput,
   RenameProjectCodeInput,
@@ -47,9 +48,19 @@ import {
 } from '../migrations/index.js';
 import { resolveWorkerIdentity, isPathInside, isWorkspaceOrGitDir } from '../utils/identity.js';
 import { StorageAdapter, CreateTicketInput, UpdateTicketInput, ListTicketsFilter, RegisterProjectInput, DuplicateProjectWarning } from './adapter.js';
-import { EsedreConfig, findEsedreConfig, readGlobalConfig, expandHome, validateProjectCode, validateProjectName } from '../config.js';
+import { EsedreConfig, findEsedreConfig, readGlobalConfig, expandHome, validateProjectCode, validateProjectName, getGlobalConfigPath } from '../config.js';
 import { computeTicketHash, verifyTicketHash } from '../snapshot.js';
-import { normalizeDashesAndMojibake, normalizeTicketFields, normalizePriority } from '../utils/formatter.js';
+import {
+  normalizeDashesAndMojibake,
+  normalizeTicketFields,
+  normalizePriority,
+  normalizeComplexity,
+  isClearSentinel,
+  normalizeTicketType,
+  validateTicketType,
+  validateTicketStatus,
+  validateMilestoneStatus,
+} from '../utils/formatter.js';
 
 function writeSafeFile(filePath: string, content: string | Buffer): void {
   const dir = path.dirname(filePath);
@@ -116,6 +127,31 @@ export class FilesystemStorageAdapter implements StorageAdapter {
   private dirtyDirsDuringPrewarm = new Set<string>();
   private isPrewarming = false;
   private prewarmAborted = false;
+
+  private resolveTicketVersionStamps(
+    project: ProjectDescriptor,
+    existingDiskMeta?: Partial<TicketMeta> | null
+  ): { schemaVersion?: string; esedreVersion?: string } {
+    const projectSchema = project.schemaVersion;
+    const projectEsedre = project.esedreVersion;
+    const diskSchema = existingDiskMeta?.schemaVersion;
+    const diskEsedre = existingDiskMeta?.esedreVersion;
+
+    if (!projectSchema && !diskSchema) {
+      return {};
+    }
+
+    const effectiveSchema = projectSchema || diskSchema;
+    const effectiveEsedre =
+      projectSchema && projectSchema !== CURRENT_DATA_VERSION && projectEsedre
+        ? projectEsedre
+        : (projectEsedre || diskEsedre || CURRENT_ESEDRE_VERSION);
+
+    return {
+      ...(effectiveSchema ? { schemaVersion: effectiveSchema } : {}),
+      ...(effectiveEsedre ? { esedreVersion: effectiveEsedre } : {}),
+    };
+  }
 
   public getCacheGeneration(): number {
     return this.cacheGeneration;
@@ -194,6 +230,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
             (fallbackWatcher as any).unref();
           }
           this.activeWatchers.set(resolvedTicketsDir, fallbackWatcher);
+          const attachSubWatchers = () => { try { for (const ent of fs.readdirSync(resolvedTicketsDir, { withFileTypes: true })) { if (!ent.isDirectory()) continue; const subDir = path.join(resolvedTicketsDir, ent.name); if (this.activeWatchers.has(subDir)) continue; try { const sw = fs.watch(subDir, { persistent: false }, () => this.invalidateTicketCache(subDir)); sw.on('error', () => { try { sw.close(); } catch {} this.activeWatchers.delete(subDir); }); if (typeof (sw as any).unref === 'function') (sw as any).unref(); this.activeWatchers.set(subDir, sw); } catch {} } } catch {} }; attachSubWatchers(); fallbackWatcher.on('change', () => attachSubWatchers());
         } catch {}
       }
     }
@@ -824,11 +861,11 @@ export class FilesystemStorageAdapter implements StorageAdapter {
 
     let targetHub: string | null = null;
     if (input.hub) {
-      const targetQuery = input.hub.trim();
+      const targetQuery = input.hub.trim().normalize('NFC');
       const resolvedQuery = path.resolve(this.workspaceRoot, expandHome(targetQuery)).toLowerCase();
       const isPathLike = targetQuery.includes('/') || targetQuery.includes('\\');
       const basenameMatches = existingHubs.filter(
-        (h) => path.basename(h).toLowerCase() === targetQuery.toLowerCase()
+        (h) => path.basename(h).normalize('NFC').toLowerCase() === targetQuery.toLowerCase()
       );
 
       if (!isPathLike && basenameMatches.length > 1) {
@@ -839,7 +876,8 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       } else if (basenameMatches.length === 1 && !isPathLike) {
         targetHub = basenameMatches[0];
       } else {
-        const exactPathMatch = existingHubs.find((h) => h.toLowerCase() === resolvedQuery);
+        const queryAbs = path.resolve(this.workspaceRoot, expandHome(targetQuery));
+        const exactPathMatch = existingHubs.find((h) => h.normalize('NFC').toLowerCase() === resolvedQuery || (isPathInside(h, queryAbs) && isPathInside(queryAbs, h)));
         if (exactPathMatch) {
           targetHub = exactPathMatch;
         } else if (basenameMatches.length === 1) {
@@ -929,8 +967,10 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         name: cleanName,
         description: cleanDesc,
         colors,
-        schemaVersion: existingPJson?.schemaVersion || CURRENT_DATA_VERSION,
-        esedreVersion: CURRENT_ESEDRE_VERSION,
+        ...(existingPJson ? (existingPJson.schemaVersion ? { schemaVersion: existingPJson.schemaVersion } : {}) : { schemaVersion: CURRENT_DATA_VERSION }),
+        ...(existingPJson ? (existingPJson.esedreVersion ? { esedreVersion: existingPJson.esedreVersion } : {}) : { esedreVersion: CURRENT_ESEDRE_VERSION }),
+        ...(existingPJson?.pinSchemaVersion !== undefined ? { pinSchemaVersion: existingPJson.pinSchemaVersion } : {}),
+
       };
 
       writeSafeFile(pJsonPath, JSON.stringify(projectDesc, null, 2) + '\n');
@@ -976,8 +1016,10 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       name: cleanName,
       description: cleanDesc,
       colors,
-      schemaVersion: existingPJson?.schemaVersion || CURRENT_DATA_VERSION,
-      esedreVersion: CURRENT_ESEDRE_VERSION,
+      ...(existingPJson ? (existingPJson.schemaVersion ? { schemaVersion: existingPJson.schemaVersion } : {}) : { schemaVersion: CURRENT_DATA_VERSION }),
+      ...(existingPJson ? (existingPJson.esedreVersion ? { esedreVersion: existingPJson.esedreVersion } : {}) : { esedreVersion: CURRENT_ESEDRE_VERSION }),
+      ...(existingPJson?.pinSchemaVersion !== undefined ? { pinSchemaVersion: existingPJson.pinSchemaVersion } : {}),
+
     };
 
     writeSafeFile(pJsonPath, JSON.stringify(projectDesc, null, 2) + '\n');
@@ -1343,7 +1385,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     }
 
     // Global configuration update: ~/.esedre/config.json
-    const globalConfigFile = path.join(os.homedir(), '.esedre', 'config.json');
+    const globalConfigFile = getGlobalConfigPath();
     if (fs.existsSync(globalConfigFile)) {
       try {
         const gCfg = JSON.parse(fs.readFileSync(globalConfigFile, 'utf-8'));
@@ -1538,7 +1580,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     const nextId = existingIds.length > 0 ? Math.max(...existingIds) + 1 : 1;
 
     const now = new Date().toISOString();
-    const title = normalizeDashesAndMojibake(input.title).trim();
+    const title = normalizeDashesAndMojibake(input.title || '').trim();
     if (!title) {
       throw new Error('Milestone title is required.');
     }
@@ -1547,8 +1589,8 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       id: nextId,
       project: targetLoc.project.code,
       title,
-      description: input.description ? normalizeDashesAndMojibake(input.description).trim() : undefined,
-      status: input.status || 'Planned',
+      description: input.description && !isClearSentinel(input.description) ? normalizeDashesAndMojibake(input.description).trim() : undefined,
+      status: input.status !== undefined ? validateMilestoneStatus(String(input.status)) : 'Planned',
       featureFlag: input.featureFlag ? normalizeDashesAndMojibake(input.featureFlag).trim() : undefined,
       targetDate: input.targetDate ? normalizeDashesAndMojibake(input.targetDate).trim() : undefined,
       createdAt: now,
@@ -1589,12 +1631,12 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     const list = this.readProjectMilestones(foundLoc);
     const m = list[foundIndex];
 
-    if (input.title !== undefined) m.title = normalizeDashesAndMojibake(input.title).trim();
+    if (input.title !== undefined) { const nextTitle = normalizeDashesAndMojibake(String(input.title)).trim(); if (!nextTitle) throw new Error('Milestone title cannot be empty.'); m.title = nextTitle; }
     if (input.description !== undefined) {
-      m.description = input.description ? normalizeDashesAndMojibake(input.description).trim() : undefined;
+      if (isClearSentinel(input.description)) { delete m.description; } else { m.description = normalizeDashesAndMojibake(String(input.description)).trim(); }
     }
     if (input.status !== undefined) {
-      m.status = input.status;
+      const nextStatus = validateMilestoneStatus(String(input.status)); input.status = nextStatus; m.status = nextStatus;
       if (input.status === 'Completed' && !m.completedAt) {
         m.completedAt = now;
       } else if (input.status !== 'Completed') {
@@ -1602,17 +1644,17 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       }
     }
     if (input.featureFlag !== undefined) {
-      if (input.featureFlag === null || input.featureFlag === '' || input.featureFlag.toLowerCase() === 'none') {
+      if (isClearSentinel(input.featureFlag)) {
         delete m.featureFlag;
       } else {
-        m.featureFlag = normalizeDashesAndMojibake(input.featureFlag).trim();
+        m.featureFlag = normalizeDashesAndMojibake(String(input.featureFlag)).trim();
       }
     }
     if (input.targetDate !== undefined) {
-      if (input.targetDate === null || input.targetDate === '' || input.targetDate.toLowerCase() === 'none') {
+      if (isClearSentinel(input.targetDate)) {
         delete m.targetDate;
       } else {
-        m.targetDate = normalizeDashesAndMojibake(input.targetDate).trim();
+        m.targetDate = normalizeDashesAndMojibake(String(input.targetDate)).trim();
       }
     }
     m.updatedAt = now;
@@ -1856,14 +1898,14 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         let detail: TicketDetail | undefined;
         const detailPath = path.join(ticketDir, 'detail.md');
         if (currentStats['detail.md']) {
-          const raw = fs.readFileSync(detailPath, 'utf-8');
+          const raw = fs.readFileSync(detailPath, 'utf-8').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
           detail = this.parseDetailMarkdown(raw);
         }
 
         let planMarkdown: string | undefined;
         const planPath = path.join(ticketDir, 'implementation_plan.md');
         if (currentStats['implementation_plan.md']) {
-          planMarkdown = fs.readFileSync(planPath, 'utf-8');
+          planMarkdown = fs.readFileSync(planPath, 'utf-8').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
         }
 
         let comments: TicketComment[] = [];
@@ -2047,7 +2089,10 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           }
         }
 
-        if (filter?.milestone) {
+        if (filter?.milestone !== undefined) {
+          if (isClearSentinel(filter.milestone)) {
+            if (meta.milestone) continue;
+          } else {
           const mFilter = filter.milestone.trim().toLowerCase();
           const targetLoc = (meta.project && locations.find((l) => l.project.code.toLowerCase() === meta.project!.toLowerCase())) || loc;
           const resolvedFilterMilestone = this.resolveMilestone(filter.milestone, targetLoc);
@@ -2078,17 +2123,29 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           if (!matchesDirect && !matchesResolvedTitle && !matchesResolvedId && !matchesCompound && !matchesResolvedSelf) {
             continue;
           }
+          }
+          if (false) {
+            continue;
+          }
         }
 
-        if (filter?.status && meta.status !== filter.status) {
+        if (filter?.featureFlag !== undefined) {
+          if (isClearSentinel(filter.featureFlag)) {
+            if (meta.featureFlag) continue;
+          } else if (!meta.featureFlag || meta.featureFlag.toLowerCase() !== filter.featureFlag.trim().toLowerCase()) {
+            continue;
+          }
+        }
+        if (filter?.status && !matchesTicketStatusFilter(meta.status, filter.status)) {
           continue;
         }
-        if (filter?.category && meta.category !== filter.category) {
+        const filterCatRaw = filter?.type || filter?.category;
+        if (filterCatRaw && (meta.type || meta.category || '').toLowerCase() !== (normalizeTicketType(filterCatRaw) || String(filterCatRaw).trim()).toLowerCase()) {
           continue;
         }
         if (filter?.priority !== undefined) {
           const fPrio = String(filter.priority).trim().toLowerCase();
-          if (fPrio === 'none' || fPrio === 'null') {
+          if (isClearSentinel(filter.priority)) {
             if (meta.priority) {
               continue;
             }
@@ -2102,7 +2159,9 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           const term = filter.search.toLowerCase();
           const matchesTitle = meta.title.toLowerCase().includes(term);
           const matchesNum = String(meta.id).includes(term) || `${meta.project}-${meta.id}`.toLowerCase().includes(term);
-          if (!matchesTitle && !matchesNum) {
+          const matchesSummary = Boolean(ticketObj.detail?.summary && ticketObj.detail.summary.toLowerCase().includes(term));
+          const matchesFlag = Boolean(meta.featureFlag && meta.featureFlag.toLowerCase().includes(term));
+          if (!matchesTitle && !matchesNum && !matchesSummary && !matchesFlag) {
             continue;
           }
         }
@@ -2165,7 +2224,260 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     return this.readTicketFromDir(locInfo.ticketDir, locInfo.id, locInfo.loc, locations);
   }
 
-  private parseDetailMarkdown(raw: string): TicketDetail {
+  private extractSummaryFromAliasSection(text: string): string {
+    const match = text.match(
+      /(?:^|\n)[ \t]*(?:##|###)\s*(?:Problem(?:\s+Statement)?|Overview|Background|Context|Motivation|Description|Issue|Symptom|Goal|Objective|Executive\s+Summary)\s*\n([\s\S]*?)(?=\n[ \t]*(?:##|###|#)\s+|$)/i
+    );
+    if (!match) return '';
+    return this.stripSummaryPlaceholder(match[1]);
+  }
+
+  private extractBreakdownItemsFromBlock(block: string, allowProseFallback: boolean = true): string[] {
+    const items: string[] = [];
+    const lines = block.split('\n');
+    let currentItem = '';
+    let sawListLine = false;
+    let inCodeBlock = false;
+    for (const line of lines) {
+      if (line.trim().startsWith('```')) {
+        inCodeBlock = !inCodeBlock;
+        continue;
+      }
+      if (inCodeBlock) continue;
+      if (/^[ \t]*---+[ \t]*$/.test(line)) continue;
+      const numberedMatch = line.match(/^\s*\d+\.\s+(.*)$/);
+      if (numberedMatch) {
+        sawListLine = true;
+        if (currentItem) items.push(currentItem);
+        currentItem = numberedMatch[1].trim();
+      } else if (/^\s*[-*•]\s+/.test(line)) {
+        sawListLine = true;
+        const bulletText = line.trim().replace(/^[-*•]\s+/, '').trim();
+        if (/^\s{2,}[-*•]\s+/.test(line) && currentItem) {
+          currentItem += '\n  - ' + bulletText;
+        } else {
+          if (currentItem) {
+            items.push(currentItem);
+            currentItem = '';
+          }
+          items.push(bulletText);
+        }
+      } else if (currentItem && line.trim()) {
+        currentItem += ' ' + line.trim();
+      }
+    }
+    if (currentItem) items.push(currentItem);
+
+    if (!sawListLine && items.length === 0 && allowProseFallback) {
+      const paragraphs = block
+        .split(/\n\s*\n/)
+        .map((p) =>
+          p
+            .split('\n')
+            .map((l) => l.trim())
+            .filter((l) => l && !/^---+\s*$/.test(l) && !l.startsWith('```') && !l.startsWith('|'))
+            .join(' ')
+            .trim()
+        )
+        .filter(
+          (p) =>
+            Boolean(p) &&
+            !/^(?:Details to be populated during planning|Architecture specifications to be documented|None|None recorded at initialization|N\/A|Summary to be defined)\.?$/i.test(
+              p
+            )
+        );
+      items.push(...paragraphs);
+    }
+    return items;
+  }
+
+  private extractTechAndQuestionItemsFromBlock(
+    block: string,
+    technicalDetails: string[],
+    openQuestions: string[],
+    mode: 'tech' | 'questions'
+  ): void {
+    const lines = block.split('\n');
+    let sawListLine = false;
+    let inCodeBlock = false;
+    for (const line of lines) {
+      if (line.trim().startsWith('```')) {
+        inCodeBlock = !inCodeBlock;
+        continue;
+      }
+      if (inCodeBlock) continue;
+      if (/^[ \t]*---+[ \t]*$/.test(line)) continue;
+      const itemMatch = line.match(/^\s*(?:\d+\.|\*|-|•)\s+(.*)/);
+      if (!itemMatch) continue;
+      sawListLine = true;
+      const content = itemMatch[1].trim();
+      if (!content) continue;
+      if (mode === 'questions' || /^\*\*Open Questions?\*\*:\s*/i.test(content)) {
+        const q = content.replace(/^\*\*Open Questions?\*\*:\s*/i, '').trim();
+        if (q && !/^(?:None|None recorded at initialization|N\/A)\.?$/i.test(q)) {
+          openQuestions.push(q);
+        }
+      } else {
+        const td = content.replace(/^\*\*Technical Details?\*\*:\s*/i, '').trim();
+        if (td && !/^Architecture specifications to be documented\.?$/i.test(td)) {
+          technicalDetails.push(td);
+        }
+      }
+    }
+
+    if (!sawListLine) {
+      const paragraphs = block
+        .split(/\n\s*\n/)
+        .map((p) =>
+          p
+            .split('\n')
+            .map((l) => l.trim())
+            .filter((l) => l && !/^---+\s*$/.test(l) && !l.startsWith('```') && !l.startsWith('|'))
+            .join(' ')
+            .trim()
+        )
+        .filter(
+          (p) =>
+            Boolean(p) &&
+            !/^(?:Architecture specifications to be documented|None|None recorded at initialization|N\/A|Summary to be defined)\.?$/i.test(
+              p
+            )
+        );
+      for (const p of paragraphs) {
+        if (mode === 'questions') {
+          openQuestions.push(p);
+        } else {
+          technicalDetails.push(p);
+        }
+      }
+    }
+  }
+
+  private parseDetailSections(raw: string): {
+    summary: string | undefined;
+    breakdown: string[];
+    technicalDetails: string[];
+    openQuestions: string[];
+  } {
+    const sections: Array<{ title: string; body: string }> = [];
+    const lines = raw.split('\n');
+    let currentTitle: string | null = null;
+    let currentLines: string[] = [];
+    let inCodeBlock = false;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('```')) {
+        inCodeBlock = !inCodeBlock;
+      }
+      if (!inCodeBlock) {
+        const headingMatch = line.match(/^[ \t]*(?:##|###)\s+([^\n]+)$/);
+        if (headingMatch) {
+          if (currentTitle !== null) {
+            sections.push({ title: currentTitle, body: currentLines.join('\n') });
+          }
+          currentTitle = headingMatch[1].trim();
+          currentLines = [];
+          continue;
+        }
+        if (/^[ \t]*#\s+[^\n]+$/.test(line) && currentTitle !== null) {
+          sections.push({ title: currentTitle, body: currentLines.join('\n') });
+          currentTitle = null;
+          currentLines = [];
+          continue;
+        }
+      }
+      if (currentTitle !== null) {
+        currentLines.push(line);
+      }
+    }
+    if (currentTitle !== null) {
+      sections.push({ title: currentTitle, body: currentLines.join('\n') });
+    }
+
+    let summary: string | undefined;
+    let rawSummaryPlaceholder: string | undefined;
+    const breakdown: string[] = [];
+    const technicalDetails: string[] = [];
+    const openQuestions: string[] = [];
+    const deferredProblemSections: Array<{ title: string; body: string }> = [];
+
+    const canonicalSummaryRe = /^(?:Summary|Rationale)$/i;
+    const overviewAliasRe = /^(?:Overview|Background|Context|Description|Executive\s+Summary)$/i;
+    const problemAliasRe = /^(?:Problem(?:\s+Statement)?|Issue|Symptom|Motivation|Goal|Objective)$/i;
+    const breakdownRe =
+      /^(?:(?:Feature|Task|Fix|Implementation|Work|Scope|Deliverables?|Action|Change|Step|Requirement|Component|Module|Design|Architecture|Bug)\s+Breakdown|Breakdown|Proposed\s+(?:Solutions?|Fix(?:es)?|Changes?|Approach|Implementation|Design|Plan|Work|Resolution)|Solutions?|Proposals?|Resolution|Deliverables?|Action\s+Items?|Steps?|Implementation\s+Steps?|Reproduction\s+Steps?|Steps?\s+to\s+Reproduce|Repro\s+Steps?|Requirements?|Acceptance\s+Criteria|Scope|Changes?|Key\s+Changes?|What\s+Changed|Objectives?|Goals?|Tasks?|Todo|To-Do|Work\s+Items?)$/i;
+    const combinedTechQuestionsRe = /^Technical Details?\s*(?:&|and)\s*Open Questions?$/i;
+    const techRe =
+      /^(?:Technical Details?(?!\s*(?:&|and)\s*Open Questions?)(?:\s*(?:&|and)\s*Architecture)?|Architecture(?:\s*(?:&|and)\s*(?:Design|Technical\s+Details?))?|Root\s+Cause(?:\s*(?:&|and)\s*[^\n]+|\s+Analysis)?|Technical\s+(?:Approach|Notes?|Analysis|Context|Background|Design|Specifications?|Specs?)|Implementation\s+(?:Details?|Notes?|Approach|Design)|Design(?:\s+Notes?|\s+Details?)?|Verification(?:\s+Plan|\s+Steps?|\s+Notes?)?|Testing(?:\s+Plan|\s+Strategy|\s+Notes?)?|Impact(?:\s+Analysis)?|Edge\s+Cases?|Risks?(?:\s*(?:&|and)\s*Mitigations?)?)$/i;
+    const questionsRe =
+      /^(?:Open Questions?(?:\s*(?:&|and)\s*Decisions)?|Decisions?(?:\s*(?:&|and)\s*Open Questions?)?|Questions?|Unresolved\s+Questions?|Trade-?offs?)$/i;
+
+    for (const sec of sections) {
+      const title = sec.title;
+      const body = sec.body;
+
+      if (canonicalSummaryRe.test(title)) {
+        const rawText = body.trim();
+        const cleaned = this.stripSummaryPlaceholder(rawText);
+        if (cleaned && !summary) {
+          summary = cleaned;
+        } else if (!rawSummaryPlaceholder && rawText) {
+          rawSummaryPlaceholder = rawText;
+        }
+      } else if (overviewAliasRe.test(title)) {
+        const cleaned = this.stripSummaryPlaceholder(body.trim());
+        if (cleaned && !summary) {
+          summary = cleaned;
+        }
+      } else if (problemAliasRe.test(title)) {
+        const cleaned = this.stripSummaryPlaceholder(body.trim());
+        if (cleaned && !summary) {
+          summary = cleaned;
+        } else if (cleaned) {
+          deferredProblemSections.push({ title, body: cleaned });
+        }
+      } else if (breakdownRe.test(title)) {
+        breakdown.push(...this.extractBreakdownItemsFromBlock(body, true));
+      } else if (combinedTechQuestionsRe.test(title)) {
+        this.extractTechAndQuestionItemsFromBlock(body, technicalDetails, openQuestions, 'tech');
+      } else if (techRe.test(title)) {
+        this.extractTechAndQuestionItemsFromBlock(body, technicalDetails, openQuestions, 'tech');
+      } else if (questionsRe.test(title)) {
+        this.extractTechAndQuestionItemsFromBlock(body, technicalDetails, openQuestions, 'questions');
+      } else {
+        // Non-canonical ##/### section: preserve items/prose in breakdown so custom sections are never silently dropped
+        breakdown.push(...this.extractBreakdownItemsFromBlock(body, true));
+      }
+    }
+
+    if (!summary) {
+      const { preambleProse } = this.splitDetailPreamble(raw);
+      if (preambleProse) {
+        summary = preambleProse;
+      } else if (rawSummaryPlaceholder) {
+        summary = rawSummaryPlaceholder;
+      }
+    }
+
+    for (const prob of deferredProblemSections) {
+      if (prob.body !== summary) {
+        const items = this.extractBreakdownItemsFromBlock(prob.body, false);
+        if (items.length > 0) {
+          breakdown.unshift(...items);
+        } else {
+          const singleLine = prob.body.replace(/\s*\n\s*/g, ' ').trim();
+          if (singleLine) {
+            breakdown.unshift(`**${prob.title}**: ${singleLine}`);
+          }
+        }
+      }
+    }
+
+    return { summary, breakdown, technicalDetails, openQuestions };
+  }
+
+  private parseDetailMarkdown(rawInput: string): TicketDetail { const raw = rawInput.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const titleMatch = raw.match(/^#\s*(?:Ticket\s*#?\d+\s*:\s*|\d+\s*:\s*)?([^\n]+)/im);
     const title = titleMatch ? titleMatch[1].trim() : 'Untitled Ticket';
 
@@ -2176,7 +2488,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     const complexityMatch = raw.match(/\*\*Complexity\*\*:\s*([^\n]+)/i);
     const rawComplexity = complexityMatch ? normalizeDashesAndMojibake(complexityMatch[1].replace(/  +$/, '').trim()) : undefined;
     const complexity = rawComplexity && rawComplexity.toLowerCase() !== 'undefined' && rawComplexity.toLowerCase() !== 'null'
-      ? rawComplexity
+      ? normalizeComplexity(rawComplexity)
       : 'Medium';
 
     const effortMatch = raw.match(/\*\*(?:Estimated\s+)?Effort\*\*:\s*([^\n]+)/i);
@@ -2185,10 +2497,35 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       ? rawEffort
       : '2.0 - 4.0 hours';
 
+    const parsedSections = this.parseDetailSections(raw);
+    const priorityMatchEarly = raw.match(/\*\*Priority\*\*:\s*([^\n]+)/i);
+    const priorityEarly = priorityMatchEarly ? normalizePriority(priorityMatchEarly[1].trim()) : undefined;
+    if (parsedSections) {
+      return {
+        title,
+        type,
+        category,
+        priority: priorityEarly,
+        complexity,
+        estimatedEffort,
+        summary: parsedSections.summary,
+        breakdown: parsedSections.breakdown,
+        technicalDetails: parsedSections.technicalDetails,
+        openQuestions: parsedSections.openQuestions,
+        raw,
+      };
+    }
     let summary: string | undefined;
     const summaryMatch = raw.match(/(?:##|###)\s*(?:Summary|Rationale)\s*\n([\s\S]*?)(?=\n##|\n###|\n#|$)/i);
     if (summaryMatch) {
-      summary = summaryMatch[1].trim();
+      const rawSummary = summaryMatch[1].trim();
+      const cleaned = this.stripSummaryPlaceholder(rawSummary);
+      summary = cleaned || rawSummary;
+    } else {
+      const { preambleProse } = this.splitDetailPreamble(raw);
+      if (preambleProse) {
+        summary = preambleProse;
+      }
     }
 
     const breakdown: string[] = [];
@@ -2419,10 +2756,169 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     return preamble + bodySection;
   }
 
+  private stripSummaryPlaceholder(text?: string): string {
+    if (!text) return '';
+    const trimmed = text.trim();
+    if (/^Summary to be defined\.?$/i.test(trimmed)) {
+      return '';
+    }
+    return trimmed.replace(/^Summary to be defined\.?[ \t]*\r?\n+(?![ \t]*#)/i, '').trim();
+  }
+
+  private splitDetailPreamble(content: string): {
+    headerBlock: string;
+    preambleProse: string;
+    sectionsBody: string;
+  } {
+    const normalized = content.replace(/\r\n/g, '\n');
+    let splitIdx = normalized.length;
+    let sectionsBody = '';
+
+    if (/^[ \t]*(?:##|###)\s+/.test(normalized)) {
+      splitIdx = 0;
+      sectionsBody = normalized;
+    } else {
+      const sectionSplitMatch = normalized.match(/\n(?=(?:##|###)\s+)/);
+      if (sectionSplitMatch && sectionSplitMatch.index !== undefined) {
+        splitIdx = sectionSplitMatch.index;
+        sectionsBody = normalized.slice(splitIdx + 1);
+      }
+    }
+
+    const preamble = normalized.slice(0, splitIdx);
+    const lines = preamble ? preamble.split('\n') : [];
+    const headerLines: string[] = [];
+    let idx = 0;
+    let seenTitle = false;
+
+    while (idx < lines.length) {
+      const line = lines[idx];
+      const trimmed = line.trim();
+      if (!seenTitle && headerLines.every((l) => !l.trim()) && /^#\s+[^\n]+$/.test(trimmed)) {
+        seenTitle = true;
+        headerLines.push(line);
+        idx++;
+        continue;
+      }
+      if (!trimmed || /^---+\s*$/.test(trimmed)) {
+        headerLines.push(line);
+        idx++;
+        continue;
+      }
+      const isMetaLine =
+        /^[ \t]*(?:[-*•]\s+)?\*\*(?:Type|Category|Priority|Milestone|Complexity|(?:Estimated\s+)?Effort|Status|(?:Feature\s+)?Flag|Submitted\s+By)\*\*:\s*[^\n]*$/i.test(
+          line
+        );
+      if (isMetaLine) {
+        headerLines.push(line);
+        idx++;
+        continue;
+      }
+      break;
+    }
+
+    const preambleProse = this.stripSummaryPlaceholder(lines.slice(idx).join('\n'));
+    return {
+      headerBlock: headerLines.join('\n'),
+      preambleProse,
+      sectionsBody,
+    };
+  }
+
+  private updateDetailSummarySection(rawContent: string, newSummary: string): string {
+    const cleanSummary = normalizeDashesAndMojibake(newSummary).trim() || 'Summary to be defined.';
+    if (/(?:##|###)\s*(?:Summary|Rationale)\s*\n/i.test(rawContent)) {
+      return rawContent.replace(
+        /((?:##|###)\s*(?:Summary|Rationale)\s*\n)([\s\S]*?)(?=\n(?:##|###|#)\s+|$)/i,
+        (_match, heading) => `${heading}${cleanSummary}\n\n`
+      ).replace(/\n{3,}(?=(?:##|###|#)\s+)/g, '\n\n');
+    }
+    const { headerBlock, sectionsBody } = this.splitDetailPreamble(rawContent);
+    const prefix = headerBlock.trimEnd();
+    return `${prefix ? `${prefix}\n\n` : ''}### Summary\n${cleanSummary}\n${sectionsBody ? `\n${sectionsBody.trimStart()}` : ''}`;
+  }
+
+  private reconcileDetailSummarySection(
+    processed: string,
+    fallbackSummary?: string,
+    explicitSummary?: string
+  ): string {
+    const cleanExplicitSummary = this.stripSummaryPlaceholder(explicitSummary);
+    const cleanFallbackSummary = this.stripSummaryPlaceholder(fallbackSummary);
+
+    if (/(?:##|###)\s*(?:Summary|Rationale)/i.test(processed)) {
+      let next = processed.replace(
+        /((?:##|###)\s*(?:Summary|Rationale)\s*\n)Summary to be defined\.?[ \t]*\r?\n+(?![ \t]*#)(?=\S)/i,
+        '$1'
+      );
+      if (cleanExplicitSummary) {
+        next = this.updateDetailSummarySection(next, cleanExplicitSummary);
+      }
+      return next;
+    }
+
+    const { headerBlock, preambleProse, sectionsBody } = this.splitDetailPreamble(processed);
+    const summaryText =
+      cleanExplicitSummary ||
+      preambleProse ||
+      cleanFallbackSummary ||
+      this.extractSummaryFromAliasSection(sectionsBody) ||
+      'Summary to be defined.';
+    const extraBody =
+      cleanExplicitSummary && preambleProse && preambleProse !== cleanExplicitSummary
+        ? `\n${preambleProse}\n`
+        : '';
+    return `${headerBlock.trimEnd()}\n\n### Summary\n${summaryText}\n${extraBody}${sectionsBody ? `\n${sectionsBody.trimStart()}` : ''}`;
+  }
+
+  private formatHeadlessDetailBody(
+    trimmed: string,
+    fallbackSummary?: string,
+    explicitSummary?: string
+  ): string {
+    const cleanExplicitSummary = this.stripSummaryPlaceholder(explicitSummary);
+    const cleanFallbackSummary = this.stripSummaryPlaceholder(fallbackSummary);
+    const hasSummary = /(?:##|###)\s*(?:Summary|Rationale)/i.test(trimmed);
+    const hasBreakdown = /(?:##|###)\s*(?:Feature|Task|Fix|Implementation)\s+Breakdown/i.test(trimmed);
+    const hasAnySectionHeading = /(?:^|\n)[ \t]*(?:##|###)\s+/.test(trimmed);
+
+    if (hasSummary) {
+      let cleaned = trimmed.replace(
+        /((?:##|###)\s*(?:Summary|Rationale)\s*\n)Summary to be defined\.?[ \t]*\r?\n+(?![ \t]*#)(?=\S)/i,
+        '$1'
+      );
+      if (cleanExplicitSummary) {
+        cleaned = this.updateDetailSummarySection(cleaned, cleanExplicitSummary);
+      }
+      if (!hasBreakdown && !/(?:^|\n)[ \t]*(?:##|###)\s+(?!Summary|Rationale)/i.test(cleaned)) {
+        return `${cleaned.trim()}\n`;
+      }
+      return `${cleaned.trim()}\n`;
+    }
+
+    if (hasAnySectionHeading) {
+      const { preambleProse, sectionsBody } = this.splitDetailPreamble(trimmed);
+      const summaryText =
+        cleanExplicitSummary ||
+        preambleProse ||
+        cleanFallbackSummary ||
+        this.extractSummaryFromAliasSection(sectionsBody) ||
+        'Summary to be defined.';
+      return `### Summary\n${summaryText}\n\n${sectionsBody.trim()}\n`;
+    }
+
+    const summaryText = cleanExplicitSummary || cleanFallbackSummary || 'Summary to be defined.';
+    if (!hasBreakdown && !trimmed.startsWith('#')) {
+      return `### Summary\n${summaryText}\n\n### Feature Breakdown\n${trimmed}\n\n### Technical Details & Architecture\n- Architecture specifications to be documented.\n\n### Open Questions & Decisions\n- None recorded at initialization.\n`;
+    }
+    return `### Summary\n${summaryText}\n\n${trimmed}\n`;
+  }
+
   private formatTicketDetailMarkdown(
     rawDetail: string,
     meta: TicketMeta,
-    fallbackSummary?: string
+    fallbackSummary?: string,
+    explicitSummary?: string
   ): string {
     const trimmed = rawDetail.trim();
     const priorityLine = meta.priority ? `**Priority**: ${meta.priority}  \n` : '';
@@ -2448,7 +2944,8 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         processed = processed.replace(/^(# Ticket[^\n]+\n)/m, `$1**Category**: ${meta.category}  \n`);
       }
       processed = this.reconcileDetailMetadataHeaders(processed, meta, undefined, true);
-      if (!/(?:##|###)\s*(?:Summary|Rationale)/i.test(processed)) {
+      processed = this.reconcileDetailSummarySection(processed, fallbackSummary, explicitSummary);
+      if (false && !/(?:##|###)\s*(?:Summary|Rationale)/i.test(processed)) {
         const summaryBlock = `\n### Summary\n${fallbackSummary || 'Summary to be defined.'}\n`;
         processed = processed.replace(
           /^((?:# Ticket[^\n]+\n)(?:[ \t]*(?:[-*•]\s+)?\*\*[^\n]+\n|\s*\n)*)/m,
@@ -2466,9 +2963,9 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       body += `### Summary\n${fallbackSummary || 'Summary to be defined.'}\n\n`;
     }
     if (!hasBreakdown && !trimmed.startsWith('#')) {
-      body += `### Feature Breakdown\n${trimmed}\n\n### Technical Details & Architecture\n- Architecture specifications to be documented.\n\n### Open Questions & Decisions\n- None recorded at initialization.\n`;
+      body = this.formatHeadlessDetailBody(trimmed, fallbackSummary, explicitSummary);
     } else {
-      body += `${trimmed}\n`;
+      body = this.formatHeadlessDetailBody(trimmed, fallbackSummary, explicitSummary);
     }
 
     const effectiveEffort = (meta.estimatedEffort && meta.estimatedEffort !== 'undefined' && meta.estimatedEffort !== 'null')
@@ -2519,22 +3016,71 @@ ${body.trim()}\n`;
       fs.mkdirSync(targetLoc.ticketsDir, { recursive: true });
     }
 
-    const existing = fs.readdirSync(targetLoc.ticketsDir, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && !isNaN(parseInt(d.name, 10)))
-      .map((d) => parseInt(d.name, 10));
-    const nextId = existing.length > 0 ? Math.max(...existing) + 1 : 1;
+    const existing = fs.readdirSync(targetLoc.ticketsDir, { withFileTypes: true }).filter((d) => d.isDirectory() && !isNaN(parseInt(d.name, 10))).map((d) => parseInt(d.name, 10));
+    const nextId = existing.length > 0 ? Math.max(0, ...existing) + 1 : 1;
+    const newTicketKey = `${targetLoc.project.code}-${nextId}`;
 
+    const resolvedInitialLinks: Array<{
+      relation: TicketLinkRelation;
+      targetInfo: NonNullable<ReturnType<FilesystemStorageAdapter['resolveTicketIdentifier']>>;
+    }> = [];
+    if (Array.isArray(input.links) && input.links.length > 0) {
+      assertProjectCompatible(targetLoc.project, { operation: 'write', feature: 'ticket-linking' });
+      const seenTargets = new Set<string>();
+      for (const linkSpec of input.links) {
+        const rel = linkSpec.relation;
+        if (!INVERSE_RELATIONS[rel]) {
+          throw new Error(
+            `Invalid link relation: "${rel}". Valid relations: ${Object.keys(INVERSE_RELATIONS).join(', ')}`
+          );
+        }
+        const rawTarget = linkSpec.targetTicketId ?? linkSpec.targetId;
+        if (rawTarget === undefined || rawTarget === null || String(rawTarget).trim() === '') {
+          throw new Error('Link targetTicketId is required.');
+        }
+        const targetInfo = this.resolveTicketIdentifier(rawTarget, targetLoc.project.code);
+        if (!targetInfo) {
+          throw new Error(`Target ticket #${rawTarget} could not be located.`);
+        }
+        assertProjectCompatible(targetInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
+        if (targetInfo.key.toLowerCase() === newTicketKey.toLowerCase()) {
+          throw new Error(`Cannot link ticket ${newTicketKey} to itself.`);
+        }
+        const dedupeKey = targetInfo.key.toLowerCase();
+        if (!seenTargets.has(dedupeKey)) {
+          seenTargets.add(dedupeKey);
+          resolvedInitialLinks.push({ relation: rel, targetInfo });
+        }
+      }
+    }
+
+
+
+
+    const rawTypeInput = input.type || input.category;
+    const effectiveType: TicketType = rawTypeInput ? validateTicketType(String(rawTypeInput)) : 'Feature';
+    const cleanTitle = normalizeDashesAndMojibake(input.title || '').trim().slice(0, 48).trim();
+    if (!cleanTitle) {
+      throw new Error('Ticket title is required and cannot be empty.');
+    }
+    let cleanPriority: ReturnType<typeof normalizePriority>;
+    if (input.priority !== undefined && !isClearSentinel(input.priority)) {
+      cleanPriority = normalizePriority(input.priority);
+      if (!cleanPriority) {
+        throw new Error(`Invalid priority "${input.priority}". Allowed values: Critical, High, Medium, Low`);
+      }
+    }
     const ticketDir = path.join(targetLoc.ticketsDir, String(nextId));
     fs.mkdirSync(ticketDir, { recursive: true });
 
     const now = new Date().toISOString();
-    const effectiveType = (input.type || input.category || 'Feature') as TicketType;
-    const cleanTitle = normalizeDashesAndMojibake(input.title).slice(0, 48).trim();
+    void effectiveType;
+    void cleanTitle;
     const cleanSummary = input.summary ? normalizeDashesAndMojibake(input.summary) : undefined;
     const cleanDetailRaw = (input.detailMarkdown || input.detail) ? normalizeDashesAndMojibake(input.detailMarkdown || input.detail) : undefined;
     const cleanEffort = normalizeDashesAndMojibake(input.estimatedEffort || input.effort || '2.0 - 4.0 hours');
-    const cleanComplexity = normalizeDashesAndMojibake(input.complexity || 'Medium');
-    const cleanPriority = normalizePriority(input.priority);
+    const cleanComplexity = normalizeComplexity(input.complexity || 'Medium');
+    void cleanPriority;
     let cleanMilestone = input.milestone ? normalizeDashesAndMojibake(String(input.milestone)).trim() : undefined;
     let inheritedFlag: string | undefined;
     let initialFlag: string | undefined;
@@ -2552,7 +3098,7 @@ ${body.trim()}\n`;
       }
     }
 
-    let cleanFeatureFlag = input.featureFlag ? normalizeDashesAndMojibake(input.featureFlag).trim() : undefined;
+    let cleanFeatureFlag = input.featureFlag && !isClearSentinel(input.featureFlag) ? normalizeDashesAndMojibake(input.featureFlag).trim() : undefined;
     if (!cleanFeatureFlag && initialFlag) {
       cleanFeatureFlag = initialFlag;
     }
@@ -2577,15 +3123,27 @@ ${body.trim()}\n`;
       status: 'Planned',
       projectId: targetLoc.project.id,
       project: targetLoc.project.code,
-      schemaVersion: getProjectSchemaVersion(targetLoc.project),
-      esedreVersion: CURRENT_ESEDRE_VERSION,
+      ...this.resolveTicketVersionStamps(targetLoc.project, null),
+      ...(resolvedInitialLinks.length > 0
+        ? {
+            links: resolvedInitialLinks.map(({ relation, targetInfo }) => ({
+              relation,
+              targetKey: targetInfo.key,
+              targetProject: targetInfo.project,
+              targetId: targetInfo.id,
+              createdAt: now,
+              ...(input.submittedBy ? { createdBy: normalizeDashesAndMojibake(input.submittedBy) } : {}),
+            })),
+          }
+        : {}),
+
     };
 
     const rawDetail = cleanDetailRaw?.trim();
     let detailMd: string;
 
     if (rawDetail) {
-      detailMd = this.formatTicketDetailMarkdown(rawDetail, meta, input.summary);
+      detailMd = this.formatTicketDetailMarkdown(rawDetail, meta, cleanSummary, cleanSummary);
     } else {
       const priorityLine = meta.priority ? `**Priority**: ${meta.priority}  \n` : '';
       const milestoneLine = meta.milestone ? `**Milestone**: ${meta.milestone}  \n` : '';
@@ -2619,6 +3177,40 @@ ${input.summary || 'Summary to be defined.'}
 
     this.invalidateTicketCache(ticketDir);
 
+    for (const { relation, targetInfo } of resolvedInitialLinks) {
+      const targetMetaPath = path.join(targetInfo.ticketDir, 'meta.json');
+      if (fs.existsSync(targetMetaPath)) {
+        try {
+          const targetMeta: TicketMeta = JSON.parse(fs.readFileSync(targetMetaPath, 'utf-8'));
+          targetMeta.links = targetMeta.links || [];
+          const inverseRel = INVERSE_RELATIONS[relation];
+          const existingTargetLink = targetMeta.links.find(
+            (l) => l.targetKey.toLowerCase() === newTicketKey.toLowerCase()
+          );
+          if (existingTargetLink) {
+            existingTargetLink.relation = inverseRel;
+            existingTargetLink.targetProject = targetLoc.project.code;
+            existingTargetLink.targetId = nextId;
+          } else {
+            targetMeta.links.push({
+              relation: inverseRel,
+              targetKey: newTicketKey,
+              targetProject: targetLoc.project.code,
+              targetId: nextId,
+              createdAt: now,
+              ...(input.submittedBy ? { createdBy: normalizeDashesAndMojibake(input.submittedBy) } : {}),
+            });
+          }
+          targetMeta.updatedAt = now;
+          targetMeta.revision = (targetMeta.revision || 1) + 1;
+        Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
+          Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
+          writeSafeFile(targetMetaPath, JSON.stringify(targetMeta, null, 2) + '\n');
+          this.invalidateTicketCache(targetInfo.ticketDir);
+        } catch {}
+      }
+    }
+
     const created = await this.getTicket(`${targetLoc.project.code}-${nextId}`);
     return created!;
   }
@@ -2645,13 +3237,28 @@ ${input.summary || 'Summary to be defined.'}
 
     const metaPath = path.join(locInfo.ticketDir, 'meta.json');
     const now = new Date().toISOString();
+    if (updates.status !== undefined) {
+      updates = { ...updates, status: validateTicketStatus(String(updates.status)) };
+    }
+    const rawUpdateType = updates.type !== undefined ? updates.type : updates.category;
+    if (rawUpdateType !== undefined) {
+      const validType = validateTicketType(String(rawUpdateType));
+      updates = { ...updates, type: validType, category: validType };
+    }
+    if (updates.title !== undefined) {
+      const nextTitle = normalizeDashesAndMojibake(String(updates.title)).trim().slice(0, 48).trim();
+      if (!nextTitle) {
+        throw new Error('Ticket title cannot be empty.');
+      }
+      updates = { ...updates, title: nextTitle };
+    }
     const isNowCompleted = updates.status === 'Completed';
     const completedAt = isNowCompleted
       ? existing.meta.completedAt || now
       : (updates.status && updates.status !== 'Completed' ? undefined : existing.meta.completedAt);
     const revision = (existing.meta.revision || 1) + 1;
 
-    const { priority: _p, detail: _d, detailMarkdown: _dm, plan: _pl, planMarkdown: _pm, ...metaFields } = updates;
+    const { priority: _p, featureFlag: _ff, milestone: _ms, summary: _s, detail: _d, detailMarkdown: _dm, plan: _pl, planMarkdown: _pm, ...metaFields } = updates;
     const sanitizedUpdates: Partial<TicketMeta> = { ...metaFields };
     if (
       (updates.status === 'Completed' || updates.status === 'Rejected') &&
@@ -2668,6 +3275,14 @@ ${input.summary || 'Summary to be defined.'}
       }
     }
     if (sanitizedUpdates.complexity) {
+      const lower = String(sanitizedUpdates.complexity).trim().toLowerCase();
+      if (lower === 'undefined' || lower === 'null' || lower === '') {
+        delete sanitizedUpdates.complexity;
+      } else {
+        sanitizedUpdates.complexity = normalizeComplexity(sanitizedUpdates.complexity);
+      }
+    }
+    /*
       sanitizedUpdates.complexity = normalizeDashesAndMojibake(sanitizedUpdates.complexity);
       const lower = sanitizedUpdates.complexity.trim().toLowerCase();
       if (lower === 'undefined' || lower === 'null' || lower === '') {
@@ -2675,13 +3290,50 @@ ${input.summary || 'Summary to be defined.'}
       }
     }
 
+    */
+    let rawDiskMeta: Partial<TicketMeta> = {};
+    if (fs.existsSync(metaPath)) {
+      try {
+        rawDiskMeta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      } catch {}
+    }
+    const isStampedOrUpgraded = Boolean(locInfo.loc.project.schemaVersion || rawDiskMeta.schemaVersion);
+    const baseMeta: TicketMeta = isStampedOrUpgraded
+      ? { ...existing.meta, ...rawDiskMeta }
+      : ({ ...rawDiskMeta } as TicketMeta);
+
     const updatedMeta: TicketMeta = {
+      ...baseMeta,
+      ...sanitizedUpdates,
+      id: locInfo.id,
+      ...(isStampedOrUpgraded || rawDiskMeta.project !== undefined || updates.project !== undefined
+        ? { project: locInfo.loc.project.code }
+        : {}),
+      ...this.resolveTicketVersionStamps(locInfo.loc.project, rawDiskMeta),
+      updatedAt: now,
+      ...(completedAt !== undefined ? { completedAt } : {}),
+      revision,
+    };
+    if (completedAt === undefined) {
+      delete updatedMeta.completedAt;
+    }
+    if (isStampedOrUpgraded || rawDiskMeta.estimatedEffort !== undefined || updates.estimatedEffort !== undefined) {
+      if (!updatedMeta.estimatedEffort || updatedMeta.estimatedEffort === 'undefined' || updatedMeta.estimatedEffort === 'null') {
+        updatedMeta.estimatedEffort = existing.meta.estimatedEffort || existing.detail?.estimatedEffort || '2.0 - 4.0 hours';
+      }
+    }
+    if (isStampedOrUpgraded || rawDiskMeta.complexity !== undefined || updates.complexity !== undefined) {
+      if (!updatedMeta.complexity || updatedMeta.complexity === 'undefined' || updatedMeta.complexity === 'null') {
+        updatedMeta.complexity = normalizeComplexity(existing.meta.complexity || existing.detail?.complexity || 'Medium');
+      }
+    }
+    /*
       ...existing.meta,
       ...sanitizedUpdates,
       id: locInfo.id,
       project: locInfo.loc.project.code,
       schemaVersion: existing.meta.schemaVersion || getProjectSchemaVersion(locInfo.loc.project),
-      esedreVersion: CURRENT_ESEDRE_VERSION,
+
       updatedAt: now,
       completedAt,
       revision,
@@ -2693,23 +3345,24 @@ ${input.summary || 'Summary to be defined.'}
       updatedMeta.complexity = existing.meta.complexity || existing.detail?.complexity || 'Medium';
     }
 
+    */
     if ('priority' in updates || updates.priority !== undefined) {
       const rawPrio = updates.priority;
-      if (rawPrio === null || rawPrio === 'none' || rawPrio === 'null' || rawPrio === '') {
+      if (isClearSentinel(rawPrio)) {
         delete updatedMeta.priority;
       } else {
         const norm = normalizePriority(rawPrio);
         if (norm) {
           updatedMeta.priority = norm;
         } else {
-          delete updatedMeta.priority;
+          throw new Error(`Invalid priority "${rawPrio}". Allowed values: Critical, High, Medium, Low, none`);
         }
       }
     }
 
     if ('milestone' in updates || updates.milestone !== undefined) {
       const rawMilestone = updates.milestone;
-      if (rawMilestone === null || rawMilestone === 'none' || rawMilestone === 'null' || rawMilestone === '') {
+      if (isClearSentinel(rawMilestone)) {
         delete updatedMeta.milestone;
         if (updatedMeta.inheritedFeatureFlag && updatedMeta.featureFlag === updatedMeta.inheritedFeatureFlag) {
           delete updatedMeta.featureFlag;
@@ -2732,6 +3385,18 @@ ${input.summary || 'Summary to be defined.'}
       }
     }
 
+    if ('featureFlag' in updates || updates.featureFlag !== undefined) {
+      const rawFlag = updates.featureFlag;
+      if (isClearSentinel(rawFlag)) {
+        delete updatedMeta.featureFlag;
+        if (updatedMeta.inheritedFeatureFlag) {
+          updatedMeta.featureFlag = updatedMeta.inheritedFeatureFlag;
+        }
+      } else {
+        updatedMeta.featureFlag = normalizeDashesAndMojibake(String(rawFlag)).trim();
+      }
+    }
+
     delete updatedMeta.lease;
     writeSafeFile(metaPath, JSON.stringify(updatedMeta, null, 2) + '\n');
 
@@ -2748,13 +3413,15 @@ ${input.summary || 'Summary to be defined.'}
     const rawDetailArg = updates.detailMarkdown !== undefined ? updates.detailMarkdown : updates.detail;
     if (rawDetailArg !== undefined) {
       const cleanDetail = normalizeDashesAndMojibake(rawDetailArg);
-      let content = this.formatTicketDetailMarkdown(cleanDetail, updatedMeta, existing.detail?.summary);
+      const cleanSummary = updates.summary !== undefined ? normalizeDashesAndMojibake(updates.summary) : undefined;
+      let content = this.formatTicketDetailMarkdown(cleanDetail, updatedMeta, existing.detail?.summary, cleanSummary);
       content = this.reconcileDetailMetadataHeaders(content, updatedMeta, updates, true);
       writeSafeFile(path.join(locInfo.ticketDir, 'detail.md'), content);
     } else if (
       existing.detail &&
       ('priority' in updates ||
         'milestone' in updates ||
+        updates.summary !== undefined ||
         updates.status ||
         updates.title ||
         updates.type ||
@@ -2763,7 +3430,9 @@ ${input.summary || 'Summary to be defined.'}
         updates.estimatedEffort)
     ) {
       const content = this.reconcileDetailMetadataHeaders(
-        existing.detail.raw,
+        updates.summary !== undefined
+          ? this.updateDetailSummarySection(existing.detail.raw, updates.summary)
+          : existing.detail.raw,
         updatedMeta,
         updates,
         false
@@ -2774,12 +3443,12 @@ ${input.summary || 'Summary to be defined.'}
     const updatedPlan = updates.planMarkdown !== undefined ? updates.planMarkdown : updates.plan;
     if (updatedPlan !== undefined) {
       const planPath = path.join(locInfo.ticketDir, 'implementation_plan.md');
-      if (updatedPlan === '' || updatedPlan === null) {
+      if (isClearSentinel(updatedPlan)) {
         if (fs.existsSync(planPath)) {
           try { fs.unlinkSync(planPath); } catch {}
         }
       } else {
-        writeSafeFile(planPath, normalizeDashesAndMojibake(updatedPlan));
+        writeSafeFile(planPath, normalizeDashesAndMojibake(String(updatedPlan)));
       }
     }
 
@@ -2794,7 +3463,7 @@ ${input.summary || 'Summary to be defined.'}
 
     const planPath = path.join(locInfo.ticketDir, 'implementation_plan.md');
     if (!fs.existsSync(planPath)) return null;
-    return normalizeDashesAndMojibake(fs.readFileSync(planPath, 'utf-8'));
+    return normalizeDashesAndMojibake(fs.readFileSync(planPath, 'utf-8').replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
   }
 
   public async savePlan(id: number | string, planMarkdown: string, lastHash?: string): Promise<void> {
@@ -2822,7 +3491,13 @@ ${input.summary || 'Summary to be defined.'}
     assertProjectCompatible(locInfo.loc.project, { operation: 'write' });
 
     const planPath = path.join(locInfo.ticketDir, 'implementation_plan.md');
-    writeSafeFile(planPath, normalizeDashesAndMojibake(planMarkdown));
+    if (isClearSentinel(planMarkdown)) {
+      if (fs.existsSync(planPath)) {
+        try { fs.unlinkSync(planPath); } catch {}
+      }
+    } else {
+      writeSafeFile(planPath, normalizeDashesAndMojibake(planMarkdown));
+    }
 
     const metaPath = path.join(locInfo.ticketDir, 'meta.json');
     if (fs.existsSync(metaPath)) {
@@ -2830,6 +3505,7 @@ ${input.summary || 'Summary to be defined.'}
         const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
         meta.updatedAt = new Date().toISOString();
         meta.revision = (meta.revision || 1) + 1;
+        Object.assign(meta, this.resolveTicketVersionStamps(locInfo.loc.project, meta));
         writeSafeFile(metaPath, JSON.stringify(meta, null, 2) + '\n');
       } catch {}
     }
@@ -2861,7 +3537,7 @@ ${input.summary || 'Summary to be defined.'}
       id: `${locInfo.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       timestamp: new Date().toISOString(),
       author: normalizeDashesAndMojibake(comment.author || 'User'),
-      text: normalizeDashesAndMojibake(comment.text.trim()),
+      text: normalizeDashesAndMojibake(comment.text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()),
     };
 
     comments.push(newComment);
@@ -2924,6 +3600,7 @@ ${input.summary || 'Summary to be defined.'}
           const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
           meta.updatedAt = new Date().toISOString();
           meta.revision = (meta.revision || 1) + 1;
+        Object.assign(meta, this.resolveTicketVersionStamps(locInfo.loc.project, meta));
           writeSafeFile(metaPath, JSON.stringify(meta, null, 2) + '\n');
         } catch {}
       }
@@ -3172,6 +3849,241 @@ ${input.summary || 'Summary to be defined.'}
     ticket.isBlocked = isBlocked;
   }
 
+  public async addTicketLinks(
+    sourceId: number | string,
+    relation: TicketLinkRelation,
+    targetIds: Array<number | string>,
+    options?: { author?: string; project?: string }
+  ): Promise<{ source: EsedreTicket; targets: EsedreTicket[] }> {
+    if (!INVERSE_RELATIONS[relation]) {
+      throw new Error(
+        `Invalid link relation: "${relation}". Valid relations: ${Object.keys(INVERSE_RELATIONS).join(', ')}`
+      );
+    }
+
+    const sourceInfo = this.resolveTicketIdentifier(sourceId, options?.project || this.config.projectCode);
+    if (!sourceInfo) {
+      throw new Error(`Source ticket #${sourceId} could not be located.`);
+    }
+
+    assertProjectCompatible(sourceInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
+
+    if (!Array.isArray(targetIds) || targetIds.length === 0) {
+      throw new Error('At least one targetTicketId is required.');
+    }
+
+    const resolvedTargets: Array<NonNullable<ReturnType<FilesystemStorageAdapter['resolveTicketIdentifier']>>> = [];
+    const seenKeys = new Set<string>();
+
+    for (const rawTargetId of targetIds) {
+      const targetInfo = this.resolveTicketIdentifier(
+        rawTargetId,
+        options?.project || sourceInfo.project || this.config.projectCode
+      );
+      if (!targetInfo) {
+        throw new Error(`Target ticket #${rawTargetId} could not be located.`);
+      }
+
+      assertProjectCompatible(targetInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
+
+      if (sourceInfo.key.toLowerCase() === targetInfo.key.toLowerCase()) {
+        throw new Error(`Cannot link ticket ${sourceInfo.key} to itself.`);
+      }
+
+      if (this.wouldCreateCycle(sourceInfo.key, targetInfo.key, relation)) {
+        throw new Error(
+          `Circular dependency detected: linking ${sourceInfo.key} -> ${targetInfo.key} with "${relation}" forms a cycle.`
+        );
+      }
+
+      const lowerKey = targetInfo.key.toLowerCase();
+      if (!seenKeys.has(lowerKey)) {
+        seenKeys.add(lowerKey);
+        resolvedTargets.push(targetInfo);
+      }
+    }
+
+    const now = new Date().toISOString();
+    const sourceMetaPath = path.join(sourceInfo.ticketDir, 'meta.json');
+    const sourceMeta: TicketMeta = JSON.parse(fs.readFileSync(sourceMetaPath, 'utf-8'));
+    sourceMeta.links = sourceMeta.links || [];
+
+    for (const targetInfo of resolvedTargets) {
+      const existingSourceLink = sourceMeta.links.find(
+        (l) => l.targetKey.toLowerCase() === targetInfo.key.toLowerCase()
+      );
+      if (existingSourceLink) {
+        existingSourceLink.relation = relation;
+        existingSourceLink.targetProject = targetInfo.project;
+        existingSourceLink.targetId = targetInfo.id;
+      } else {
+        sourceMeta.links.push({
+          relation,
+          targetKey: targetInfo.key,
+          targetProject: targetInfo.project,
+          targetId: targetInfo.id,
+          createdAt: now,
+          createdBy: options?.author ? normalizeDashesAndMojibake(options.author) : undefined,
+        });
+      }
+    }
+
+    sourceMeta.updatedAt = now;
+    sourceMeta.revision = (sourceMeta.revision || 1) + 1;
+    Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
+    Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
+    writeSafeFile(sourceMetaPath, JSON.stringify(sourceMeta, null, 2) + '\n');
+    this.invalidateTicketCache(sourceInfo.ticketDir);
+
+    const updatedTargets: EsedreTicket[] = [];
+    const inverseRel = INVERSE_RELATIONS[relation];
+    for (const targetInfo of resolvedTargets) {
+      const targetMetaPath = path.join(targetInfo.ticketDir, 'meta.json');
+      if (fs.existsSync(targetMetaPath)) {
+        try {
+          const targetMeta: TicketMeta = JSON.parse(fs.readFileSync(targetMetaPath, 'utf-8'));
+          targetMeta.links = targetMeta.links || [];
+          const existingTargetLink = targetMeta.links.find(
+            (l) => l.targetKey.toLowerCase() === sourceInfo.key.toLowerCase()
+          );
+
+          if (existingTargetLink) {
+            existingTargetLink.relation = inverseRel;
+            existingTargetLink.targetProject = sourceInfo.project;
+            existingTargetLink.targetId = sourceInfo.id;
+          } else {
+            targetMeta.links.push({
+              relation: inverseRel,
+              targetKey: sourceInfo.key,
+              targetProject: sourceInfo.project,
+              targetId: sourceInfo.id,
+              createdAt: now,
+              createdBy: options?.author ? normalizeDashesAndMojibake(options.author) : undefined,
+            });
+          }
+
+          targetMeta.updatedAt = now;
+          targetMeta.revision = (targetMeta.revision || 1) + 1;
+        Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
+          Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
+          writeSafeFile(targetMetaPath, JSON.stringify(targetMeta, null, 2) + '\n');
+          this.invalidateTicketCache(targetInfo.ticketDir);
+          const updatedTarget = await this.getTicket(targetInfo.key);
+          if (updatedTarget) {
+            updatedTargets.push(updatedTarget);
+          }
+        } catch {}
+      }
+    }
+
+    const updatedSource = (await this.getTicket(sourceInfo.key))!;
+    return { source: updatedSource, targets: updatedTargets };
+  }
+
+  public async removeTicketLinks(
+    sourceId: number | string,
+    targetIds: Array<number | string>,
+    options?: { relation?: TicketLinkRelation; project?: string }
+  ): Promise<{ source: EsedreTicket; targets: EsedreTicket[] }> {
+    const sourceInfo = this.resolveTicketIdentifier(sourceId, options?.project || this.config.projectCode);
+    if (!sourceInfo) {
+      throw new Error(`Source ticket #${sourceId} could not be located.`);
+    }
+
+    assertProjectCompatible(sourceInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
+
+    if (!Array.isArray(targetIds) || targetIds.length === 0) {
+      throw new Error('At least one targetTicketId is required.');
+    }
+
+    const resolvedTargets: Array<{
+      targetKey: string;
+      targetInfo: ReturnType<FilesystemStorageAdapter['resolveTicketIdentifier']>;
+    }> = [];
+    const seenKeys = new Set<string>();
+
+    for (const rawTargetId of targetIds) {
+      const targetInfo = this.resolveTicketIdentifier(
+        rawTargetId,
+        options?.project || sourceInfo.project || this.config.projectCode
+      );
+      if (targetInfo) {
+        assertProjectCompatible(targetInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
+      }
+      const targetKey = targetInfo ? targetInfo.key : String(rawTargetId).trim();
+      const lowerKey = targetKey.toLowerCase();
+      if (!seenKeys.has(lowerKey)) {
+        seenKeys.add(lowerKey);
+        resolvedTargets.push({ targetKey, targetInfo });
+      }
+    }
+
+    const targetKeySet = new Set(resolvedTargets.map((t) => t.targetKey.toLowerCase()));
+    const now = new Date().toISOString();
+    const sourceMetaPath = path.join(sourceInfo.ticketDir, 'meta.json');
+    if (fs.existsSync(sourceMetaPath)) {
+      try {
+        const sourceMeta: TicketMeta = JSON.parse(fs.readFileSync(sourceMetaPath, 'utf-8'));
+        if (Array.isArray(sourceMeta.links)) {
+          const originalLen = sourceMeta.links.length;
+          sourceMeta.links = sourceMeta.links.filter(
+            (l) =>
+              !(
+                targetKeySet.has(l.targetKey.toLowerCase()) &&
+                (!options?.relation || l.relation === options.relation)
+              )
+          );
+          if (sourceMeta.links.length !== originalLen) {
+            sourceMeta.updatedAt = now;
+            sourceMeta.revision = (sourceMeta.revision || 1) + 1;
+            Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
+    Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
+            Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
+            writeSafeFile(sourceMetaPath, JSON.stringify(sourceMeta, null, 2) + '\n');
+            this.invalidateTicketCache(sourceInfo.ticketDir);
+          }
+        }
+      } catch {}
+    }
+
+    const updatedTargets: EsedreTicket[] = [];
+    for (const { targetInfo } of resolvedTargets) {
+      if (!targetInfo) continue;
+      const targetMetaPath = path.join(targetInfo.ticketDir, 'meta.json');
+      if (fs.existsSync(targetMetaPath)) {
+        try {
+          const targetMeta: TicketMeta = JSON.parse(fs.readFileSync(targetMetaPath, 'utf-8'));
+          if (Array.isArray(targetMeta.links)) {
+            const originalLen = targetMeta.links.length;
+            targetMeta.links = targetMeta.links.filter(
+              (l) =>
+                !(
+                  l.targetKey.toLowerCase() === sourceInfo.key.toLowerCase() &&
+                  (!options?.relation || l.relation === INVERSE_RELATIONS[options.relation])
+                )
+            );
+            if (targetMeta.links.length !== originalLen) {
+              targetMeta.updatedAt = now;
+              targetMeta.revision = (targetMeta.revision || 1) + 1;
+              Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
+        Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
+              Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
+              writeSafeFile(targetMetaPath, JSON.stringify(targetMeta, null, 2) + '\n');
+              this.invalidateTicketCache(targetInfo.ticketDir);
+            }
+          }
+          const updatedTarget = await this.getTicket(targetInfo.key);
+          if (updatedTarget) {
+            updatedTargets.push(updatedTarget);
+          }
+        } catch {}
+      }
+    }
+
+    const updatedSource = (await this.getTicket(sourceInfo.key))!;
+    return { source: updatedSource, targets: updatedTargets };
+  }
+
   public async addTicketLink(
     sourceId: number | string,
     relation: TicketLinkRelation,
@@ -3237,6 +4149,7 @@ ${input.summary || 'Summary to be defined.'}
 
     sourceMeta.updatedAt = now;
     sourceMeta.revision = (sourceMeta.revision || 1) + 1;
+    Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
     writeSafeFile(sourceMetaPath, JSON.stringify(sourceMeta, null, 2) + '\n');
     this.invalidateTicketCache(sourceInfo.ticketDir);
 
@@ -3269,6 +4182,7 @@ ${input.summary || 'Summary to be defined.'}
 
         targetMeta.updatedAt = now;
         targetMeta.revision = (targetMeta.revision || 1) + 1;
+        Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
         writeSafeFile(targetMetaPath, JSON.stringify(targetMeta, null, 2) + '\n');
         this.invalidateTicketCache(targetInfo.ticketDir);
         updatedTarget = (await this.getTicket(targetInfo.key)) || undefined;
@@ -3317,6 +4231,8 @@ ${input.summary || 'Summary to be defined.'}
           if (sourceMeta.links.length !== originalLen) {
             sourceMeta.updatedAt = now;
             sourceMeta.revision = (sourceMeta.revision || 1) + 1;
+            Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
+    Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
             writeSafeFile(sourceMetaPath, JSON.stringify(sourceMeta, null, 2) + '\n');
             this.invalidateTicketCache(sourceInfo.ticketDir);
           }
@@ -3342,6 +4258,8 @@ ${input.summary || 'Summary to be defined.'}
             if (targetMeta.links.length !== originalLen) {
               targetMeta.updatedAt = now;
               targetMeta.revision = (targetMeta.revision || 1) + 1;
+              Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
+        Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
               writeSafeFile(targetMetaPath, JSON.stringify(targetMeta, null, 2) + '\n');
               this.invalidateTicketCache(targetInfo.ticketDir);
               updatedTarget = (await this.getTicket(targetInfo.key)) || undefined;

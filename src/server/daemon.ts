@@ -1,10 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { resolvePorts } from '../config.js';
+import { resolvePorts, getGlobalConfigDir } from '../config.js';
 import { CURRENT_ESEDRE_VERSION } from '../types.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -38,13 +37,10 @@ export interface DaemonStatus {
 }
 
 /**
- * Returns the centralized user runtime directory (~/.esedre).
+ * Returns the centralized user runtime directory (~/.esedre), respecting ESEDRE_GLOBAL_DIR and VITEST isolation.
  */
 export function getGlobalEsedreDir(): string {
-  if (process.env.ESEDRE_GLOBAL_DIR) {
-    return process.env.ESEDRE_GLOBAL_DIR;
-  }
-  return path.join(os.homedir(), '.esedre');
+  return getGlobalConfigDir();
 }
 
 /**
@@ -203,6 +199,38 @@ export function pingDaemon(port: number, timeoutMs = 200): Promise<{ responding:
   });
 }
 
+function fetchDaemonPid(port: number, timeoutMs = 300): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    const req = http.get(
+      `http://127.0.0.1:${port}/api/ping`,
+      { timeout: timeoutMs },
+      (res) => {
+        let body = '';
+        res.on('data', (chunk) => {
+          body += chunk;
+        });
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(body);
+            if (data && data.esedre && typeof data.pid === 'number' && data.pid > 0) {
+              resolve(data.pid);
+              return;
+            }
+          } catch {}
+          resolve(undefined);
+        });
+      }
+    );
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(undefined);
+    });
+    req.on('error', () => {
+      resolve(undefined);
+    });
+  });
+}
+
 export interface StartDaemonOptions {
   port?: number;
   quiet?: boolean;
@@ -223,7 +251,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const existingState = getDaemonState(port, workspaceRoot);
   if (existingState) {
     if (isProcessAlive(existingState.pid)) {
-      const ping = await pingDaemon(port, 400);
+      const ping = await pingDaemon(port, 1500);
       if (ping.responding && ping.isEsedre) {
         if (!options.quiet) {
           console.log(`\x1b[36m⚡ Esedre daemon already running on http://localhost:${port} (PID ${existingState.pid})\x1b[0m`);
@@ -241,13 +269,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   }
 
   // 2. Double-check if port is responding to an unrecorded Esedre instance
-  const portPing = await pingDaemon(port, 200);
+  const portPing = await pingDaemon(port, 500);
   if (portPing.responding && portPing.isEsedre) {
+    const discoveredPid = (await fetchDaemonPid(port, 1000)) || process.pid;
     if (!options.quiet) {
       console.log(`\x1b[36m⚡ Esedre server already active on http://localhost:${port}\x1b[0m`);
     }
     return {
-      pid: process.pid,
+      pid: discoveredPid,
       port,
       startedAt: new Date().toISOString(),
       version: CURRENT_ESEDRE_VERSION,
@@ -401,33 +430,43 @@ export async function stopDaemon(options: StopDaemonOptions = {}): Promise<boole
       return false;
     }
 
-    // Port is responding but PID is unrecorded; attempt to resolve PID via OS network tables
-    try {
-      if (process.platform === 'win32') {
-        const out = spawnSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).stdout || '';
-        const lines = out.split('\n');
-        for (const line of lines) {
-          if (line.includes(`:${port}`) && line.includes('LISTENING')) {
-            const parts = line.trim().split(/\s+/);
-            const foundPid = parseInt(parts[parts.length - 1], 10);
-            if (!isNaN(foundPid) && foundPid > 0) {
-              pid = foundPid;
-              break;
+    // 1. Primary cross-platform PID resolution via GET /api/ping (works even when lsof is absent)
+    pid = await fetchDaemonPid(port, 300);
+
+    // 2. Fallback to OS network tables if /api/ping did not return a PID
+    if (!pid) {
+      try {
+        if (process.platform === 'win32') {
+          const out = spawnSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).stdout || '';
+          const lines = out.split('\n');
+          for (const line of lines) {
+            if (line.includes(`:${port}`) && line.includes('LISTENING')) {
+              const parts = line.trim().split(/\s+/);
+              const foundPid = parseInt(parts[parts.length - 1], 10);
+              if (!isNaN(foundPid) && foundPid > 0) {
+                pid = foundPid;
+                break;
+              }
             }
           }
+        } else {
+          const out = spawnSync('lsof', ['-ti', `tcp:${port}`], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).stdout || '';
+          const foundPid = parseInt(out.trim().split('\n')[0], 10);
+          if (!isNaN(foundPid) && foundPid > 0) pid = foundPid;
         }
-      } else {
-        const out = spawnSync('lsof', ['-ti', `tcp:${port}`], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).stdout || '';
-        const foundPid = parseInt(out.trim().split('\n')[0], 10);
-        if (!isNaN(foundPid) && foundPid > 0) pid = foundPid;
-      }
-    } catch {}
+      } catch {}
+    }
   }
 
   if (pid && isProcessAlive(pid)) {
     try {
       if (process.platform === 'win32') {
-        spawnSync('taskkill', ['/pid', String(pid), '/f', '/t'], { shell: false, stdio: 'ignore' });
+        const tk = spawnSync('taskkill', ['/pid', String(pid), '/f', '/t'], { shell: false, stdio: 'ignore' });
+        if (tk.error || tk.status !== 0) {
+          try {
+            process.kill(pid);
+          } catch {}
+        }
       } else {
         process.kill(pid, 'SIGTERM');
       }
@@ -465,7 +504,7 @@ export async function getDaemonStatus(options: { port?: number; json?: boolean; 
   const stateFile = getDaemonStateFile(port, workspaceRoot);
   const logFile = getDaemonLogFile(port, workspaceRoot);
 
-  const ping = await pingDaemon(port, 300);
+  const ping = await pingDaemon(port, 1500);
 
   if (state && isProcessAlive(state.pid) && ping.responding && ping.isEsedre) {
     const startedMs = Date.parse(state.startedAt) || Date.now();
