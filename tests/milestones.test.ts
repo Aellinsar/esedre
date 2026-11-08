@@ -442,5 +442,191 @@ describe('Milestones and Umbrella Feature Flags', () => {
       expect(filteredTickets).toHaveLength(1);
       expect(filteredTickets[0].title).toBe('MCP Linked Ticket');
     });
+
+    it('defaults esedre_get_milestone member tickets to compact summaries and supports includeDetails, includePlan, and includeRaw', async () => {
+      const storage = new FilesystemStorageAdapter(tmpDir, { dataDir: hubDir });
+      const server = new EsedreMcpServer(storage);
+
+      const callRpc = async (req: any) => {
+        return await (server as any).handleRequest(req);
+      };
+
+      await storage.createMilestone({
+        projectCode: 'Core',
+        title: 'Milestone 2 Heavy',
+        status: 'Active',
+      });
+
+      const createdTicket = await storage.createTicket({
+        title: 'Heavy Spec Ticket',
+        project: 'Core',
+        type: 'Feature',
+        priority: 'High',
+        milestone: '1',
+        summary: 'Concise summary for milestone view.',
+        detail: '## Summary\nConcise summary for milestone view.\n\n## Feature Breakdown\n- Step A\n- Step B\n\n## Technical Details\n- Detail 1',
+        plan: '# Implementation Plan\n\n1. Build module\n2. Verify tests',
+      });
+      await storage.addComment(createdTicket.meta.id, {
+        author: 'Agent',
+        text: 'Completed initial spike.',
+      });
+
+      // Default compact call
+      const defaultRes = await callRpc({
+        jsonrpc: '2.0',
+        id: 10,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_get_milestone',
+          arguments: { id: 1, project: 'Core' },
+        },
+      });
+      expect(defaultRes.error).toBeUndefined();
+      const compactPayload = JSON.parse(defaultRes.result.content[0].text);
+      expect(compactPayload.totalTickets).toBe(1);
+      expect(compactPayload.completedTickets).toBe(0);
+      expect(compactPayload.progressPercent).toBe(0);
+      expect(compactPayload.tickets).toHaveLength(1);
+      const t0 = compactPayload.tickets[0];
+      expect(t0.id).toBe(1);
+      expect(t0.title).toBe('Heavy Spec Ticket');
+      expect(t0.meta.title).toBe('Heavy Spec Ticket');
+      expect(t0.summary).toBe('Concise summary for milestone view.');
+      expect(t0.hasPlan).toBe(true);
+      expect(t0.planMarkdown).toBeUndefined();
+      expect(t0.detail).toBeUndefined();
+      expect(t0.comments).toBeUndefined();
+      expect(t0.projectDescriptor).toBeUndefined();
+
+      // Expanded call with includeDetails, includePlan, includeRaw
+      const expandedRes = await callRpc({
+        jsonrpc: '2.0',
+        id: 11,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_get_milestone',
+          arguments: {
+            id: 1,
+            project: 'Core',
+            includeDetails: true,
+            includePlan: true,
+            includeRaw: true,
+          },
+        },
+      });
+      expect(expandedRes.error).toBeUndefined();
+      const expandedPayload = JSON.parse(expandedRes.result.content[0].text);
+      const tExpanded = expandedPayload.tickets[0];
+      expect(tExpanded.planMarkdown).toContain('# Implementation Plan');
+      expect(tExpanded.detail).toBeDefined();
+      expect(tExpanded.detail.raw).toContain('## Feature Breakdown');
+      expect(tExpanded.comments).toHaveLength(1);
+    });
+
+    it('lazily hydrates missing .esedre/snapshot.json on read-only MCP calls and deposits existing snapshots on ese init', async () => {
+      const storage = new FilesystemStorageAdapter(tmpDir, { dataDir: hubDir });
+      await storage.createMilestone({
+        projectCode: 'Core',
+        title: 'Hydration Milestone',
+        status: 'Active',
+      });
+      await storage.createTicket({
+        title: 'Existing Hub Ticket 1',
+        project: 'Core',
+        type: 'Feature',
+        milestone: '1',
+      });
+      await storage.createTicket({
+        title: 'Existing Hub Ticket 2',
+        project: 'Core',
+        type: 'Bug',
+        milestone: '1',
+      });
+
+      // Set up a fresh workspace directory that has .esedre/esedre.json (as if git cloned) but no snapshot.json
+      const wsDir = path.join(tmpDir, 'fresh-clone-ws');
+      fs.mkdirSync(path.join(wsDir, '.esedre'), { recursive: true });
+      fs.writeFileSync(
+        path.join(wsDir, '.esedre', 'esedre.json'),
+        JSON.stringify({
+          projectCode: 'Core',
+          allowedProjects: ['Core'],
+          dataDir: hubDir,
+        }, null, 2) + '\n'
+      );
+
+      const snapPath = path.join(wsDir, '.esedre', 'snapshot.json');
+      expect(fs.existsSync(snapPath)).toBe(false);
+
+      const wsStorage = new FilesystemStorageAdapter(wsDir, {
+        projectCode: 'Core',
+        allowedProjects: ['Core'],
+        dataDir: hubDir,
+      });
+      const mcpServer = new EsedreMcpServer(wsStorage, {
+        workspaceRoot: wsDir,
+        projectCode: 'Core',
+        config: { projectCode: 'Core', allowedProjects: ['Core'], dataDir: hubDir },
+      });
+
+      // Read-only esedre_get_milestone lazily builds and deposits snapshot.json when missing
+      const getMilestoneRes = await (mcpServer as any).handleRequest({
+        jsonrpc: '2.0',
+        id: 20,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_get_milestone',
+          arguments: { id: 1, project: 'Core' },
+        },
+      });
+      expect(getMilestoneRes.error).toBeUndefined();
+      expect(fs.existsSync(snapPath)).toBe(true);
+      const snapAfterRead = JSON.parse(fs.readFileSync(snapPath, 'utf-8'));
+      expect(snapAfterRead.projectCode).toBe('Core');
+      expect(snapAfterRead.totalTickets).toBe(2);
+
+      // Now test ese init on a brand new workspace directory pointing to the hub with existing tickets
+      const initWsDir = path.join(tmpDir, 'init-ws');
+      fs.mkdirSync(initWsDir, { recursive: true });
+      const fakeHome = path.join(tmpDir, 'fake-home');
+      fs.mkdirSync(path.join(fakeHome, '.esedre'), { recursive: true });
+      fs.writeFileSync(
+        path.join(fakeHome, '.esedre', 'config.json'),
+        JSON.stringify({
+          version: '1.3.0',
+          dataDir: hubDir,
+          projects: {
+            Core: wsDir,
+          },
+        }, null, 2) + '\n'
+      );
+
+      // Remove snapPath from wsDir to verify ese init also deposits missing snapshots for linked workspaces
+      fs.unlinkSync(snapPath);
+      expect(fs.existsSync(snapPath)).toBe(false);
+
+      const initOut = execFileSync(
+        process.execPath,
+        [cliScriptPath, 'init', initWsDir, '-p', 'Core', '-n', 'Core Engine', '--no-mcp', '-y', '--json'],
+        {
+          cwd: tmpDir,
+          env: {
+            ...process.env,
+            ESEDRE_GLOBAL_DIR: path.join(fakeHome, '.esedre'),
+            HOME: fakeHome,
+            USERPROFILE: fakeHome,
+            NODE_ENV: 'test',
+          },
+          encoding: 'utf-8',
+        }
+      );
+      const initParsed = JSON.parse(initOut);
+      expect(initParsed.snapshotTickets).toBe(2);
+      const initSnapPath = path.join(initWsDir, '.esedre', 'snapshot.json');
+      expect(fs.existsSync(initSnapPath)).toBe(true);
+      const initSnap = JSON.parse(fs.readFileSync(initSnapPath, 'utf-8'));
+      expect(initSnap.totalTickets).toBe(2);
+    });
   });
 });
