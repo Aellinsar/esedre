@@ -807,9 +807,9 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
             sendJson(res, 400, { error: 'ticketId is required.' });
             return true;
           }
-          const planContent = planMarkdown ?? body.plan;
+          const planContent = planMarkdown ?? body.plan ?? body.content ?? body.text;
           if (typeof planContent !== 'string') {
-            sendJson(res, 400, { error: 'planMarkdown or plan is required.' });
+            sendJson(res, 400, { error: 'planMarkdown, plan, or content is required.' });
             return true;
           }
           invalidateApiCache();
@@ -824,8 +824,9 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
             sendJson(res, 400, { error: 'ticketId is required.' });
             return true;
           }
+          const commentText = text ?? body.content ?? body.comment ?? body.message ?? body.body;
           invalidateApiCache();
-          const createdComment = await reqStorage.addComment(ticketId, { author: author || 'Developer', text });
+          const createdComment = await reqStorage.addComment(ticketId, { author: author || 'Developer', text: commentText });
           const ticket = await reqStorage.getTicket(ticketId);
           sendJson(res, 200, { comment: createdComment, comments: ticket?.comments || [] });
           return true;

@@ -126,9 +126,16 @@ export class EsedreMcpServer {
     }
   }
 
-  private sanitizeMcpLease(lease?: TicketLease | null): Omit<TicketLease, 'worktree'> | undefined {
+  private sanitizeMcpLease(
+    lease?: TicketLease | null
+  ): Omit<TicketLease, 'worktree' | 'preClaimSha1' | 'claimRevision'> | undefined {
     if (!lease) return undefined;
-    const { worktree: _worktree, ...clean } = lease;
+    const {
+      worktree: _worktree,
+      preClaimSha1: _preClaimSha1,
+      claimRevision: _claimRevision,
+      ...clean
+    } = lease;
     return clean;
   }
 
@@ -729,6 +736,8 @@ export class EsedreMcpServer {
             leased: { type: 'boolean', description: 'Filter tickets by active lease presence (true = leased, false = unleased)' },
             leasedBy: { type: 'string', description: 'Filter tickets leased by a specific holder identity' },
             includePlan: { type: 'boolean', description: 'When true, includes implementation plan markdown (planMarkdown) for each ticket' },
+            compact: { type: 'boolean', description: 'When true, returns compact index records without summaries (default: false for active tickets, true for terminal tickets)' },
+            includeCompleted: { type: 'boolean', description: 'When false, omits Completed and Rejected tickets (default: true)' },
           },
         },
       },
@@ -738,7 +747,7 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            ticketId: { type: ['number', 'integer', 'string'], description: 'Numeric ticket ID (e.g. 96, 101) or compound key (e.g. Profe-96)' },
+            ticketId: { type: ['number', 'integer', 'string'], description: 'Numeric ticket ID (e.g. 12, 101) or compound key (e.g. Core-12)' },
             id: { type: ['number', 'integer', 'string'], description: 'Alias for ticketId: numeric ticket ID or compound key' },
             project: { type: 'string', description: 'Optional project code when numeric ticketId is used' },
             includeRaw: { type: 'boolean', description: 'When true, always includes raw markdown in ticket.detail.raw; when false, always omits it. Defaults to omitting detail.raw when parsed fields are lossless.' },
@@ -768,6 +777,8 @@ export class EsedreMcpServer {
             project: { type: 'string', description: 'Optional project code when numeric ticketId is used' },
             planMarkdown: { type: 'string', description: 'Implementation plan markdown content' },
             plan: { type: 'string', description: 'Alias for planMarkdown: Implementation plan markdown content' },
+            content: { type: 'string', description: 'Alias for planMarkdown: Implementation plan markdown content' },
+            text: { type: 'string', description: 'Alias for planMarkdown: Implementation plan markdown content' },
             lastHash: { type: 'string', description: 'Optimistic concurrency control: last known sha1 hash of the ticket' },
           },
         },
@@ -852,6 +863,9 @@ export class EsedreMcpServer {
             id: { type: ['number', 'integer', 'string'], description: 'Alias for ticketId: numeric ticket ID or compound key' },
             project: { type: 'string', description: 'Optional project code when numeric ticketId is used' },
             text: { type: 'string', description: 'Comment message' },
+            content: { type: 'string', description: 'Alias for text: Comment message' },
+            comment: { type: 'string', description: 'Alias for text: Comment message' },
+            message: { type: 'string', description: 'Alias for text: Comment message' },
             file: { type: 'string', description: 'Path to local file containing comment message markdown' },
             author: { type: 'string', description: 'Author name (e.g. Antigravity, Developer)' },
           },
@@ -863,7 +877,7 @@ export class EsedreMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            project: { type: 'string', description: 'Project code (e.g. Esedre, Alce)' },
+            project: { type: 'string', description: 'Project code (e.g. Core, Web, Esedre)' },
           },
         },
       },
@@ -935,7 +949,7 @@ export class EsedreMcpServer {
             targetTicketIds: {
               type: 'array',
               items: { type: ['number', 'integer', 'string'] },
-              description: 'Batch target ticket IDs or compound keys to unlink in a single atomic operation',
+              description: 'Batch target ticket IDs or compound keys to link in a single atomic operation',
             },
             author: { type: 'string', description: 'Author creating the link' },
             project: { type: 'string', description: 'Project code context for unqualified ticket IDs' },
@@ -965,7 +979,7 @@ export class EsedreMcpServer {
       },
       {
         name: 'esedre_claim_ticket',
-        description: 'Claim an advisory TTL-backed lease on a ticket to coordinate multi-agent and multi-machine work and prevent duplicate effort.',
+        description: 'Claim an advisory TTL-backed lease on a ticket to coordinate multi-agent and multi-machine work and prevent duplicate effort. Automatically transitions Planned tickets to In Development, returns the updated sha1 and revision, and preserves OCC lastHash continuity across the claim transition.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1561,9 +1575,9 @@ export class EsedreMcpServer {
 
       case 'save_plan': {
         const id = this.parseTicketId(args.ticketId ?? args.id, 'Ticket ID', args.project);
-        const planContent = args.planMarkdown ?? args.plan;
+        const planContent = args.planMarkdown ?? args.plan ?? args.content ?? args.text;
         if (typeof planContent !== 'string') {
-          throw new Error("Plan markdown content is required (pass 'planMarkdown' or 'plan')");
+          throw new Error("Plan markdown content is required (pass 'planMarkdown' or 'plan'); 'content' is also accepted");
         }
         await this.storage.savePlan(id, planContent, args.lastHash);
         const ticket = await this.storage.getTicket(id);
@@ -1655,7 +1669,7 @@ export class EsedreMcpServer {
 
       case 'add_comment': {
         const id = this.parseTicketId(args.ticketId ?? args.id, 'Ticket ID', args.project);
-        let text = args.text;
+        let text = args.text ?? args.content ?? args.comment ?? args.message ?? args.body;
         if (!text && args.file) {
           const baseDir = this.activeWorkspaceRoot || this.options.workspaceRoot || process.cwd();
           const expandedFile = expandHome(String(args.file).trim()); const resolvedPath = path.resolve(baseDir, process.platform === 'win32' ? expandedFile : expandedFile.replace(/\\/g, '/'));
@@ -1909,12 +1923,15 @@ export class EsedreMcpServer {
           success: true,
           renewed: res.renewed,
           overridden: res.overridden || false,
+          revision: res.ticket.meta.revision,
+          sha1: res.ticket.sha1,
           lease: this.sanitizeMcpLease(res.lease),
           ticket: {
             id: res.ticket.meta.id,
             project: res.ticket.meta.project,
             title: res.ticket.meta.title,
             status: res.ticket.meta.status,
+            revision: res.ticket.meta.revision,
             sha1: res.ticket.sha1,
           },
         };

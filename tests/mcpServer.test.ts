@@ -1730,6 +1730,127 @@ describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
         'Agents passing ## Problem and ## Proposed Solution previously received empty breakdown arrays.'
       );
     });
+
+    it('supports content alias on esedre_add_comment and esedre_save_plan and preserves OCC lastHash across esedre_claim_ticket transitions (Ticket #112)', async () => {
+      const createRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 800,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_create_ticket',
+          arguments: {
+            title: 'Symmetry and Claim OCC Ticket',
+            project: 'Conquest',
+            summary: 'Initial summary before claim',
+          },
+        },
+      });
+      expect(createRes.error).toBeUndefined();
+      const created = JSON.parse(createRes.result.content[0].text);
+      const ticketId = created.meta.id;
+      const preClaimSha1 = created.sha1;
+      expect(preClaimSha1).toBeTruthy();
+
+      // 1. Claim the Planned ticket -> auto-transitions to In Development and increments sha1
+      const claimRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 801,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_claim_ticket',
+          arguments: {
+            ticketId,
+            project: 'Conquest',
+            holder: 'Agent-112',
+          },
+        },
+      });
+      expect(claimRes.error).toBeUndefined();
+      const claimPayload = JSON.parse(claimRes.result.content[0].text);
+      expect(claimPayload.ticket.status).toBe('In Development');
+      expect(claimPayload.sha1).toBe(claimPayload.ticket.sha1);
+      expect(claimPayload.revision).toBe(claimPayload.ticket.revision);
+      expect(claimPayload.sha1).not.toBe(preClaimSha1);
+      expect(claimPayload.lease.preClaimSha1).toBeUndefined();
+      expect(claimPayload.lease.claimRevision).toBeUndefined();
+
+      // 2. Subsequent esedre_update_ticket passing the pre-claim sha1 succeeds because only claim transition occurred
+      const updateWithPreClaimHashRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 802,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_update_ticket',
+          arguments: {
+            ticketId,
+            project: 'Conquest',
+            summary: 'Updated using pre-claim sha1 without false conflict',
+            lastHash: preClaimSha1,
+          },
+        },
+      });
+      expect(updateWithPreClaimHashRes.error).toBeUndefined();
+      const updatedAfterPreClaim = JSON.parse(updateWithPreClaimHashRes.result.content[0].text);
+      expect(updatedAfterPreClaim.detail.summary).toBe(
+        'Updated using pre-claim sha1 without false conflict'
+      );
+
+      // 3. Once another revision has occurred, the old pre-claim sha1 is properly rejected
+      const staleHashRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 803,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_update_ticket',
+          arguments: {
+            ticketId,
+            project: 'Conquest',
+            summary: 'Should conflict on stale hash',
+            lastHash: preClaimSha1,
+          },
+        },
+      });
+      expect(staleHashRes.error).toBeDefined();
+      expect(staleHashRes.error.code).toBe(-32000);
+
+      // 4. esedre_save_plan accepts 'content' symmetrically
+      const savePlanContentRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 804,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_save_plan',
+          arguments: {
+            ticketId,
+            project: 'Conquest',
+            content: '### Plan via content alias\n1. Step one',
+            lastHash: updatedAfterPreClaim.sha1,
+          },
+        },
+      });
+      expect(savePlanContentRes.error).toBeUndefined();
+      const savedPlan = JSON.parse(savePlanContentRes.result.content[0].text);
+      expect(savedPlan.success).toBe(true);
+
+      // 5. esedre_add_comment accepts 'content' and 'comment' symmetrically with 'text'
+      const addCommentContentRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 805,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_add_comment',
+          arguments: {
+            ticketId,
+            project: 'Conquest',
+            content: 'Comment posted using content parameter alias.',
+            author: 'Agent-112',
+          },
+        },
+      });
+      expect(addCommentContentRes.error).toBeUndefined();
+      const commentPayload = JSON.parse(addCommentContentRes.result.content[0].text);
+      expect(commentPayload.text).toBe('Comment posted using content parameter alias.');
+    });
   });
 });
 

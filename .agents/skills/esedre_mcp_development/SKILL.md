@@ -31,8 +31,8 @@ The server registers the following tools in `tools/list`:
    - Parameters: `{ ticketId: number | string }`
    - Returns implementation plan markdown.
 4. `esedre_save_plan`:
-   - Parameters: `{ ticketId: number | string, planMarkdown?: string, plan?: string, lastHash?: string }`
-   - Persists updated plan markdown with optimistic concurrency control. Accepts either `planMarkdown` or `plan` as alias with validated required parameter presence.
+   - Parameters: `{ ticketId: number | string, planMarkdown?: string, plan?: string, content?: string, text?: string, lastHash?: string }`
+   - Persists updated plan markdown with optimistic concurrency control. Accepts `planMarkdown`, `plan`, `content`, or `text` as symmetric aliases with validated required parameter presence.
 5. `esedre_create_ticket`:
    - Parameters: `{ title: string, type?: string, priority?: string, milestone?: string, featureFlag?: string, project?: string, complexity?: string, effort?: string, summary?: string, detail?: string, plan?: string, planMarkdown?: string, links?: Array<{ relation: string, targetTicketId: number | string }>, author?: string, includeRaw?: boolean }`
    - Creates a new ticket with optional priority, milestone, specification markdown, and implementation plan in a single atomic call. By default, omits `detail.raw` to keep response payloads compact unless `includeRaw: true`.
@@ -41,7 +41,7 @@ The server registers the following tools in `tools/list`:
    - Modifies ticket attributes, specification detail, and implementation plan with optimistic concurrency control and automatic `detail.md` header reconciliation. By default, omits `detail.raw` unless `includeRaw: true`.
 7. `esedre_claim_ticket`:
    - Parameters: `{ ticketId: number | string, holder?: string, workerId?: string, agentType?: string, system?: string, sessionId?: string, branch?: string, worktree?: string, workspace?: string, ttlMinutes?: number, force?: boolean, project?: string }`
-   - Acquires a TTL-backed lease on a ticket (`In Development`, default 60m TTL) and prevents concurrent edits by other agents (`-32001`). Defaults `lease.worktree` to the resolved project repository root whenever `process.cwd()` is outside the project tree, and automatically detects `branch` from the effective worktree if `branch` is omitted.
+   - Acquires a TTL-backed lease on a ticket (`In Development`, default 60m TTL) and prevents concurrent edits by other agents (`-32001`). Automatically transitions `Planned` tickets to `In Development`, returns top-level `sha1` and `revision` (alongside `ticket.sha1` and `ticket.revision`), and records `preClaimSha1` on the lease so an immediate subsequent `esedre_update_ticket` or `esedre_save_plan` succeeds whether passed the pre-claim `sha1` or the new `sha1`. Defaults `lease.worktree` to the resolved project repository root whenever `process.cwd()` is outside the project tree, and automatically detects `branch` from the effective worktree if `branch` is omitted.
 8. `esedre_renew_lease`:
    - Parameters: `{ ticketId: number | string, holder?: string, workerId?: string, system?: string, ttlMinutes?: number }`
    - Extends the expiration timestamp (`expiresAt`) for an active ticket lease.
@@ -60,8 +60,8 @@ The server registers the following tools in `tools/list`:
    - Removes bi-directional links between the source ticket and one or more targets in a single atomic revision bump and snapshot refresh. Returns `{ success: true, sourceKey, targetKey, targetKeys, sourceRevision, sourceSha1, sha1, targetRevision, targetSha1, targets, links }`.
 
 13. `esedre_add_comment`:
-    - Parameters: `{ ticketId: number | string, text?: string, file?: string, author?: string }`
-    - Appends a developer or LLM agent verification note to the ticket.
+    - Parameters: `{ ticketId: number | string, text?: string, content?: string, comment?: string, message?: string, file?: string, author?: string }`
+    - Appends a developer or LLM agent verification note to the ticket (accepts `text`, `content`, `comment`, or `message` symmetrically).
 14. `esedre_list_milestones`:
     - Parameters: `{ project?: string }`
     - Returns project milestones with status, umbrella feature flag, target date, and deliverables progress metrics.

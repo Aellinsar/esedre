@@ -167,7 +167,12 @@ export async function generateProjectSnapshot(
     const sha1 = computeTicketHash(ticketObj);
     const sanitizedLease = ticketObj.lease
       ? (() => {
-          const { worktree: _worktree, ...cleanLease } = ticketObj.lease;
+          const {
+            worktree: _worktree,
+            preClaimSha1: _preClaimSha1,
+            claimRevision: _claimRevision,
+            ...cleanLease
+          } = ticketObj.lease;
           return cleanLease;
         })()
       : undefined;

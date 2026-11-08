@@ -18,13 +18,13 @@
 > **Detailed Reference**: See [esedre_storage_engine](.agents/skills/esedre_storage_engine/SKILL.md) and [esedre_cli_development](.agents/skills/esedre_cli_development/SKILL.md).
 
 1. **Per-Project Numbering Space (Starts at #1)**:
-   - Ticket numbers are sequential per project (e.g. `Profe-1..105`, `Esedre-1..69`, `Alce-1..`). Every newly created project begins its tickets at ID `#1`.
+   - Ticket numbers are sequential per project (e.g. `Core-1..105`, `Esedre-1..112`, `Web-1..`). Every newly created project begins its tickets at ID `#1`.
 2. **Addressing & Formatting Convention**:
-   - **Cross-Project & All-Projects View**: `<ProjectCode>-<id>` (e.g. `Prof-35`, `Esedre-1`).
+   - **Cross-Project & All-Projects View**: `<ProjectCode>-<id>` (e.g. `Core-35`, `Esedre-1`).
    - **Project-Scoped View**: `#<id>` (e.g. `#35`, `#1`).
    - **CLI & MCP Lookups**: Accept both prefixed keys (`ese get Esedre-1`) and numeric IDs (`ese get 1 --project Esedre` or `ese get 1` when scoped to the active project).
 3. **Case-Remembering Casing & Case-Insensitive Matching Invariant**:
-   - **Registration & Storage**: Project codes are 1-8 alphanumeric characters (`^[a-zA-Z0-9]{1,8}$`). The original casing provided at registration (e.g. `Personal`, `Esedre`, `Prof`) is canonical and preserved in `projects/<Code>/`, `project.json`, `projects.json`, and `meta.project`.
+   - **Registration & Storage**: Project codes are 1-8 alphanumeric characters (`^[a-zA-Z0-9]{1,8}$`). The original casing provided at registration (e.g. `Personal`, `Esedre`, `Core`) is canonical and preserved in `projects/<Code>/`, `project.json`, `projects.json`, and `meta.project`.
    - **Lookups & Security**: All lookups, CLI flags, MCP calls, filters, and `allowedProjects` checks are strictly case-insensitive (`personal-1`, `PERSONAL-1`, and `Personal-1` resolve identically).
    - **Cross-Platform Filesystem Normalization**: Storage resolution inspects existing entries in `projects/` case-insensitively and reuses the existing directory name to prevent duplicate directories on Linux ext4/XFS and Docker.
 

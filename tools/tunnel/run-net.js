@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import https from 'node:https';
@@ -7,6 +8,7 @@ import { DEFAULT_ALLOW_LIST, GAMEDAY_ALLOW_LIST } from './constants.js';
 
 // 1. Parse Mode (npm run net:all passes --all)
 const isAllMode = process.argv.includes('--all');
+const DEFAULT_TUNNEL_ID = 'a08a9958-0082-4fcd-9a2e-241af1234c1a';
 
 function resolveTunnelHostname(configFile) {
   if (process.env.ESEDRE_TUNNEL_HOST) return process.env.ESEDRE_TUNNEL_HOST;
@@ -20,6 +22,17 @@ function resolveTunnelHostname(configFile) {
   return null;
 }
 
+function resolveTunnelId(configFile, fallbackTunnelId) {
+  if (fs.existsSync(configFile)) {
+    try {
+      const content = fs.readFileSync(configFile, 'utf-8');
+      const match = content.match(/^tunnel:\s*([^\s\r\n]+)/m);
+      if (match && match[1]) return match[1].trim();
+    } catch {}
+  }
+  return fallbackTunnelId;
+}
+
 const localConfigFile = path.resolve(import.meta.dirname, 'config.yml');
 const tunnelHostname = resolveTunnelHostname(localConfigFile);
 console.log(`\n🚀 [Esedre] Starting Vite Dev Server & Cloudflare Tunnel${tunnelHostname ? ` (${tunnelHostname})` : ''}...\n`);
@@ -27,6 +40,9 @@ console.log(`\n🚀 [Esedre] Starting Vite Dev Server & Cloudflare Tunnel${tunne
 // 2. Locate cloudflared binary
 function getCloudflaredPath() {
   const candidates = [
+    path.join(os.homedir(), '.cloudflared', 'cloudflared.exe'),
+    path.join(os.homedir(), '.cloudflared', 'cloudflared'),
+    path.join(os.homedir(), 'AppData', 'Local', 'Microsoft', 'WinGet', 'Links', 'cloudflared.exe'),
     'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe',
     'C:\\Program Files\\cloudflared\\cloudflared.exe',
     'cloudflared',
@@ -166,6 +182,9 @@ async function main() {
       TUNNEL_ALLOWED_IPS: allowedIpsEnv,
     },
   });
+  vite.on('error', (err) => {
+    console.error('❌ [Esedre] Failed to start Vite:', err.message);
+  });
 
   // 5. Start Tunnel with HTTP/2 transport protocol (avoids UDP QUIC hairpin/NAT drops on LAN)
   const tokenFile = path.resolve(import.meta.dirname, 'token.txt');
@@ -179,13 +198,27 @@ async function main() {
     console.warn('   Copy tools/tunnel/config.yml.example to tools/tunnel/config.yml and configure your tunnel.\n');
   }
 
+  const tunnelId = resolveTunnelId(configFile, DEFAULT_TUNNEL_ID);
+  const credFile = path.join(os.homedir(), '.cloudflared', `${tunnelId}.json`);
   const tunnelArgs = token
     ? ['tunnel', 'run', '--protocol', 'http2', '--token', token]
-    : ['--config', configFile, 'tunnel', 'run', '--protocol', 'http2', 'esedre-dev'];
+    : [
+        '--config',
+        configFile,
+        'tunnel',
+        'run',
+        ...(fs.existsSync(credFile) ? ['--cred-file', credFile] : []),
+        '--protocol',
+        'http2',
+        tunnelId,
+      ];
 
   const tunnel = spawn(cloudflaredPath, tunnelArgs, {
     stdio: 'inherit',
     shell: false,
+  });
+  tunnel.on('error', (err) => {
+    console.error(`⚠️ [Esedre] Failed to start cloudflared (${err.message}). Vite dev server remains active locally.`);
   });
 
   // 6. Conditionally Start Esedre Server Daemon (port 5674 gateway, 5675 UI, 5676 API)
@@ -217,6 +250,9 @@ async function main() {
         stdio: 'inherit',
         shell: false,
       });
+      esedre.on('error', (err) => {
+        console.error('⚠️ [Esedre] Failed to start daemon:', err.message);
+      });
     }
   }
 
@@ -236,7 +272,7 @@ async function main() {
         tunnel.kill('SIGINT');
         if (esedre) esedre.kill('SIGINT');
       }
-    } catch (e) {
+    } catch {
       // Ignore cleanup error on exit
     }
     process.exit(0);

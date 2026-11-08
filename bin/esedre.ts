@@ -94,7 +94,7 @@ ${colors.bold}ROADMAP COMMANDS (Pair Programming & LLM Agents):${colors.reset}
   ${colors.bold}update${colors.reset}      <id> [-s|--status <status>] [-t|--type <type>] [-P|--priority <prio>] [--title "..."] [--complexity <c>] [--effort "<e>"] [--summary "<s>"] [--detail "<md>"] [--file <path>] [--plan "<md>"] [--plan-file <path>] [--in-dev] [--flag <name>] [--last-hash <sha1>] [--force] [--json]
                Mutate ticket status, type, priority, title, complexity, effort, summary, detail, plan, active state, or feature flag with OCC protection.
 
-  ${colors.bold}comment${colors.reset}     <id> ["<text>"] [--file <path>] [--text "..."] [--author "..."] [--json]
+  ${colors.bold}comment${colors.reset}     <id> ["<text>"] [--file <path>] [--text|--content "..."] [--author "..."] [--json]
                Append a research finding, test verification, or note to ticket history.
 
   ${colors.bold}link${colors.reset}        <sourceId> <relation> <targetId> [--author "..."] [--json]
@@ -137,9 +137,6 @@ ${colors.bold}SERVICE DAEMON COMMANDS:${colors.reset}
 
   ${colors.bold}mcp${colors.reset}         Start the Model Context Protocol (MCP) JSON-RPC 2.0 stdio server for autonomous LLM coding agents.
 
-  ${colors.bold}hook${colors.reset}        [agy-pre-tool]
-               Evaluate Antigravity PreToolUse isolation hook and synchronize active MCP workspace context.
-
 ${colors.bold}DEVELOPER ADMINISTRATION (Human Setup & Configuration):${colors.reset}
   ${colors.bold}init${colors.reset}        [<path>] [--project <code>] [-n|--name <name>] [--hub <name|path>] [--allow <c1,c2>] [--port <n>] [-y|--yes] [--json]
                Bring a project repository online (.esedre footprint, wrappers, snapshot), bootstrap a data hub (--hub), or register a project directly into an Esedre ticket data hub (--project <code>).
@@ -153,7 +150,7 @@ ${colors.bold}DEVELOPER ADMINISTRATION (Human Setup & Configuration):${colors.re
                • set <key> <val>  Update a central configuration setting (e.g. server.host http://<ip>:5674 or none)
 
   ${colors.bold}upgrade${colors.reset}     [<path>] [-p|--project <code>] [--all|-a] [--force|-f] [--json]
-               Upgrade workspace configuration schema, wrappers, MCP isolation hooks, agent skills, and project data schema. Registers workspace in ~/.esedre/config.json and refreshes snapshot.
+               Upgrade workspace configuration schema, wrappers, MCP configs, agent skills, and project data schema. Registers workspace in ~/.esedre/config.json and refreshes snapshot.
                Pass --project (-p) <code> to run storage schema migrations on a specific project.
                Pass --all (-a) to upgrade all registered workspaces and project schemas in central ~/.esedre/config.json.
                Pass --force to overwrite customized skills with the latest official template.
@@ -169,8 +166,8 @@ ${colors.bold}DEVELOPER ADMINISTRATION (Human Setup & Configuration):${colors.re
 
 ${colors.bold}OPTIONS:${colors.reset}
   -a, --all            Apply operation across all registered projects in central configuration.
-  -p, --project <code> Project code (e.g. CORE, ALCE, DOCS).
-  -n, --name <name>    Project display name (e.g. "Alce Web Reader").
+  -p, --project <code> Project code (e.g. CORE, WEB, DOCS).
+  -n, --name <name>    Project display name (e.g. "Web Application").
   -t, --type <type>    Ticket type ('Feature', 'Platform', 'Tools', 'Idea', 'Bug').
   -P, --priority <prio> Ticket priority ('Critical', 'High', 'Medium', 'Low', 'none').
   -m, --milestone <name|id> Ticket milestone association.
@@ -530,7 +527,7 @@ async function main(): Promise<void> {
             if (!projectCode) {
               const promptMsg = candidateCode
                 ? `${colors.cyan}?${colors.reset} Project code (1-${MAX_PROJECT_CODE_LENGTH} alphanumeric characters) [${candidateCode}]: `
-                : `${colors.cyan}?${colors.reset} Project code (1-${MAX_PROJECT_CODE_LENGTH} alphanumeric characters, e.g. ALCE, DOCS): `;
+                : `${colors.cyan}?${colors.reset} Project code (1-${MAX_PROJECT_CODE_LENGTH} alphanumeric characters, e.g. CORE, WEB, DOCS): `;
               const codeAnswer = await rl.question(promptMsg);
               projectCode = codeAnswer.trim() || candidateCode;
             }
@@ -825,7 +822,7 @@ async function main(): Promise<void> {
         if (subAction === 'remove' || subAction === 'rm') {
           const target = positionals[1];
           if (!target) {
-            console.error(`${colors.red}Error: Project code or directory path required (e.g. ese configure remove ALCE)${colors.reset}`);
+            console.error(`${colors.red}Error: Project code or directory path required (e.g. ese configure remove WEB)${colors.reset}`);
             process.exit(1);
           }
           const rmRes = removeLocationFromGlobalConfig(target);
@@ -1496,7 +1493,7 @@ async function main(): Promise<void> {
         const oldCode = positionals[0];
         const newCode = positionals[1];
         if (!oldCode || !newCode) {
-          console.error(`${colors.red}Error: Both oldCode and newCode are required (e.g. ese rename-project Profe Lab151)${colors.reset}`);
+          console.error(`${colors.red}Error: Both oldCode and newCode are required (e.g. ese rename-project OldApp NewApp)${colors.reset}`);
           process.exit(1);
         }
         const newName = (flags['name'] || flags['n']) as string | undefined;
@@ -1523,7 +1520,7 @@ async function main(): Promise<void> {
           const oldCode = positionals[1];
           const newCode = positionals[2];
           if (!oldCode || !newCode) {
-            console.error(`${colors.red}Error: Both oldCode and newCode are required (e.g. ese project rename Profe Lab151)${colors.reset}`);
+            console.error(`${colors.red}Error: Both oldCode and newCode are required (e.g. ese project rename OldApp NewApp)${colors.reset}`);
             process.exit(1);
           }
           const newName = (flags['name'] || flags['n']) as string | undefined;
@@ -1541,7 +1538,7 @@ async function main(): Promise<void> {
         if (sub === 'set') {
           const code = positionals[1] || (flags['project'] as string) || (flags['p'] as string);
           if (!code) {
-            console.error(`${colors.red}Error: Project code is required (e.g. ese project set Lab151 --name "Lab 151")${colors.reset}`);
+            console.error(`${colors.red}Error: Project code is required (e.g. ese project set Core --name "Core Service")${colors.reset}`);
             process.exit(1);
           }
           const name = (flags['name'] || flags['n']) as string | undefined;
@@ -1667,7 +1664,7 @@ async function main(): Promise<void> {
 
       case 'get': {
         if (positionals.length === 0) {
-          console.error(`${colors.red}Error: Ticket ID is required (e.g. ese get 1 or ese get Profe-1)${colors.reset}`);
+          console.error(`${colors.red}Error: Ticket ID is required (e.g. ese get 1 or ese get Core-1)${colors.reset}`);
           process.exit(1);
         }
         const projectFlag = flags['project'] as string;
@@ -1697,18 +1694,18 @@ async function main(): Promise<void> {
       case 'plan': {
         const idStr = positionals[0];
         if (!idStr) {
-          console.error(`${colors.red}Error: Ticket ID is required (e.g. ese plan 1 or ese plan Profe-1)${colors.reset}`);
+          console.error(`${colors.red}Error: Ticket ID is required (e.g. ese plan 1 or ese plan Core-1)${colors.reset}`);
           process.exit(1);
         }
         const projectFlag = flags['project'] as string;
         const id = projectFlag && /^\d+$/.test(idStr) ? `${projectFlag}-${idStr}` : idStr;
 
-        const setPlan = flags['set'] as string;
+        const setPlan = (flags['set'] ?? flags['content'] ?? flags['text'] ?? flags['plan']) as string | undefined;
         const filePath = flags['file'] as string;
         const isForce = Boolean(flags['force']);
         const lastHash = isForce ? undefined : (flags['last-hash'] as string);
 
-        if (flags['set'] !== undefined || filePath) {
+        if (setPlan !== undefined || filePath) {
           let content = setPlan !== undefined ? normalizeCliMultiline(String(setPlan)) : '';
           if (filePath) {
             const resolvedPlanFile = resolveCliFilePath(filePath); if (!fs.existsSync(resolvedPlanFile)) {
@@ -1863,7 +1860,7 @@ async function main(): Promise<void> {
       case 'update': {
         const idStr = positionals[0];
         if (!idStr) {
-          console.error(`${colors.red}Error: Ticket ID is required (e.g. ese update 96 --status "Completed" or ese update Profe-96)${colors.reset}`);
+          console.error(`${colors.red}Error: Ticket ID is required (e.g. ese update 12 --status "Completed" or ese update Core-12)${colors.reset}`);
           process.exit(1);
         }
         const projectFlag = flags['project'] as string;
@@ -2173,7 +2170,7 @@ async function main(): Promise<void> {
       case 'comment': {
         const idStr = positionals[0];
         if (!idStr) {
-          console.error(`${colors.red}Error: Ticket ID is required (e.g. ese comment 96 --text "..." or ese comment Profe-96)${colors.reset}`);
+          console.error(`${colors.red}Error: Ticket ID is required (e.g. ese comment 12 --text "..." or ese comment Core-12)${colors.reset}`);
           process.exit(1);
         }
         const projectFlag = flags['project'] as string;
@@ -2199,7 +2196,10 @@ async function main(): Promise<void> {
           text = fileContent;
         } else {
           const positionalText = positionals.slice(1).join(' ').trim();
-          const rawText = (flags['text'] as string) || (positionalText || undefined); text = rawText ? normalizeCliMultiline(rawText) : undefined;
+          const rawText =
+            ((flags['text'] ?? flags['content'] ?? flags['comment'] ?? flags['message']) as string) ||
+            (positionalText || undefined);
+          text = rawText ? normalizeCliMultiline(rawText) : undefined;
         }
 
         if (!text) {

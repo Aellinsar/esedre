@@ -259,6 +259,8 @@ export interface TicketLease {
   renewedAt: string;
   expiresAt: string;
   ttlMinutes: number;
+  preClaimSha1?: string;
+  claimRevision?: number;
 }
 
 export interface ClaimLeaseInput {

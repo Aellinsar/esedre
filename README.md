@@ -124,7 +124,7 @@ Core day-to-day workflow commands for scoping, viewing, planning, and verifying 
 | `link` | `ese link <sourceId> <relation> <targetId...> [--author "..."]` | Establish bi-directional links between a source ticket and one or more target tickets (`relates-to`, `blocks`, `parent-of`, `duplicates`). |
 | `unlink` | `ese unlink <sourceId> <targetId...> [--relation <relation>]` | Remove bi-directional links between a source ticket and one or more target tickets. |
 | `milestone` | `ese milestone [list\|get\|create\|update\|delete] [args...]` | Manage project milestones and umbrella feature flags with deliverables tracking. |
-| `comment` | `ese comment <id> ["<text>"] [--file <path>] [--text "..."] [--author "..."]` | Append a developer or LLM agent note to ticket history. |
+| `comment` | `ese comment <id> ["<text>"] [--file <path>] [--text\|--content "..."] [--author "..."]` | Append a developer or LLM agent note to ticket history. |
 | `snapshot`, `refresh` | `ese snapshot [--project <code>] [--include-plans] [--json]` | Generate or refresh projection `.esedre/snapshot.json` (`totalTickets`, `lastTicketId`, `activeLeases`, `tickets` with `hasPlan: boolean`) for zero-latency agent context. |
 | `projects` | `ese projects [--json]` | List registered projects within authorized scope. |
 
@@ -140,7 +140,6 @@ Manage the local web dashboard and API server:
 | `logs` | `ese logs [--port <n>] [--lines <n>]` | Tail recent server output logs. |
 | `sync` | `ese sync [--status \| -s] [--pull] [--push] [--hub <path>] [--json]` | Synchronize configured Esedre data hub repository (`esedre-data`) with its Git remote. |
 | `mcp` | `ese mcp` | Launch the Model Context Protocol stdio server for LLM agents. |
-| `hook` | `ese hook agy-pre-tool` | Evaluate Antigravity `PreToolUse` isolation hook and synchronize active MCP workspace context. |
 
 ### Developer Administration (Human Machine Setup)
 
@@ -152,7 +151,7 @@ Commands for repository onboarding, central machine linking, and maintenance:
 | `configure` | `ese configure [add <path> \| remove <code\|path> \| set <k> <v> \| get <k>]` | Inspect or mutate central configuration (`~/.esedre/config.json`). Link external project repositories, data hubs, or remote server hosts (`server.host`, `remotes.<Code>`). |
 | `rename-project` | `ese rename-project <oldCode> <newCode> [--name "<name>"]` | Rename a project code across directory storage paths, manifests, and tickets. |
 | `project set` | `ese project set <code> [--name "<name>"]` | Update metadata for an existing project (e.g. display name). |
-| `upgrade` | `ese upgrade [<path>] [-p\|--project <code>] [--all \| -a] [--force \| -f]` | Upgrade workspace configuration schema, project data schema versions (`project.json` and ticket `meta.json` with atomic backups in `~/.esedre/backups/`), in-repo wrappers, workspace and global Antigravity MCP configs (including `PreToolUse` isolation hooks), and agent skills across current, target project, or all registered workspaces, with automatic `~/.esedre/config.json` registration and 24 KB rule size checks. |
+| `upgrade` | `ese upgrade [<path>] [-p\|--project <code>] [--all \| -a] [--force \| -f]` | Upgrade workspace configuration schema, project data schema versions (`project.json` and ticket `meta.json` with atomic backups in `~/.esedre/backups/`), in-repo wrappers, workspace MCP configs, and agent skills across current, target project, or all registered workspaces, with automatic `~/.esedre/config.json` registration and 24 KB rule size checks. |
 
 > **Human vs LLM Agent Workflows**: Developer Administration commands (`init`, `configure`, `upgrade`) manage system-level repository linking and central machine configuration. They are intended for human developers during initial setup. Autonomous LLM coding partners operate within the authorized workspace scope using Roadmap and Service Daemon commands (`list`, `get`, `plan`, `create`, `update`, `lease`, `comment`, `snapshot`, `start`, `status`).
 
@@ -178,7 +177,7 @@ You can run the Esedre daemon (`ese start`) on a central desktop or intranet hos
 
 ```bash
 # Point a client machine's CLI and MCP server at a remote Esedre daemon
-ese configure set server.host http://192.168.86.38:5674
+ese configure set server.host http://192.168.1.50:5674
 
 # Optional: map a specific project code to a dedicated remote host
 ese configure set remotes.Work http://intranet.example.com:5674
@@ -191,7 +190,7 @@ ese configure set server.host none
 ```
 
 Esedre resolves whether to use `HttpStorageAdapter` (remote HTTP) or `FilesystemStorageAdapter` (local disk) using a 5-tier precedence hierarchy:
-1. **Runtime Override (`--host <url|local>` / `ESEDRE_HOST`)**: Passing `--host http://192.168.86.38:5674` or `--host local` (or setting `ESEDRE_HOST`) overrides all configuration files for a single command.
+1. **Runtime Override (`--host <url|local>` / `ESEDRE_HOST`)**: Passing `--host http://192.168.1.50:5674` or `--host local` (or setting `ESEDRE_HOST`) overrides all configuration files for a single command.
 2. **Per-Project Remote Mapping (`remotes.<ProjectCode>`)**: Explicit per-project remote URLs in `.esedre/esedre.json` or `~/.esedre/config.json` take precedence for that project.
 3. **Self-Contained Local Project Precedence**: If the active workspace contains local in-repo tickets (`.esedre/tickets/<id>/`) or declares an in-repo `dataDir` (a directory inside the workspace root) in `.esedre/esedre.json`, local filesystem storage automatically takes precedence over a machine-global `server.host`.
 4. **Workspace Server Host (`server.host` in `.esedre/esedre.json`)**: Shared team or intranet repositories can declare a default `server.host` in `.esedre/esedre.json` (automatically bypassed on the host machine itself when the host owns the local `dataDir` hub).
@@ -231,7 +230,7 @@ Project codes must be unique across all configured data hubs. Esedre does not su
 #### Case-Remembering Casing & Case-Insensitive Matching
 
 Esedre follows a strict **case-remembering but case-insensitive on matches** design across all storage, CLI, MCP, and configuration layers:
-* **Case-Remembering Storage**: Project codes preserve their original registered casing (e.g. `Personal`, `Esedre`, `Prof`) in directory names on disk (`projects/Personal/`) and in all metadata manifests (`project.json`, `meta.json`). Ticket metadata always records the canonical remembered casing. Re-registering or re-configuring a project preserves the existing remembered casing.
+* **Case-Remembering Storage**: Project codes preserve their original registered casing (e.g. `Personal`, `Esedre`, `Core`) in directory names on disk (`projects/Personal/`) and in all metadata manifests (`project.json`, `meta.json`). Ticket metadata always records the canonical remembered casing. Re-registering or re-configuring a project preserves the existing remembered casing.
 * **Case-Insensitive Lookups & Access**: All queries, CLI flags, MCP tool calls, ticket lookups (`ese get personal-1`, `ese get PERSONAL-1`, `ese get Personal-1`), and Agent Project Allow-List permissions (`allowedProjects`) match case-insensitively.
 * **Cross-Platform Filesystem Normalization**: To prevent split directory fragmentation on case-sensitive filesystems (such as Linux ext4 or Docker), directory resolution matches existing parent directory entries case-insensitively, automatically reusing existing directory casing regardless of input variation.
 
@@ -255,20 +254,20 @@ To connect Esedre to **Google Antigravity**, **Claude Code**, **Cursor**, or any
 ### Registered Tools
 - `esedre_list_tickets`: List tickets with optional project, status, type, priority, milestone, featureFlag, isBlocked, leased, leasedBy, linkedTo, search, includePlan, compact, or includeCompleted filter.
 - `esedre_get_ticket`: Retrieve full specification, summary, comments, revision, links, active lease, blocker status, and content hash (`sha1`). Deduplicates `meta` fields and omits `detail.raw` by default when `detail.md` is losslessly represented by parsed sections (pass `includeRaw: true` to force raw markdown).
-- `esedre_get_plan` & `esedre_save_plan`: Inspect and update implementation plans with optimistic concurrency (`lastHash`).
+- `esedre_get_plan` & `esedre_save_plan`: Inspect and update implementation plans (`planMarkdown`, `plan`, or `content`) with optimistic concurrency (`lastHash`).
 - `esedre_create_ticket`: Mint new roadmap tickets with project code validation (up to 8 chars), optional priority, optional milestone, optional featureFlag, specification detail markdown, and atomic initial `links`.
 - `esedre_update_ticket`: Modify status, title, type, priority, milestone, summary, specification detail (`detail`/`detailMarkdown`), complexity, or effort with optimistic concurrency (`lastHash`).
-- `esedre_claim_ticket`: Acquire an exclusive TTL-backed lease on a ticket (`In Development`) with conflict protection (`-32001`). Resolves the project repository's worktree internally from `~/.esedre/config.json` for Git branch detection while omitting `worktree` from agent-facing MCP payloads.
+- `esedre_claim_ticket`: Acquire an exclusive TTL-backed lease on a ticket (`In Development`, returning updated `sha1` and `revision` while preserving OCC `lastHash` continuity across the claim transition) with conflict protection (`-32001`).
 - `esedre_renew_lease`: Extend the expiration TTL of an active ticket lease.
 - `esedre_release_ticket`: Release an active ticket lease and optionally transition status (`Completed`, `Planned`, etc., automatically clearing `isActivePlanning` when `Completed` or `Rejected`).
 - `esedre_list_leases`: List all active, unexpired ticket leases across authorized projects.
-- `esedre_link_ticket`: Establish a bi-directional link between two tickets (`relates-to`, `blocks`, `parent-of`, `duplicates`).
-- `esedre_unlink_ticket`: Remove a bi-directional relationship between two tickets.
+- `esedre_link_ticket`: Establish bi-directional link(s) between a source ticket and one or more target tickets (`targetTicketId` or `targetTicketIds`; relations: `relates-to`, `blocks`, `parent-of`, `duplicates`).
+- `esedre_unlink_ticket`: Remove bi-directional relationship(s) between a source ticket and one or more target tickets (`targetTicketId` or `targetTicketIds`).
 - `esedre_list_milestones`: List milestones and progress metrics for a project.
-- `esedre_get_milestone`: Retrieve milestone specifications, umbrella feature flag, and member tickets.
+- `esedre_get_milestone`: Retrieve milestone specifications, umbrella feature flag, and compact member tickets (with optional `includeDetails`, `includePlan`, and `includeRaw` flags).
 - `esedre_create_milestone`: Create a project milestone with optional umbrella feature flag and target date.
 - `esedre_update_milestone`: Update milestone status, title, description, or umbrella feature flag.
-- `esedre_add_comment`: Append developer or LLM agent verification notes with optional file path or inline text.
+- `esedre_add_comment`: Append developer or LLM agent verification notes via inline `text` / `content` / `comment` or `file` path.
 
 ### Cross-Project Linked Issues & Dependencies
 
@@ -288,7 +287,7 @@ Esedre supports bi-directional ticket relationships across tickets within the sa
 
 Esedre introduces first-class milestone management to group related tickets toward target deliverables and release cycles:
 
-- **Target Deliverables**: Organize tickets under sequential project milestones (e.g. `#1 Lab 151 Platform Foundation`, `#2 Public Release`).
+- **Target Deliverables**: Organize tickets under sequential project milestones (e.g. `#1 Core Platform Foundation`, `#2 Public Release`).
 - **Cross-Project Milestone Deliverables**: Milestones can group member tickets across multiple projects (e.g. platform, web, and tooling repositories) toward a unified delivery target.
 - **Compound Milestone Notation**: In multi-project or portfolio context, milestones are addressed and filtered using compound notation (`ProjectCode:MilestoneTitle` or `ProjectCode:MilestoneId`).
 - **Umbrella Feature Flag Inheritance**: Milestones can optionally link to an umbrella feature flag, which automatically propagates to all tickets in the milestone unless individually overridden.
@@ -336,7 +335,7 @@ Esedre includes a drop-in Web Component (`<esedre-planner>`) that allows you to 
 
 | Attribute | Default | Description |
 |---|---|---|
-| `project` | `"all"` | Filter tickets to a specific project code (e.g. `Profe`, `Alce`) or `"all"` |
+| `project` | `"all"` | Filter tickets to a specific project code (e.g. `Core`, `Web`) or `"all"` |
 | `api-url` | `"/api/planning"` | Base URL of the Esedre server or reverse proxy endpoint |
 | `show-header` | `"true"` | Set to `"false"` to hide the top navigation header for seamless dialog/drawer embedding |
 | `read-only` | `"false"` | Disable ticket creation, editing, and plan modification |
@@ -377,9 +376,8 @@ The planner UI is styled entirely using CSS custom properties. When embedding in
 
 Esedre enforces clean project isolation so each LLM agent is informed only of the projects it is authorized to access:
 - **Upward Discovery**: When invoked in any subdirectory, Esedre climbs upward until it encounters the nearest `.esedre/esedre.json` or `esedre.json`, binding its execution to that repository's scope.
-- **Scoped Project Awareness & Directional Hierarchies**: Storage operations and tools only inform and expose projects declared in `allowedProjects`. Umbrella workspaces can coordinate across sub-projects (e.g. `"allowedProjects": ["lab151", "lab151-tcg"]`), while leaf sub-projects (`"allowedProjects": ["lab151-tcg"]`) remain isolated from parent and sibling tickets.
-- **Antigravity Global MCP Isolation Hook (`PreToolUse`)**: In environments where the MCP server runs as a global background process (such as Google Antigravity's `language_server.exe`), `ese init`, `ese upgrade`, and `ese mcp` automatically install a `PreToolUse` hook (`~/.gemini/config/hooks.json` -> `node ./agy-pre-tool-hook.mjs`) that evaluates the active session's `workspacePaths`, blocks unauthorized project requests before execution, and synchronizes per-request `SecurityFilter` scope (`~/.esedre/mcp-active-context.json`).
-- **Zero Host Filesystem Path Leakage**: External repository paths (`lease.worktree`) are omitted from `.esedre/snapshot.json`, redacted in `SecurityFilter`, and stripped from MCP tool responses and `stderr` diagnostics so agents cannot discover sibling or unauthorized directories on disk.
+- **Scoped Project Awareness & Directional Hierarchies**: Storage operations and tools only inform and expose projects declared in `allowedProjects`. Umbrella workspaces can coordinate across sub-projects (e.g. `"allowedProjects": ["Platform", "WebApp"]`), while leaf sub-projects (`"allowedProjects": ["WebApp"]`) remain isolated from parent and sibling tickets.
+- **Zero Host Filesystem Path Leakage**: External repository paths are stripped from `.esedre/snapshot.json`, MCP tool responses, and diagnostics so agents remain cleanly scoped to their active workspace.
 - Unauthorized requests throw `EsedreAuthorizationError`:
   - **CLI**: Prints `Access Denied: ...` and exits with status code 1.
   - **MCP**: Responds with standard JSON-RPC error `-32603`.

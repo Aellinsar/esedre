@@ -209,7 +209,7 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5674,
-    allowedHosts: resolveAllowedHosts(),
+    allowedHosts: true,
   },
 });
 

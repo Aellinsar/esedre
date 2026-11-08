@@ -285,7 +285,7 @@ export function readGlobalConfig(): EsedreConfig | null {
     return null;
   }
   try {
-    const raw = fs.readFileSync(configPath, 'utf-8');
+    const raw = fs.readFileSync(configPath, 'utf-8').replace(/^\uFEFF/, '');
     return JSON.parse(raw) as EsedreConfig;
   } catch {
     return null;
@@ -860,7 +860,7 @@ export function findEsedreConfig(startDir?: string, options?: FindConfigOptions)
       const candidatePath = path.join(current, ...segs);
       if (fs.existsSync(candidatePath)) {
         try {
-          const raw = fs.readFileSync(candidatePath, 'utf-8');
+          const raw = fs.readFileSync(candidatePath, 'utf-8').replace(/^\uFEFF/, '');
           localConfig = JSON.parse(raw) as EsedreConfig;
           localConfigPath = candidatePath;
           localWorkspaceRoot = current;

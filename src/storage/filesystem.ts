@@ -3283,7 +3283,14 @@ ${input.summary || 'Summary to be defined.'}
 
     if (lastHash !== undefined) {
       const currentHash = existing.sha1 || computeTicketHash(existing);
-      if (!verifyTicketHash(currentHash, lastHash)) {
+      const matchesCurrent = verifyTicketHash(currentHash, lastHash);
+      const matchesPreClaim = Boolean(
+        !matchesCurrent &&
+          existing.lease?.preClaimSha1 &&
+          existing.lease?.claimRevision === existing.meta.revision &&
+          verifyTicketHash(existing.lease.preClaimSha1, lastHash)
+      );
+      if (!matchesCurrent && !matchesPreClaim) {
         throw new EsedreConflictError(id, currentHash, lastHash);
       }
     }
@@ -3564,7 +3571,14 @@ ${input.summary || 'Summary to be defined.'}
 
     if (lastHash !== undefined) {
       const currentHash = ticket.sha1 || computeTicketHash(ticket);
-      if (!verifyTicketHash(currentHash, lastHash)) {
+      const matchesCurrent = verifyTicketHash(currentHash, lastHash);
+      const matchesPreClaim = Boolean(
+        !matchesCurrent &&
+          ticket.lease?.preClaimSha1 &&
+          ticket.lease?.claimRevision === ticket.meta.revision &&
+          verifyTicketHash(ticket.lease.preClaimSha1, lastHash)
+      );
+      if (!matchesCurrent && !matchesPreClaim) {
         throw new EsedreConflictError(id, currentHash, lastHash);
       }
     }
@@ -4510,12 +4524,30 @@ ${input.summary || 'Summary to be defined.'}
     this.invalidateTicketCache(resolved.ticketDir);
 
     let ticket = (await this.getTicket(resolved.key))!;
+    const preClaimSha1 = ticket.sha1 || computeTicketHash(ticket);
     const targetStatus = input.statusOnClaim ?? (ticket.meta.status === 'Planned' ? 'In Development' : undefined);
     if (targetStatus && ticket.meta.status !== targetStatus) {
       ticket = await this.updateTicket(resolved.key, {
         status: targetStatus,
         isActivePlanning: targetStatus === 'In Development' ? true : ticket.meta.isActivePlanning,
       });
+      if (preClaimSha1 && ticket.meta.revision) {
+        lease.preClaimSha1 = preClaimSha1;
+        lease.claimRevision = ticket.meta.revision;
+        writeSafeFile(leasePath, JSON.stringify(lease, null, 2) + '\n');
+        this.invalidateTicketCache(resolved.ticketDir);
+        ticket = (await this.getTicket(resolved.key))!;
+      }
+    } else if (
+      renewed &&
+      existingLease?.preClaimSha1 &&
+      existingLease?.claimRevision === ticket.meta.revision
+    ) {
+      lease.preClaimSha1 = existingLease.preClaimSha1;
+      lease.claimRevision = existingLease.claimRevision;
+      writeSafeFile(leasePath, JSON.stringify(lease, null, 2) + '\n');
+      this.invalidateTicketCache(resolved.ticketDir);
+      ticket = (await this.getTicket(resolved.key))!;
     }
 
     return {

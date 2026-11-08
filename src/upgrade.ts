@@ -250,7 +250,7 @@ description: Tooling and workflow reference for interacting with the Esedre deve
 
 # Esedre Planning & Roadmap Workflow
 
-Esedre is the developer ticketing and LLM coding partner coordination platform. The engine codebase resides in the standalone repository \`aellinsar/esedre\` (\`../esedre\`), and operates on decoupled ticket repositories (such as \`aellinsar/esedre-data\` configured in \`~/.esedre/config.json\` or \`.esedre/esedre.json\`). Interact with tickets via in-repo shell wrappers in \`.esedre/\` (\`.esedre/ese\` on POSIX/macOS/Linux/Git Bash, or \`.\\.esedre\\ese.cmd\` on Windows PowerShell/CMD), or the global \`ese\` CLI.
+Esedre is the developer ticketing and LLM coding partner coordination platform. Interact with tickets for this workspace via the local snapshot (\`.esedre/snapshot.json\`), Esedre MCP tools (\`esedre_*\`), in-repo shell wrappers in \`.esedre/\` (\`.esedre/ese\` on POSIX/macOS/Linux/Git Bash, or \`.\\.esedre\\ese.cmd\` on Windows PowerShell/CMD), or the global \`ese\` CLI.
 
 ## 0. Authoritative Ingress Hierarchy & Zero-Latency Context (\`.esedre/snapshot.json\`)
 
@@ -264,7 +264,7 @@ All ticket discovery, inspection, and state management strictly follow this posi
    - **POSIX (macOS, Linux, Git Bash, WSL)**: \`.esedre/ese <command>\` (e.g. \`.esedre/ese get\`, \`.esedre/ese plan\`, \`.esedre/ese update\`, \`.esedre/ese lease\`, \`.esedre/ese snapshot [--include-plans]\`).
    - **Windows (PowerShell / CMD)**: \`.\\.esedre\\ese.cmd <command>\` or \`.\\.esedre\\ese.ps1 <command>\` (do not invoke the extensionless POSIX script \`.esedre/ese\` directly in PowerShell or \`cmd.exe\`, as Windows will fail or prompt to select an application to open the file).
 4. **Storage Boundary**:
-   Backing ticket hubs (such as \`esedre-data\`) represent data storage managed by the engine. All agent interactions with roadmap tickets flow through the snapshot projection, MCP tools, or CLI wrappers.
+   All agent interactions with roadmap tickets flow through the workspace snapshot projection (\`.esedre/snapshot.json\`), Esedre MCP tools, or in-repo CLI wrappers.
 
 ## 1. Model Context Protocol (MCP) Tools
 
@@ -272,13 +272,13 @@ When Esedre MCP is active in your agent session (\`.agents/mcp.json\` or \`.agen
 
 | Tool | Purpose | Key Arguments |
 |---|---|---|
-| \`esedre_list_tickets\` | List roadmap tickets with filters | \`project\` (e.g. \`Profe\`, \`Esedre\`, \`Alce\`), \`status\`, \`type\`, \`priority\`, \`milestone\`, \`featureFlag\`, \`leased\`, \`leasedBy\`, \`isBlocked\`, \`linkedTo\`, \`search\`, \`includePlan\`, \`compact\`, \`includeCompleted\` |
-| \`esedre_get_ticket\` | Full specification, summary, comments, links, lease, revision & sha1 | \`ticketId\` (numeric e.g. \`96\` or compound e.g. \`Profe-96\`) |
+| \`esedre_list_tickets\` | List roadmap tickets with filters | \`project\` (e.g. \`Core\`, \`Web\`, \`Esedre\`), \`status\`, \`type\`, \`priority\`, \`milestone\`, \`featureFlag\`, \`leased\`, \`leasedBy\`, \`isBlocked\`, \`linkedTo\`, \`search\`, \`includePlan\`, \`compact\`, \`includeCompleted\` |
+| \`esedre_get_ticket\` | Full specification, summary, comments, links, lease, revision & sha1 | \`ticketId\` (numeric e.g. \`12\` or compound e.g. \`Core-12\`) |
 | \`esedre_get_plan\` | Active implementation plan markdown | \`ticketId\` (numeric or compound) |
-| \`esedre_save_plan\` | Save implementation plan markdown with OCC | \`ticketId\`, \`planMarkdown\`, \`lastHash\` |
+| \`esedre_save_plan\` | Save implementation plan markdown with OCC | \`ticketId\`, \`planMarkdown\`/\`plan\`/\`content\`, \`lastHash\` |
 | \`esedre_create_ticket\` | Mint a new ticket with auto sequential ID | \`title\` (max 48 chars), \`type\`, \`project\`, \`priority\`, \`milestone\`, \`featureFlag\`, \`effort\`, \`summary\`, \`detail\`, \`links\` (\`[{ relation, targetTicketId }]\`) |
 | \`esedre_update_ticket\` | Update ticket attributes with OCC | \`ticketId\`, \`status\`, \`type\`, \`priority\`, \`milestone\`, \`title\`, \`summary\`, \`detail\`, \`detailMarkdown\`, \`complexity\`, \`effort\`, \`inDevelopment\`, \`featureFlag\`, \`lastHash\` |
-| \`esedre_claim_ticket\` | Claim an ephemeral TTL lease on a ticket (\`In Development\`) | \`ticketId\`, \`holder\`/\`workerId\`, \`agentType\`/\`system\`, \`ttlMinutes\`, \`branch\`, \`worktree\`, \`force\` |
+| \`esedre_claim_ticket\` | Claim an ephemeral TTL lease on a ticket (\`In Development\`, returns updated \`sha1\` & \`revision\` and preserves OCC \`lastHash\` continuity) | \`ticketId\`, \`holder\`/\`workerId\`, \`agentType\`/\`system\`, \`ttlMinutes\`, \`branch\`, \`force\` |
 | \`esedre_renew_lease\` | Extend an active ticket lease TTL | \`ticketId\`, \`holder\`/\`workerId\`, \`system\`, \`ttlMinutes\` |
 | \`esedre_release_ticket\` | Release a ticket lease and optionally transition status | \`ticketId\`, \`holder\`/\`workerId\`, \`system\`, \`finalStatus\`, \`notes\`, \`force\` |
 | \`esedre_list_leases\` | List all active unexpired ticket leases | \`project\` |
@@ -288,7 +288,7 @@ When Esedre MCP is active in your agent session (\`.agents/mcp.json\` or \`.agen
 | \`esedre_get_milestone\` | Get milestone specs, umbrella flag, and compact member tickets | \`milestoneId\` (numeric or title), \`project\`, \`includeDetails\`, \`includePlan\`, \`includeRaw\` |
 | \`esedre_create_milestone\` | Create a project milestone with optional umbrella flag | \`title\`, \`project\`, \`featureFlag\`, \`status\`, \`targetDate\`, \`description\` |
 | \`esedre_update_milestone\` | Update milestone status, umbrella flag, or title | \`milestoneId\`, \`project\`, \`title\`, \`featureFlag\`, \`status\`, \`targetDate\`, \`description\` |
-| \`esedre_add_comment\` | Append developer or agent comment | \`ticketId\`, \`text\`, \`file\`, \`author\` |
+| \`esedre_add_comment\` | Append developer or agent comment | \`ticketId\`, \`text\`/\`content\`/\`comment\`, \`file\`, \`author\` |
 
 ## 2. Core CLI Commands (Fallback via \`run_command\`)
 
@@ -350,6 +350,7 @@ When authoring or updating a ticket's \`detail.md\` (via \`--detail\`, \`--file\
 .esedre/ese comment <ticketId> "Verified implementation." --author "Agent" [--json]
 .esedre/ese comment <ticketId> --file <commentFilePath> --author "Agent" [--json]
 .esedre/ese comment <ticketId> --text "Verified implementation." --author "Agent" [--json]
+.esedre/ese comment <ticketId> --content "Verified implementation." --author "Agent" [--json]
 \`\`\`
 
 ### Link or Unlink Tickets
@@ -415,7 +416,7 @@ If the host application declares any or all of the 12 core design tokens on \`:r
 - **Universal Type Naming**: Always use \`type\` (\`Feature\`, \`Platform\`, \`Tools\`, \`Idea\`, \`Bug\`). The legacy name \`category\` is deprecated.
 - **Ticket Priority**: The \`priority\` field is optional (\`Critical\`, \`High\`, \`Medium\`, \`Low\`, or unset/null). Backwards compatible with legacy tickets lacking a priority field. To clear via CLI use \`-P none\` or \`--priority none\` (in code/MCP, pass \`null\` or \`'none'\`).
 - **Milestones & Umbrella Feature Flags**: Milestones group tickets into deliverables with completion metrics. Milestones can declare an optional umbrella feature flag which member tickets inherit automatically. Unlinking a ticket (\`-m none\`) removes inherited flags.
-- **Compound IDs for Multi-Project Portfolios**: In \`project=all\`, ticket IDs are \`\${projectCode}-\${id}\` (e.g. \`Profe-1\`, \`Esedre-1\`). DOM anchors strictly use \`feature-card-\${projectCode}-\${id}\`.
+- **Compound IDs for Multi-Project Portfolios**: In \`project=all\`, ticket IDs are \`\${projectCode}-\${id}\` (e.g. \`Core-1\`, \`Esedre-1\`). DOM anchors strictly use \`feature-card-\${projectCode}-\${id}\`.
 - **Never delete tickets** directly via filesystem.
 - **Workspace Scoping**: An LLM coding partner operates strictly within the authorized project scope declared in the local repository configuration. Central repository linking and system-level configuration are managed separately; focus roadmap work, implementation plans, and verification notes on this project.
 - **Secret Developer Hash Route (\`#/planner\`, \`#/plan\`, \`#planner\`, \`#plan\`)**:
@@ -743,6 +744,8 @@ export function setupSkill(targetDir: string, options: { force?: boolean } = {})
     currentContent.includes('companion agent') ||
     currentContent.includes('companion LLM') ||
     currentContent.includes('tools/esedre.mjs') ||
+    currentContent.includes('aellinsar/esedre-data') ||
+    currentContent.includes('Profe-96') ||
     (currentContent.includes('# Esedre Planning & Roadmap Workflow') &&
       (!currentContent.includes('ese.cmd') ||
         !currentContent.includes('Fix Breakdown') ||
@@ -751,7 +754,9 @@ export function setupSkill(targetDir: string, options: { force?: boolean } = {})
         !currentContent.includes('<targetId...>') ||
         !currentContent.includes('hasPlan: boolean') ||
         !currentContent.includes('[-m|--milestone <name|none>] [--flag <flag|none>]') ||
-        !currentContent.includes('--include-details')));
+        !currentContent.includes('--include-details') ||
+        !currentContent.includes('\`text\`/\`content\`/\`comment\`') ||
+        !currentContent.includes('--content "Verified implementation."')));
 
   if (options.force || status === 'HISTORIC_DEFAULT' || status === 'MISSING' || hasBannedOrDeprecatedTerms) {
     fs.writeFileSync(skillFile, ESEDRE_SKILL_TEMPLATE, 'utf-8');
@@ -1072,7 +1077,7 @@ export const ESEDRE_HUB_AGENTS_TEMPLATE = `# Agent Guidelines: esedre-data
   3. **Esedre CLI**: Execute \`.esedre/ese get <id>\`, \`.esedre/ese list\`, \`.esedre/ese plan\`, \`.esedre/ese create\`, \`.esedre/ese update\`, \`.esedre/ese lease\`, \`.esedre/ese comment\`, \`.esedre/ese snapshot [--include-plans]\`, or \`.esedre/ese refresh [--include-plans]\` from within the relevant project workspace.
 
 ## 2. Ingress Redirection Protocol
-When inspecting or managing tickets for any project (such as \`Profe\`, \`Esedre\`, or \`Alce\`), navigate to that project's workspace and utilize its local \`.esedre/snapshot.json\`, Esedre MCP tools, or \`.esedre/ese\` CLI wrapper.
+When inspecting or managing tickets for any project (such as \`Core\`, \`Web\`, or \`Esedre\`), navigate to that project's workspace and utilize its local \`.esedre/snapshot.json\`, Esedre MCP tools, or \`.esedre/ese\` CLI wrapper.
 `;
 
 
