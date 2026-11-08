@@ -302,6 +302,97 @@ async function refreshCliSnapshotAfterMutation(
   }
 }
 
+async function depositExistingProjectSnapshots(options?: {
+  primaryTargetDir?: string;
+  primaryProjectCode?: string;
+  hostFlag?: string;
+  onlyIfMissingForSecondary?: boolean;
+}): Promise<{
+  primarySnapshot?: { totalTickets: number; projectCode: string; dir: string };
+  deposited: Array<{ projectCode: string; dir: string; totalTickets: number }>;
+}> {
+  const deposited: Array<{ projectCode: string; dir: string; totalTickets: number }> = [];
+  const seenDirs = new Set<string>();
+  let primarySnapshot: { totalTickets: number; projectCode: string; dir: string } | undefined;
+
+  if (options?.primaryTargetDir && options?.primaryProjectCode) {
+    const resolvedDir = path.resolve(options.primaryTargetDir);
+    seenDirs.add(resolvedDir.toLowerCase());
+    try {
+      const freshDiscovered = findEsedreConfig(resolvedDir, { fallbackToGlobal: true });
+      const { storage: freshStorage } = createStorageAdapter(freshDiscovered, {
+        hostFlag: options.hostFlag,
+        projectCode: options.primaryProjectCode,
+      });
+      const snap = await generateProjectSnapshot(freshStorage, options.primaryProjectCode, resolvedDir);
+      primarySnapshot = {
+        projectCode: options.primaryProjectCode,
+        dir: resolvedDir,
+        totalTickets: snap.totalTickets,
+      };
+      deposited.push(primarySnapshot);
+    } catch {}
+  }
+
+  const candidateProjects: Array<{ code: string; dir: string }> = [];
+  try {
+    const globalCfg = readGlobalConfig();
+    if (globalCfg?.projects && typeof globalCfg.projects === 'object') {
+      for (const [code, rawPath] of Object.entries(globalCfg.projects)) {
+        if (!code || typeof rawPath !== 'string' || !rawPath.trim() || /^https?:\/\//i.test(rawPath.trim())) continue;
+        const resolved = path.resolve(expandHome(rawPath.trim()));
+        candidateProjects.push({ code: code.trim(), dir: resolved });
+      }
+    }
+  } catch {}
+
+  if (options?.primaryTargetDir) {
+    try {
+      const freshDisc = findEsedreConfig(options.primaryTargetDir, { fallbackToGlobal: true });
+      if (freshDisc.config?.projects && typeof freshDisc.config.projects === 'object') {
+        for (const [code, rawPath] of Object.entries(freshDisc.config.projects)) {
+          if (!code || typeof rawPath !== 'string' || !rawPath.trim() || /^https?:\/\//i.test(rawPath.trim())) continue;
+          const resolved = path.resolve(options.primaryTargetDir, expandHome(rawPath.trim()));
+          candidateProjects.push({ code: code.trim(), dir: resolved });
+        }
+      }
+    } catch {}
+  }
+
+  for (const item of candidateProjects) {
+    const normDir = item.dir.toLowerCase();
+    if (seenDirs.has(normDir)) continue;
+    seenDirs.add(normDir);
+    if (!fs.existsSync(item.dir)) continue;
+    const esedreDir = path.join(item.dir, '.esedre');
+    const hasEsedreConfig =
+      fs.existsSync(path.join(esedreDir, 'esedre.json')) || fs.existsSync(path.join(item.dir, 'esedre.json'));
+    if (!hasEsedreConfig) continue;
+
+    if (options?.onlyIfMissingForSecondary) {
+      const snapPath = path.join(esedreDir, 'snapshot.json');
+      if (fs.existsSync(snapPath)) continue;
+    }
+
+    try {
+      const wsDiscovered = findEsedreConfig(item.dir, { fallbackToGlobal: true });
+      const effectiveCode = wsDiscovered.config?.projectCode || item.code;
+      const { storage: wsStorage } = createStorageAdapter(wsDiscovered, {
+        hostFlag: options?.hostFlag,
+        projectCode: effectiveCode,
+      });
+      const snap = await generateProjectSnapshot(wsStorage, effectiveCode, item.dir);
+      deposited.push({
+        projectCode: effectiveCode,
+        dir: item.dir,
+        totalTickets: snap.totalTickets,
+      });
+    } catch {}
+  }
+
+  return { primarySnapshot, deposited };
+}
+
 function parseCreateLinkSpecs(
   multiFlags: Record<string, string[]>,
   flags: Record<string, string | boolean>
@@ -385,6 +476,7 @@ async function main(): Promise<void> {
       case 'init': {
         const rawTarget = positionals[0];
         const targetDir = rawTarget ? path.resolve(rawTarget) : discovered.workspaceRoot;
+        const initDiscovered = rawTarget ? findEsedreConfig(targetDir, { fallbackToGlobal: true }) : discovered;
         const rawHubFlag = flags['hub'];
         const hubArg = typeof rawHubFlag === 'string' ? rawHubFlag : undefined;
         const isHubRequested = Boolean(rawHubFlag);
@@ -394,6 +486,7 @@ async function main(): Promise<void> {
           try {
             addLocationToGlobalConfig(targetDir);
           } catch {}
+          await depositExistingProjectSnapshots({ hostFlag });
 
           if (isJson) {
             console.log(JSON.stringify(hubRes, null, 2));
@@ -412,8 +505,8 @@ async function main(): Promise<void> {
           return;
         }
 
-        let projectCode = (flags['project'] as string) || (flags['p'] as string) || discovered.config?.projectCode;
-        let projectName = (flags['name'] as string) || (flags['n'] as string) || discovered.config?.projectName;
+        let projectCode = (flags['project'] as string) || (flags['p'] as string) || initDiscovered.config?.projectCode;
+        let projectName = (flags['name'] as string) || (flags['n'] as string) || initDiscovered.config?.projectName;
         const allowArg = flags['allow'] as string;
         const port = flags['port'] ? parseInt(String(flags['port']), 10) : undefined;
         const setupMcp = flags['no-mcp'] ? false : true;
@@ -486,7 +579,7 @@ async function main(): Promise<void> {
         let projectNewlyRegistered = false;
         let registeredProj: ProjectDescriptor;
         try {
-          const existingProjects = await storage.getProjects();
+          const existingProjects = await rawStorage.getProjects();
           const existing = existingProjects.find(
             (p) => p.code.toLowerCase() === projectCode!.toLowerCase()
           );
@@ -513,6 +606,7 @@ async function main(): Promise<void> {
         }
 
         if (isWorkspaceless) {
+          await depositExistingProjectSnapshots({ hostFlag, onlyIfMissingForSecondary: true });
           if (isJson) {
             console.log(JSON.stringify({
               project: registeredProj,
@@ -545,7 +639,7 @@ async function main(): Promise<void> {
 
         const allowedProjects = allowArg
           ? allowArg.split(',').map((s) => s.trim())
-          : (discovered.config?.allowedProjects || [projectCode!]);
+          : (initDiscovered.config?.allowedProjects || [projectCode!]);
 
         let setupProxy: boolean | undefined = undefined;
         if (flags['proxy'] !== undefined) {
@@ -579,7 +673,7 @@ async function main(): Promise<void> {
           } catch {}
         }
 
-        const rawHub = (flags['data-dir'] as string) || (flags['hub'] as string) || discovered.config?.dataDir;
+        const rawHub = (flags['data-dir'] as string) || (flags['hub'] as string) || initDiscovered.config?.dataDir;
         let hubRelPath: string | undefined = undefined;
         if (rawHub) {
           const singleHub = Array.isArray(rawHub) ? rawHub[0] : rawHub;
@@ -609,14 +703,16 @@ async function main(): Promise<void> {
           addLocationToGlobalConfig(targetDir);
         } catch {}
 
-        // Generate initial projection snapshot (.esedre/snapshot.json) for zero-latency context
-        let snapshotTickets = 0;
-        try {
-          const snapshot = await generateProjectSnapshot(storage, projectCode, targetDir);
-          snapshotTickets = snapshot.totalTickets;
-        } catch {}
+        // Build and deposit initial projection snapshot (.esedre/snapshot.json) for this workspace and any missing linked workspaces
+        const snapshotRes = await depositExistingProjectSnapshots({
+          primaryTargetDir: targetDir,
+          primaryProjectCode: projectCode,
+          hostFlag,
+          onlyIfMissingForSecondary: true,
+        });
+        const snapshotTickets = snapshotRes.primarySnapshot?.totalTickets ?? 0;
 
-        const effectivePort = resolvePorts(discovered.config, { port }).gateway;
+        const effectivePort = resolvePorts(initDiscovered.config, { port }).gateway;
 
         if (isJson) {
           console.log(JSON.stringify({
@@ -697,6 +793,17 @@ async function main(): Promise<void> {
           const targetPath = positionals[1] || '.';
           const addRes = addLocationToGlobalConfig(targetPath);
 
+          if (addRes.type === 'project' && addRes.code && addRes.path) {
+            await depositExistingProjectSnapshots({
+              primaryTargetDir: addRes.path,
+              primaryProjectCode: addRes.code,
+              hostFlag,
+              onlyIfMissingForSecondary: true,
+            });
+          } else if (addRes.type === 'hub') {
+            await depositExistingProjectSnapshots({ hostFlag });
+          }
+
           if (isJson) {
             console.log(JSON.stringify(addRes, null, 2));
             return;
@@ -743,6 +850,22 @@ async function main(): Promise<void> {
           }
           const parsedVal = /^\d+$/.test(val) ? parseInt(val, 10) : val;
           const setRes = setGlobalConfigKey(key, parsedVal);
+          const lowerKey = key.toLowerCase();
+          if (
+            lowerKey === 'server.host' ||
+            lowerKey === 'serverurl' ||
+            lowerKey === 'host' ||
+            lowerKey === 'datadir' ||
+            lowerKey.startsWith('remotes.') ||
+            lowerKey.startsWith('remote.')
+          ) {
+            const hasLocalWsConfig = fs.existsSync(path.join(discovered.workspaceRoot, '.esedre', 'esedre.json'));
+            await depositExistingProjectSnapshots({
+              primaryTargetDir: hasLocalWsConfig ? discovered.workspaceRoot : undefined,
+              primaryProjectCode: hasLocalWsConfig ? discovered.config?.projectCode : undefined,
+              hostFlag,
+            });
+          }
           if (isJson) {
             console.log(JSON.stringify(setRes, null, 2));
             return;
@@ -1500,6 +1623,9 @@ async function main(): Promise<void> {
         const leasedBy = (flags['leased-by'] as string) || (flags['leasedBy'] as string) || undefined;
 
         const tickets = await storage.listTickets({ project, status, type, category, priority, milestone, featureFlag, search, isBlocked, linkedTo, leased, leasedBy });
+        if (discovered.config?.projectCode && !fs.existsSync(path.join(discovered.workspaceRoot, '.esedre', 'snapshot.json'))) {
+          await refreshCliSnapshotAfterMutation(storage, discovered, [project || discovered.config.projectCode]);
+        }
         if (isJson) {
           console.log(JSON.stringify(tickets.map((t) => ({
             id: t.meta.id,
@@ -1864,8 +1990,70 @@ async function main(): Promise<void> {
             process.exit(1);
           }
           const tickets = await storage.listTickets({ project, milestone: String(milestone.id) });
+          if (discovered.config?.projectCode && !fs.existsSync(path.join(discovered.workspaceRoot, '.esedre', 'snapshot.json'))) {
+            await refreshCliSnapshotAfterMutation(storage, discovered, [project || milestone.project || discovered.config.projectCode]);
+          }
           if (isJson) {
-            console.log(JSON.stringify({ ...milestone, tickets }, null, 2));
+            const includeDetails = Boolean(flags['include-details'] || flags['includeDetails']);
+            const includePlan = Boolean(flags['include-plan'] || flags['includePlan']);
+            const includeRaw = Boolean(flags['include-raw'] || flags['includeRaw']);
+            const completedTickets = tickets.filter((t) => t.meta.status === 'Completed').length;
+            const totalTickets = tickets.length;
+            const progressPercent = totalTickets > 0 ? Math.round((completedTickets / totalTickets) * 100) : 0;
+            const compactTickets = tickets.map((t) => {
+              const hasPlan = Boolean(t.planMarkdown && t.planMarkdown.trim().length > 0);
+              const projectCode = t.projectDescriptor?.code || t.meta.project || milestone.project;
+              const ticketType = t.meta.type || t.meta.category;
+              const { links: _ml, lease: _mle, ...cleanMeta } = t.meta;
+              return {
+                id: t.meta.id,
+                title: t.meta.title,
+                type: ticketType,
+                category: ticketType,
+                status: t.meta.status,
+                ...(t.meta.priority ? { priority: t.meta.priority } : {}),
+                ...(t.meta.complexity ? { complexity: t.meta.complexity } : {}),
+                ...(t.meta.estimatedEffort ? { effort: t.meta.estimatedEffort } : {}),
+                ...(t.meta.milestone ? { milestone: t.meta.milestone } : {}),
+                ...(t.meta.featureFlag ? { featureFlag: t.meta.featureFlag } : {}),
+                ...(t.meta.inheritedFeatureFlag ? { inheritedFeatureFlag: t.meta.inheritedFeatureFlag } : {}),
+                project: projectCode,
+                ...(t.detail?.summary ? { summary: t.detail.summary } : {}),
+                hasPlan,
+                ...(includePlan ? { planMarkdown: t.planMarkdown || null } : {}),
+                ...(includeDetails && t.detail
+                  ? {
+                      detail: includeRaw
+                        ? t.detail
+                        : (() => {
+                            const { raw: _r, ...rest } = t.detail;
+                            return rest;
+                          })(),
+                    }
+                  : includeRaw && t.detail?.raw !== undefined
+                    ? { detail: { raw: t.detail.raw } }
+                    : {}),
+                ...(includeDetails ? { comments: t.comments || [] } : {}),
+                ...(t.lease ? { lease: t.lease } : {}),
+                sha1: t.sha1 || t.meta.sha1,
+                isBlocked: Boolean(t.isBlocked),
+                ...(t.links && t.links.length > 0 ? { links: t.links } : {}),
+                meta: cleanMeta,
+              };
+            });
+            console.log(
+              JSON.stringify(
+                {
+                  ...milestone,
+                  totalTickets,
+                  completedTickets,
+                  progressPercent,
+                  tickets: compactTickets,
+                },
+                null,
+                2
+              )
+            );
           } else {
             console.log(`${colors.bold}${colors.cyan}Milestone #${milestone.id}: ${milestone.title}${colors.reset}`);
             console.log(`${colors.dim}${'='.repeat(60)}${colors.reset}`);
@@ -1918,6 +2106,7 @@ async function main(): Promise<void> {
             targetDate,
             status,
           });
+          await refreshCliSnapshotAfterMutation(storage, discovered, [created.project || projectCode]);
 
           if (isJson) {
             console.log(JSON.stringify(created, null, 2));
@@ -1945,6 +2134,7 @@ async function main(): Promise<void> {
           }
 
           const updated = await storage.updateMilestone(idStr, updates, project);
+          await refreshCliSnapshotAfterMutation(storage, discovered, [updated.project || project]);
           if (isJson) {
             console.log(JSON.stringify(updated, null, 2));
           } else {
@@ -1960,6 +2150,9 @@ async function main(): Promise<void> {
             process.exit(1);
           }
           const success = await storage.deleteMilestone(idStr, project);
+          if (success) {
+            await refreshCliSnapshotAfterMutation(storage, discovered, [project]);
+          }
           if (isJson) {
             console.log(JSON.stringify({ success, id: idStr }, null, 2));
           } else {

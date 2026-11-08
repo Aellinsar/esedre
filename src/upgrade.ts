@@ -285,7 +285,7 @@ When Esedre MCP is active in your agent session (\`.agents/mcp.json\` or \`.agen
 | \`esedre_link_ticket\` | Establish bi-directional ticket relationship(s) | \`sourceTicketId\`/\`id\`, \`relation\` (\`relates-to\` \\| \`blocks\` \\| \`parent-of\` \\| \`duplicates\`), \`targetTicketId\`/\`targetTicketIds\`, \`author\` |
 | \`esedre_unlink_ticket\` | Remove bi-directional ticket relationship(s) | \`sourceTicketId\`/\`id\`, \`targetTicketId\`/\`targetTicketIds\`, \`relation\` |
 | \`esedre_list_milestones\` | List project milestones and deliverables progress | \`project\` |
-| \`esedre_get_milestone\` | Get milestone specs, umbrella flag, and member tickets | \`milestoneId\` (numeric or title), \`project\` |
+| \`esedre_get_milestone\` | Get milestone specs, umbrella flag, and compact member tickets | \`milestoneId\` (numeric or title), \`project\`, \`includeDetails\`, \`includePlan\`, \`includeRaw\` |
 | \`esedre_create_milestone\` | Create a project milestone with optional umbrella flag | \`title\`, \`project\`, \`featureFlag\`, \`status\`, \`targetDate\`, \`description\` |
 | \`esedre_update_milestone\` | Update milestone status, umbrella flag, or title | \`milestoneId\`, \`project\`, \`title\`, \`featureFlag\`, \`status\`, \`targetDate\`, \`description\` |
 | \`esedre_add_comment\` | Append developer or agent comment | \`ticketId\`, \`text\`, \`file\`, \`author\` |
@@ -363,7 +363,7 @@ When authoring or updating a ticket's \`detail.md\` (via \`--detail\`, \`--file\
 ### Manage Milestones & Umbrella Feature Flags
 \`\`\`bash
 .esedre/ese milestone list [-p|--project <code>] [--json]
-.esedre/ese milestone get <id|title> [-p|--project <code>] [--json]
+.esedre/ese milestone get <id|title> [-p|--project <code>] [--include-details] [--include-plan] [--include-raw] [--json]
 .esedre/ese milestone create --title "..." [-p|--project <code>] [--flag <flag>] [--status <status>] [--target-date <YYYY-MM-DD>] [--description "..."] [--json]
 .esedre/ese milestone update <id|title> [-p|--project <code>] [--title "..."] [--flag <flag|none>] [--status <status>] [--target-date <YYYY-MM-DD>] [--description "..."] [--json]
 .esedre/ese milestone delete <id|title> [-p|--project <code>] [--json]
@@ -750,7 +750,8 @@ export function setupSkill(targetDir: string, options: { force?: boolean } = {})
         !currentContent.includes('--summary "Concise summary"') ||
         !currentContent.includes('<targetId...>') ||
         !currentContent.includes('hasPlan: boolean') ||
-        !currentContent.includes('[-m|--milestone <name|none>] [--flag <flag|none>]')));
+        !currentContent.includes('[-m|--milestone <name|none>] [--flag <flag|none>]') ||
+        !currentContent.includes('--include-details')));
 
   if (options.force || status === 'HISTORIC_DEFAULT' || status === 'MISSING' || hasBannedOrDeprecatedTerms) {
     fs.writeFileSync(skillFile, ESEDRE_SKILL_TEMPLATE, 'utf-8');

@@ -651,6 +651,63 @@ export class EsedreMcpServer {
     }
   }
 
+  private async ensureProjectSnapshotsIfMissing(projectCodes: (string | undefined | null)[]): Promise<void> {
+    const fallbackProject =
+      this.activeProjectCode ||
+      this.options.projectCode ||
+      this.activeConfig?.projectCode ||
+      this.options.config?.projectCode;
+    const rawCodes = [
+      ...projectCodes,
+      ...(fallbackProject && fallbackProject.toLowerCase() !== 'all' ? [fallbackProject] : []),
+    ].filter((c): c is string =>
+      Boolean(c && typeof c === 'string' && c.trim().length > 0 && c.trim().toLowerCase() !== 'all')
+    );
+
+    if (rawCodes.length === 0) return;
+
+    const uniqueCodes: string[] = [];
+    const seenCodes = new Set<string>();
+    for (const code of rawCodes) {
+      const lower = code.trim().toLowerCase();
+      if (!seenCodes.has(lower)) {
+        seenCodes.add(lower);
+        uniqueCodes.push(code.trim());
+      }
+    }
+
+    for (const code of uniqueCodes) {
+      try {
+        const targetDirs = await this.resolveTargetDirsForProject(code);
+        for (const targetDir of targetDirs) {
+          const esedreDir = path.join(targetDir, '.esedre');
+          const snapshotPath = path.join(esedreDir, 'snapshot.json');
+          if (fs.existsSync(snapshotPath)) continue;
+
+          const hasEsedreFootprint =
+            fs.existsSync(path.join(esedreDir, 'esedre.json')) ||
+            fs.existsSync(path.join(targetDir, 'esedre.json')) ||
+            fs.existsSync(esedreDir);
+          if (!hasEsedreFootprint) continue;
+
+          const lockKey = path.resolve(targetDir).toLowerCase();
+          const currentLock = this.snapshotLocks.get(lockKey) || Promise.resolve();
+          const nextLock = currentLock
+            .then(async () => {
+              if (fs.existsSync(snapshotPath)) return;
+              try {
+                await generateProjectSnapshot(this.storage, code, targetDir);
+                process.stderr.write(`[Esedre MCP] Hydrated missing snapshot for project '${code}'\n`);
+              } catch {}
+            })
+            .catch(() => {});
+          this.snapshotLocks.set(lockKey, nextLock);
+          await nextLock;
+        }
+      } catch {}
+    }
+  }
+
   private getToolDefinitions(): any[] {
     return [
       {
@@ -812,13 +869,16 @@ export class EsedreMcpServer {
       },
       {
         name: 'esedre_get_milestone',
-        description: 'Retrieve milestone details by ID or title.',
+        description: 'Retrieve milestone details and member ticket summaries by ID or title. Defaults to compact member ticket summaries; pass includeDetails, includePlan, or includeRaw to expand.',
         inputSchema: {
           type: 'object',
           properties: {
             id: { type: ['number', 'integer', 'string'], description: 'Milestone ID or title' },
             milestoneId: { type: ['number', 'integer', 'string'], description: 'Alias for id: Milestone ID or title' },
             project: { type: 'string', description: 'Project code' },
+            includeDetails: { type: 'boolean', description: 'When true, includes full parsed detail (featureBreakdown, technicalDetails, openQuestions) and comments for each member ticket (default: false)' },
+            includePlan: { type: 'boolean', description: 'When true, includes implementation plan markdown (planMarkdown) for each member ticket (default: false)' },
+            includeRaw: { type: 'boolean', description: 'When true, includes raw markdown (detail.raw) for each member ticket (default: false)' },
           },
         },
       },
@@ -1113,6 +1173,115 @@ export class EsedreMcpServer {
     return responseTicket;
   }
 
+  private async formatMcpMilestoneTicket(
+    t: EsedreTicket,
+    options: { includeDetails?: boolean; includePlan?: boolean; includeRaw?: boolean }
+  ): Promise<any> {
+    const includeDetails = Boolean(options.includeDetails);
+    const includePlan = Boolean(options.includePlan);
+    const includeRaw = options.includeRaw !== undefined ? Boolean(options.includeRaw) : false;
+
+    let planMarkdown: string | null | undefined = t.planMarkdown;
+    if (includePlan && planMarkdown === undefined) {
+      const lookupKey = t.projectDescriptor?.code ? `${t.projectDescriptor.code}-${t.meta.id}` : t.meta.id;
+      planMarkdown = (await this.storage.getPlan(lookupKey)) ?? null;
+    }
+
+    const hasPlan = Boolean(
+      (t.planMarkdown && t.planMarkdown.trim().length > 0) ||
+      (planMarkdown && planMarkdown.trim().length > 0)
+    );
+
+    const projectCode = t.projectDescriptor?.code || t.meta.project || 'UNASSIGNED';
+    const ticketType = t.meta.type || (t.meta as any).category || 'Feature';
+    const sha1 = t.sha1 || t.meta.sha1;
+    const sanitizedLease = t.lease ? (this.sanitizeMcpLease(t.lease) as TicketLease) : undefined;
+
+    const compactMeta: Record<string, any> = {
+      id: t.meta.id,
+      title: t.meta.title,
+      type: ticketType,
+      category: ticketType,
+      status: t.meta.status,
+      ...(t.meta.priority ? { priority: t.meta.priority } : {}),
+      ...(t.meta.complexity && (!isTerminalTicketStatus(t.meta.status) || includeDetails)
+        ? { complexity: t.meta.complexity }
+        : {}),
+      ...(t.meta.estimatedEffort && (!isTerminalTicketStatus(t.meta.status) || includeDetails)
+        ? { estimatedEffort: t.meta.estimatedEffort }
+        : {}),
+      ...(t.meta.milestone ? { milestone: t.meta.milestone } : {}),
+      ...(t.meta.featureFlag ? { featureFlag: t.meta.featureFlag } : {}),
+      ...(t.meta.inheritedFeatureFlag ? { inheritedFeatureFlag: t.meta.inheritedFeatureFlag } : {}),
+      project: projectCode,
+      ...(t.meta.revision !== undefined ? { revision: t.meta.revision } : {}),
+      ...(t.meta.completedAt ? { completedAt: t.meta.completedAt } : {}),
+    };
+
+    let detailField: any = undefined;
+    if (includeDetails && t.detail) {
+      const shouldKeepRaw =
+        options.includeRaw !== undefined
+          ? Boolean(options.includeRaw)
+          : !this.isDetailLosslesslyParsed(t.detail);
+      if (shouldKeepRaw) {
+        detailField = { ...t.detail };
+      } else {
+        const { raw: _raw, ...cleanDetail } = t.detail;
+        detailField = cleanDetail;
+      }
+    } else if (includeRaw && t.detail?.raw !== undefined) {
+      detailField = { raw: t.detail.raw };
+    }
+
+    if (isTerminalTicketStatus(t.meta.status) && !includeDetails) {
+      return {
+        id: t.meta.id,
+        title: t.meta.title,
+        type: ticketType,
+        category: ticketType,
+        status: t.meta.status,
+        ...(t.meta.priority ? { priority: t.meta.priority } : {}),
+        ...(t.meta.milestone ? { milestone: t.meta.milestone } : {}),
+        ...(t.meta.featureFlag ? { featureFlag: t.meta.featureFlag } : {}),
+        ...(t.meta.inheritedFeatureFlag ? { inheritedFeatureFlag: t.meta.inheritedFeatureFlag } : {}),
+        project: projectCode,
+        hasPlan,
+        ...(includePlan ? { planMarkdown: planMarkdown || null } : {}),
+        ...(detailField ? { detail: detailField } : {}),
+        ...(t.meta.completedAt ? { completedAt: t.meta.completedAt } : {}),
+        ...(sanitizedLease ? { lease: sanitizedLease } : {}),
+        sha1,
+        meta: compactMeta,
+      };
+    }
+
+    return {
+      id: t.meta.id,
+      title: t.meta.title,
+      type: ticketType,
+      category: ticketType,
+      status: t.meta.status,
+      ...(t.meta.priority ? { priority: t.meta.priority } : {}),
+      ...(t.meta.complexity ? { complexity: t.meta.complexity } : {}),
+      ...(t.meta.estimatedEffort ? { effort: t.meta.estimatedEffort } : {}),
+      ...(t.meta.milestone ? { milestone: t.meta.milestone } : {}),
+      ...(t.meta.featureFlag ? { featureFlag: t.meta.featureFlag } : {}),
+      ...(t.meta.inheritedFeatureFlag ? { inheritedFeatureFlag: t.meta.inheritedFeatureFlag } : {}),
+      project: projectCode,
+      ...(t.detail?.summary ? { summary: t.detail.summary } : {}),
+      hasPlan,
+      ...(includePlan ? { planMarkdown: planMarkdown || null } : {}),
+      ...(detailField ? { detail: detailField } : {}),
+      ...(includeDetails ? { comments: t.comments || [] } : {}),
+      ...(sanitizedLease ? { lease: sanitizedLease } : {}),
+      sha1,
+      isBlocked: Boolean(t.isBlocked),
+      ...(t.links && t.links.length > 0 ? { links: t.links } : {}),
+      meta: compactMeta,
+    };
+  }
+
   private async handleLinkTicket(args: any): Promise<any> {
     const sourceRaw = args.sourceTicketId ?? args.id ?? args.sourceId ?? args.ticketId;
     const rawTargetsList: any[] = [];
@@ -1363,6 +1532,10 @@ export class EsedreMcpServer {
             };
           })
         );
+        await this.ensureProjectSnapshotsIfMissing([
+          args.project,
+          ...tickets.map((t) => t.projectDescriptor?.code || t.meta.project),
+        ]);
         return results;
       }
 
@@ -1370,6 +1543,9 @@ export class EsedreMcpServer {
         const id = this.parseTicketId(args.ticketId ?? args.id, 'Ticket ID', args.project);
         const ticket = await this.storage.getTicket(id);
         if (!ticket) throw new Error(`Ticket #${id} not found`);
+        await this.ensureProjectSnapshotsIfMissing([
+          ticket.projectDescriptor?.code || ticket.meta.project || args.project,
+        ]);
         return this.formatMcpTicketResponse(ticket, {
           includeRaw: args.includeRaw,
           mode: 'get',
@@ -1379,6 +1555,7 @@ export class EsedreMcpServer {
       case 'get_plan': {
         const id = this.parseTicketId(args.ticketId ?? args.id, 'Ticket ID', args.project);
         const plan = await this.storage.getPlan(id);
+        await this.ensureProjectSnapshotsIfMissing([args.project]);
         return { ticketId: id, planMarkdown: plan || null };
       }
 
@@ -1512,7 +1689,12 @@ export class EsedreMcpServer {
       }
 
       case 'list_milestones': {
-        return this.storage.listMilestones(args.project);
+        const milestones = await this.storage.listMilestones(args.project);
+        await this.ensureProjectSnapshotsIfMissing([
+          args.project,
+          ...milestones.map((m) => m.project),
+        ]);
+        return milestones;
       }
 
       case 'get_milestone': {
@@ -1522,9 +1704,27 @@ export class EsedreMcpServer {
         }
         const m = await this.storage.getMilestone(rawMilestoneId, args.project);
         if (!m) throw new Error(`Milestone '${rawMilestoneId}' not found`);
-        const tickets = await this.storage.listTickets({ project: args.project || m.project, milestone: String(m.id) });
+        const rawTickets = await this.storage.listTickets({ project: args.project || m.project, milestone: String(m.id) });
+        await this.ensureProjectSnapshotsIfMissing([args.project || m.project]);
+        const tickets = await Promise.all(
+          rawTickets.map((t) =>
+            this.formatMcpMilestoneTicket(t, {
+              includeDetails: args.includeDetails,
+              includePlan: args.includePlan,
+              includeRaw: args.includeRaw,
+            })
+          )
+        );
+        const completedTickets = rawTickets.filter(
+          (t) => t.meta.status === 'Completed' || (t.meta.status as string) === 'Complete'
+        ).length;
+        const totalTickets = rawTickets.length;
+        const progressPercent = totalTickets > 0 ? Math.round((completedTickets / totalTickets) * 100) : 0;
         return {
           ...m,
+          totalTickets,
+          completedTickets,
+          progressPercent,
           tickets,
         };
       }

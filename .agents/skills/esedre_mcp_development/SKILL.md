@@ -66,8 +66,8 @@ The server registers the following tools in `tools/list`:
     - Parameters: `{ project?: string }`
     - Returns project milestones with status, umbrella feature flag, target date, and deliverables progress metrics.
 15. `esedre_get_milestone`:
-    - Parameters: `{ milestoneId: number | string, project?: string }`
-    - Returns milestone specifications, umbrella feature flag, and all member tickets.
+    - Parameters: `{ id?: number | string, milestoneId?: number | string, project?: string, includeDetails?: boolean, includePlan?: boolean, includeRaw?: boolean }`
+    - Returns milestone specifications, umbrella feature flag, progress metrics (`totalTickets`, `completedTickets`, `progressPercent`), and member tickets. Defaults to compact member ticket summaries (omitting `detail.raw`, `planMarkdown`, `comments`, `projectDescriptor`, and full breakdown arrays while preserving top-level summary fields and `meta`); pass `includeDetails: true`, `includePlan: true`, or `includeRaw: true` to expand.
 16. `esedre_create_milestone`:
     - Parameters: `{ title: string, project?: string, featureFlag?: string, status?: string, targetDate?: string, description?: string }`
     - Creates a new milestone with optional umbrella feature flag and target date.
@@ -94,12 +94,13 @@ The server exposes read-only markdown resources for dynamic agent context inject
 | `-32602` | Invalid params | Missing required argument (e.g. ticket ID or URI). |
 | `-32603` | Internal / Security / Lease Conflict error | Thrown when storage operation fails, when the Agent Project Allow-List denies access (`EsedreAuthorizationError`), or when a ticket is actively leased by another agent (`EsedreLeaseConflictError`). |
 
-## 5. Automatic Snapshot Projection Refresh on Mutations
+## 5. Automatic Snapshot Projection Refresh on Mutations & Lazy Read Hydration
 
 Whenever any mutating MCP tool completes (`create_ticket`, `update_ticket`, `save_plan`, `add_comment`, `claim_ticket`, `renew_lease`, `release_ticket`, `link_ticket`, `unlink_ticket`, `create_milestone`, `update_milestone`):
 - **Workspace Resolution**: The server identifies target repository directories for the affected project code(s) by inspecting the active workspace root (`options.workspaceRoot`, `storage.getWorkspaceRoot()`, or `discovered.workspaceRoot`), local project configuration or existing `snapshot.json`, and any registered project repositories in central `~/.esedre/config.json` (including on remote client machines operating over `HttpStorageAdapter`).
 - **Zero-Latency Ingress Parity**: The server automatically regenerates `.esedre/snapshot.json` in the consuming project repository so that local snapshot projections stay 100% synchronized with zero manual CLI intervention.
-- **Resilient Stdio Diagnostics**: Snapshot regeneration is wrapped in safe error handling: any write or filesystem issues are reported to `stderr` (`process.stderr.write`), strictly preventing `stdout` JSON-RPC stream corruption and ensuring the mutation tool response succeeds.
+- **Lazy Fresh-Machine Read Hydration (`ensureProjectSnapshotsIfMissing`)**: Because `.esedre/snapshot.json` is `.gitignored`, read-only MCP tools (`esedre_list_tickets`, `esedre_get_ticket`, `esedre_get_plan`, `esedre_list_milestones`, `esedre_get_milestone`) check whether `.esedre/snapshot.json` exists on disk in the target project workspace and lazily build and deposit it when missing.
+- **Resilient Stdio Diagnostics**: Snapshot regeneration is wrapped in safe error handling: any write or filesystem issues are reported to `stderr` (`process.stderr.write`), strictly preventing `stdout` JSON-RPC stream corruption and ensuring the tool response succeeds.
 
 ## 6. Request Serialization & Non-Blocking Stdio
 

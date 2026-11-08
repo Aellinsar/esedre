@@ -136,8 +136,11 @@ export async function generateProjectSnapshot(
 
   for (const t of tickets) {
     const lookupKey = t.projectDescriptor?.code ? `${t.projectDescriptor.code}-${t.meta.id}` : t.meta.id;
-    const fullTicket = await storage.getTicket(lookupKey);
-    const plan = await storage.getPlan(lookupKey);
+    const isAlreadyHydrated = Boolean(t.sha1 && Array.isArray(t.comments));
+    const fullTicket = isAlreadyHydrated ? t : await storage.getTicket(lookupKey);
+    const plan = isAlreadyHydrated
+      ? t.planMarkdown ?? null
+      : (t.planMarkdown !== undefined ? t.planMarkdown : await storage.getPlan(lookupKey));
     const ticketObj: EsedreTicket = fullTicket || t;
     ticketObj.planMarkdown = plan || undefined;
 
