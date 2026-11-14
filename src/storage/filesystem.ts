@@ -1561,6 +1561,20 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     this.invalidateTicketCache();
   }
 
+  private parseExplicitMilestoneProjectPrefix(
+    rawRef: string,
+    locations: ResolvedProjectLocation[]
+  ): { projectLoc: ResolvedProjectLocation; targetRef: string } | null {
+    const colonIdx = rawRef.indexOf(':');
+    if (colonIdx <= 0) return null;
+    const projPrefix = rawRef.substring(0, colonIdx).trim();
+    const targetRef = rawRef.substring(colonIdx + 1).trim();
+    if (!projPrefix || !targetRef) return null;
+    const projectLoc = locations.find((l) => isProjectMatch(l.project.code, projPrefix));
+    if (!projectLoc) return null;
+    return { projectLoc, targetRef };
+  }
+
   public resolveMilestone(milestoneRef: string, localLoc?: ResolvedProjectLocation): Milestone | null {
     const cleanRef = normalizeDashesAndMojibake(milestoneRef).trim();
     if (!cleanRef) return null;
@@ -1568,20 +1582,23 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     const locations = this.resolveProjectLocations();
 
     // 1. Check for compound project notation: "ProjectCode:Milestone" or "ProjectCode:Id"
-    const colonIdx = cleanRef.indexOf(':');
-    if (colonIdx > 0) {
-      const projPrefix = cleanRef.substring(0, colonIdx).trim();
-      const targetRef = cleanRef.substring(colonIdx + 1).trim();
-      const targetLoc = locations.find((l) => isProjectMatch(l.project.code, projPrefix));
-      if (targetLoc) {
-        const pMilestones = this.readProjectMilestones(targetLoc);
-        const match = pMilestones.find(
-          (m) =>
-            String(m.id).toLowerCase() === targetRef.toLowerCase() ||
-            m.title.toLowerCase() === targetRef.toLowerCase()
+    const explicitPrefix = this.parseExplicitMilestoneProjectPrefix(cleanRef, locations);
+    if (explicitPrefix) {
+      const pMilestones = this.readProjectMilestones(explicitPrefix.projectLoc);
+      const targetLower = explicitPrefix.targetRef.toLowerCase();
+      const match = pMilestones.find(
+        (m) =>
+          String(m.id).toLowerCase() === targetLower ||
+          m.title.toLowerCase() === targetLower
+      );
+      if (match) return { ...match, project: explicitPrefix.projectLoc.project.code };
+      if (localLoc) {
+        const exactLocalTitle = this.readProjectMilestones(localLoc).find(
+          (m) => m.title.toLowerCase() === cleanRef.toLowerCase()
         );
-        if (match) return { ...match, project: targetLoc.project.code };
+        if (exactLocalTitle) return { ...exactLocalTitle, project: localLoc.project.code };
       }
+      return null;
     }
 
     // 2. Check local project location first
@@ -1595,26 +1612,152 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       if (match) return { ...match, project: localLoc.project.code };
     }
 
-    // 3. Fallback: Search all other registered project locations
-    for (const loc of locations) {
-      if (localLoc && isProjectMatch(loc.project.code, localLoc.project.code)) continue;
-      const list = this.readProjectMilestones(loc);
-      const match = list.find(
-        (m) =>
-          String(m.id).toLowerCase() === cleanRef.toLowerCase() ||
-          m.title.toLowerCase() === cleanRef.toLowerCase()
-      );
-      if (match) return { ...match, project: loc.project.code };
+    // 3. Fallback: Search all other registered project locations by title (bare numeric IDs are project-scoped)
+    if (!/^\d+$/.test(cleanRef)) {
+      for (const loc of locations) {
+        if (localLoc && isProjectMatch(loc.project.code, localLoc.project.code)) continue;
+        const list = this.readProjectMilestones(loc);
+        const match = list.find(
+          (m) => m.title.toLowerCase() === cleanRef.toLowerCase()
+        );
+        if (match) return { ...match, project: loc.project.code };
+      }
     }
 
     return null;
+  }
+
+  private matchesMilestoneFilter(
+    metaMilestone: string | undefined,
+    ticketLoc: ResolvedProjectLocation,
+    filterMilestone: string,
+    filterProject: string | undefined,
+    locations: ResolvedProjectLocation[]
+  ): boolean {
+    if (!metaMilestone) return false;
+    const rawMetaMs = normalizeDashesAndMojibake(metaMilestone).trim();
+    if (!rawMetaMs) return false;
+
+    const rawFilter = normalizeDashesAndMojibake(filterMilestone).trim();
+    if (!rawFilter) return false;
+    const mFilter = rawFilter.toLowerCase();
+
+    const filterExplicit = this.parseExplicitMilestoneProjectPrefix(rawFilter, locations);
+    const ticketExplicit = this.parseExplicitMilestoneProjectPrefix(rawMetaMs, locations);
+
+    // Reject unknown "<Prefix>:<Target>" cross-project references when the prefix does not match the queried project
+    const rawTicketColon = rawMetaMs.match(/^([a-zA-Z0-9]{1,8}):(.+)$/);
+    const rawFilterColon = rawFilter.match(/^([a-zA-Z0-9]{1,8}):(.+)$/);
+
+    const effectiveFilterProject = filterExplicit
+      ? filterExplicit.projectLoc.project.code
+      : rawFilterColon
+        ? rawFilterColon[1]
+        : filterProject && filterProject.trim().toLowerCase() !== 'all'
+          ? filterProject.trim()
+          : undefined;
+
+    const filterContextLoc =
+      filterExplicit?.projectLoc ||
+      (effectiveFilterProject
+        ? locations.find((l) => isProjectMatch(l.project.code, effectiveFilterProject))
+        : undefined);
+
+    let resolvedFilterMilestone: Milestone | null = null;
+    if (filterExplicit) {
+      resolvedFilterMilestone = this.resolveMilestone(rawFilter, filterExplicit.projectLoc);
+    } else if (!rawFilterColon) {
+      if (filterContextLoc) {
+        resolvedFilterMilestone = this.resolveMilestone(rawFilter, filterContextLoc);
+      } else if (!/^\d+$/.test(rawFilter)) {
+        resolvedFilterMilestone = this.resolveMilestone(rawFilter);
+      }
+    }
+
+    const mMatch = rawTicketColon && !ticketExplicit
+      ? null
+      : this.resolveMilestone(rawMetaMs, ticketExplicit ? ticketExplicit.projectLoc : ticketLoc);
+
+    if (resolvedFilterMilestone) {
+      if (mMatch) {
+        return (
+          isProjectMatch(mMatch.project, resolvedFilterMilestone.project) &&
+          String(mMatch.id).toLowerCase() === String(resolvedFilterMilestone.id).toLowerCase()
+        );
+      }
+      if (rawTicketColon) {
+        const prefix = ticketExplicit ? ticketExplicit.projectLoc.project.code : rawTicketColon[1];
+        const target = (ticketExplicit ? ticketExplicit.targetRef : rawTicketColon[2]).trim().toLowerCase();
+        return (
+          isProjectMatch(prefix, resolvedFilterMilestone.project) &&
+          (target === String(resolvedFilterMilestone.id).toLowerCase() ||
+            target === resolvedFilterMilestone.title.toLowerCase())
+        );
+      }
+      if (isProjectMatch(ticketLoc.project.code, resolvedFilterMilestone.project)) {
+        const metaLower = rawMetaMs.toLowerCase();
+        return (
+          metaLower === String(resolvedFilterMilestone.id).toLowerCase() ||
+          metaLower === resolvedFilterMilestone.title.toLowerCase()
+        );
+      }
+      return rawMetaMs.toLowerCase() === resolvedFilterMilestone.title.toLowerCase();
+    }
+
+    // Fallback when filter milestone does not resolve to a registered milestones.json record
+    if (rawFilterColon) {
+      const filterProj = filterExplicit ? filterExplicit.projectLoc.project.code : rawFilterColon[1];
+      const filterTarget = (filterExplicit ? filterExplicit.targetRef : rawFilterColon[2]).trim().toLowerCase();
+      if (mMatch) {
+        return (
+          isProjectMatch(mMatch.project, filterProj) &&
+          (String(mMatch.id).toLowerCase() === filterTarget ||
+            mMatch.title.toLowerCase() === filterTarget)
+        );
+      }
+      if (rawTicketColon) {
+        const ticketProj = ticketExplicit ? ticketExplicit.projectLoc.project.code : rawTicketColon[1];
+        const ticketTarget = (ticketExplicit ? ticketExplicit.targetRef : rawTicketColon[2]).trim().toLowerCase();
+        return isProjectMatch(ticketProj, filterProj) && ticketTarget === filterTarget;
+      }
+      return isProjectMatch(ticketLoc.project.code, filterProj) && rawMetaMs.toLowerCase() === filterTarget;
+    }
+
+    // Unqualified rawFilter that did not resolve to a registered milestone
+    if (rawTicketColon) {
+      const ticketProj = ticketExplicit ? ticketExplicit.projectLoc.project.code : rawTicketColon[1];
+      const ticketTarget = (ticketExplicit ? ticketExplicit.targetRef : rawTicketColon[2]).trim().toLowerCase();
+      const expectedProj = effectiveFilterProject || ticketLoc.project.code;
+      if (!isProjectMatch(ticketProj, expectedProj)) {
+        return rawMetaMs.toLowerCase() === mFilter;
+      }
+      if (mMatch) {
+        return (
+          String(mMatch.id).toLowerCase() === mFilter ||
+          mMatch.title.toLowerCase() === mFilter
+        );
+      }
+      return ticketTarget === mFilter || rawMetaMs.toLowerCase() === mFilter;
+    }
+
+    if (mMatch) {
+      const expectedProj = effectiveFilterProject || ticketLoc.project.code;
+      if (String(mMatch.id).toLowerCase() === mFilter) {
+        return isProjectMatch(mMatch.project, expectedProj);
+      }
+      if (mMatch.title.toLowerCase() === mFilter) {
+        return !effectiveFilterProject || isProjectMatch(mMatch.project, effectiveFilterProject) || isProjectMatch(ticketLoc.project.code, effectiveFilterProject);
+      }
+    }
+
+    return rawMetaMs.toLowerCase() === mFilter;
   }
 
   public async listMilestones(projectCode?: string): Promise<Milestone[]> {
     const locations = this.resolveProjectLocations();
     const milestones: Milestone[] = [];
     for (const loc of locations) {
-      if (projectCode && projectCode !== 'all') {
+      if (projectCode && projectCode.trim().toLowerCase() !== 'all') {
         if (!isProjectMatch(loc.project.code, projectCode)) continue;
       }
       const list = this.readProjectMilestones(loc);
@@ -1636,7 +1779,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     const colonIdx = target.indexOf(':');
     let effectiveProject = projectCode;
     let effectiveId = target;
-    if (colonIdx > 0 && (!projectCode || projectCode === 'all')) {
+    if (colonIdx > 0 && (!projectCode || projectCode.trim().toLowerCase() === 'all')) {
       effectiveProject = target.substring(0, colonIdx).trim();
       effectiveId = target.substring(colonIdx + 1).trim();
     }
@@ -2166,7 +2309,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     }
 
     for (const loc of locations) {
-      if (filter?.project && filter.project !== 'all') {
+      if (filter?.project && filter.project.trim().toLowerCase() !== 'all') {
         if (!isProjectMatch(loc.project.code, filter.project)) {
           continue;
         }
@@ -2209,7 +2352,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
 
         const meta = ticketObj.meta;
 
-        if (filter?.project && filter.project !== 'all') {
+        if (filter?.project && filter.project.trim().toLowerCase() !== 'all') {
           if (!isProjectMatch(meta.project, filter.project)) {
             continue;
           }
@@ -2219,39 +2362,21 @@ export class FilesystemStorageAdapter implements StorageAdapter {
           if (isClearSentinel(filter.milestone)) {
             if (meta.milestone) continue;
           } else {
-          const mFilter = filter.milestone.trim().toLowerCase();
-          const targetLoc = (meta.project && locations.find((l) => l.project.code.toLowerCase() === meta.project!.toLowerCase())) || loc;
-          const resolvedFilterMilestone = this.resolveMilestone(filter.milestone, targetLoc);
-          const mMatch = meta.milestone ? this.resolveMilestone(meta.milestone, targetLoc) : null;
-          const matchesDirect = Boolean(meta.milestone && meta.milestone.toLowerCase() === mFilter);
-          const matchesResolvedTitle = Boolean(
-            resolvedFilterMilestone &&
-            meta.milestone &&
-            meta.milestone.toLowerCase() === resolvedFilterMilestone.title.toLowerCase()
-          );
-          const matchesResolvedId = Boolean(
-            resolvedFilterMilestone &&
-            meta.milestone &&
-            String(resolvedFilterMilestone.id).toLowerCase() === meta.milestone.toLowerCase()
-          );
-          const matchesCompound = Boolean(
-            resolvedFilterMilestone &&
-            meta.milestone &&
-            `${resolvedFilterMilestone.project}:${resolvedFilterMilestone.title}`.toLowerCase() === meta.milestone.toLowerCase()
-          );
-          const matchesResolvedSelf = Boolean(
-            mMatch &&
-            (mMatch.title.toLowerCase() === mFilter ||
-              String(mMatch.id).toLowerCase() === mFilter ||
-              `${mMatch.project}:${mMatch.title}`.toLowerCase() === mFilter ||
-              `${mMatch.project}:${mMatch.id}`.toLowerCase() === mFilter)
-          );
-          if (!matchesDirect && !matchesResolvedTitle && !matchesResolvedId && !matchesCompound && !matchesResolvedSelf) {
-            continue;
-          }
-          }
-          if (false) {
-            continue;
+            const targetLoc =
+              (meta.project &&
+                locations.find((l) => l.project.code.toLowerCase() === meta.project!.toLowerCase())) ||
+              loc;
+            if (
+              !this.matchesMilestoneFilter(
+                meta.milestone,
+                targetLoc,
+                filter.milestone,
+                filter.project,
+                locations
+              )
+            ) {
+              continue;
+            }
           }
         }
 
@@ -2548,6 +2673,8 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         const cleaned = this.stripSummaryPlaceholder(rawText);
         if (cleaned && !summary) {
           summary = cleaned;
+        } else if (cleaned && cleaned !== summary) {
+          deferredProblemSections.push({ title, body: cleaned });
         } else if (!rawSummaryPlaceholder && rawText) {
           rawSummaryPlaceholder = rawText;
         }
@@ -2555,6 +2682,8 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         const cleaned = this.stripSummaryPlaceholder(body.trim());
         if (cleaned && !summary) {
           summary = cleaned;
+        } else if (cleaned && cleaned !== summary) {
+          deferredProblemSections.push({ title, body: cleaned });
         }
       } else if (problemAliasRe.test(title)) {
         const cleaned = this.stripSummaryPlaceholder(body.trim());
@@ -2573,7 +2702,15 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         this.extractTechAndQuestionItemsFromBlock(body, technicalDetails, openQuestions, 'questions');
       } else {
         // Non-canonical ##/### section: preserve items/prose in breakdown so custom sections are never silently dropped
-        breakdown.push(...this.extractBreakdownItemsFromBlock(body, true));
+        const listItems = this.extractBreakdownItemsFromBlock(body, false);
+        if (listItems.length > 0) {
+          breakdown.push(...listItems);
+        } else {
+          const proseParagraphs = this.extractBreakdownItemsFromBlock(body, true);
+          for (const p of proseParagraphs) {
+            breakdown.push(p.startsWith('**') ? p : `**${title}**: ${p}`);
+          }
+        }
       }
     }
 
@@ -2586,7 +2723,8 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       }
     }
 
-    for (const prob of deferredProblemSections) {
+    for (let i = deferredProblemSections.length - 1; i >= 0; i--) {
+      const prob = deferredProblemSections[i];
       if (prob.body !== summary) {
         const items = this.extractBreakdownItemsFromBlock(prob.body, false);
         if (items.length > 0) {
@@ -4652,7 +4790,7 @@ ${input.summary || 'Summary to be defined.'}
 
   public async listLeases(projectCode?: string): Promise<TicketLease[]> {
     const tickets = await this.listTickets({
-      project: projectCode === 'all' ? undefined : projectCode,
+      project: projectCode && projectCode.trim().toLowerCase() === 'all' ? undefined : projectCode,
       leased: true,
     });
     return tickets

@@ -241,7 +241,7 @@ describe('Field, Flag, Clearing, Validation & Filter Parity Audit (Esedre-103..1
 
     afterEach(() => {
       if (fs.existsSync(tempDir)) {
-        fs.rmSync(tempDir, { recursive: true, force: true });
+        fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
     });
 

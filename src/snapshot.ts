@@ -18,6 +18,34 @@ import { StorageAdapter } from './storage/adapter.js';
 
 export interface GenerateSnapshotOptions {
   includePlans?: boolean;
+  skipDiskWrite?: boolean;
+}
+
+export function getConflictingWorkspaceProjectCode(
+  outputDir: string,
+  targetProjectCode: string
+): string | null {
+  if (!outputDir || !targetProjectCode) return null;
+  const normalizedTarget = targetProjectCode.trim().toLowerCase();
+  const candidates = [
+    path.join(outputDir, '.esedre', 'esedre.json'),
+    path.join(outputDir, 'esedre.json'),
+  ];
+  for (const cfgPath of candidates) {
+    if (!fs.existsSync(cfgPath)) continue;
+    try {
+      const raw = fs.readFileSync(cfgPath, 'utf-8').replace(/^\uFEFF/, '');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.projectCode === 'string' && parsed.projectCode.trim()) {
+        const configured = parsed.projectCode.trim();
+        if (configured.toLowerCase() !== normalizedTarget) {
+          return configured;
+        }
+        return null;
+      }
+    } catch {}
+  }
+  return null;
 }
 
 export interface TicketSnapshotEntry {
@@ -239,12 +267,19 @@ export async function generateProjectSnapshot(
   try {
     const rawMilestones = await storage.listMilestones(projectCode);
     milestoneSnapshots = rawMilestones.map((m) => {
-      const mTickets = entries.filter(
-        (t) =>
-          t.milestone &&
-          (t.milestone.toLowerCase() === String(m.id).toLowerCase() ||
-            t.milestone.toLowerCase() === m.title.toLowerCase())
-      );
+      const mIdLower = String(m.id).toLowerCase();
+      const mTitleLower = m.title.toLowerCase();
+      const mProjLower = m.project.toLowerCase();
+      const mTickets = entries.filter((t) => {
+        if (!t.milestone) return false;
+        const msLower = t.milestone.trim().toLowerCase();
+        return (
+          msLower === mIdLower ||
+          msLower === mTitleLower ||
+          msLower === `${mProjLower}:${mIdLower}` ||
+          msLower === `${mProjLower}:${mTitleLower}`
+        );
+      });
       const completed = mTickets.filter(
         (t) => t.status === 'Completed' || (t.status as string) === 'Complete'
       ).length;
@@ -282,20 +317,22 @@ export async function generateProjectSnapshot(
     ...(activeLeases.length > 0 ? { activeLeases } : {}),
   };
 
-  const esedreDir = path.join(outputDir, '.esedre');
-  if (!fs.existsSync(esedreDir)) {
-    fs.mkdirSync(esedreDir, { recursive: true });
-  }
+  if (!options?.skipDiskWrite && !getConflictingWorkspaceProjectCode(outputDir, projectCode)) {
+    const esedreDir = path.join(outputDir, '.esedre');
+    if (!fs.existsSync(esedreDir)) {
+      fs.mkdirSync(esedreDir, { recursive: true });
+    }
 
-  const snapshotPath = path.join(esedreDir, 'snapshot.json');
-  const tempSnapshotPath = `${snapshotPath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
-  try {
-    fs.writeFileSync(tempSnapshotPath, JSON.stringify(snapshot, null, 2) + '\n', 'utf-8');
-    fs.renameSync(tempSnapshotPath, snapshotPath);
-  } catch {
-    fs.writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2) + '\n', 'utf-8');
-    if (fs.existsSync(tempSnapshotPath)) {
-      try { fs.unlinkSync(tempSnapshotPath); } catch {}
+    const snapshotPath = path.join(esedreDir, 'snapshot.json');
+    const tempSnapshotPath = `${snapshotPath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      fs.writeFileSync(tempSnapshotPath, JSON.stringify(snapshot, null, 2) + '\n', 'utf-8');
+      fs.renameSync(tempSnapshotPath, snapshotPath);
+    } catch {
+      fs.writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2) + '\n', 'utf-8');
+      if (fs.existsSync(tempSnapshotPath)) {
+        try { fs.unlinkSync(tempSnapshotPath); } catch {}
+      }
     }
   }
 

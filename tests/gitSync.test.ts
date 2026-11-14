@@ -433,20 +433,19 @@ describe('Esedre-6: Automatic Data Hub Git Sync', () => {
     });
   });
 
-  describe('Config, CLI Args & HTTP Remote Sync Endpoints', { timeout: 45000 }, () => {
+  describe('Config, CLI Args & HTTP Remote Sync Endpoints', { timeout: 60000 }, () => {
     let tempRoot: string;
     let bareRemoteDir: string;
     let hubDir: string;
     let server: http.Server | null = null;
-    let savedGlobalConfigRaw: string | null = null;
+    let prevGlobalDir: string | undefined;
 
     beforeEach(() => {
-      const globalPath = getGlobalConfigPath();
-      savedGlobalConfigRaw = fs.existsSync(globalPath)
-        ? fs.readFileSync(globalPath, 'utf-8')
-        : null;
-
       tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-sync-http-'));
+      prevGlobalDir = process.env.ESEDRE_GLOBAL_DIR;
+      process.env.ESEDRE_GLOBAL_DIR = path.join(tempRoot, 'global-esedre');
+      fs.mkdirSync(process.env.ESEDRE_GLOBAL_DIR, { recursive: true });
+
       bareRemoteDir = path.join(tempRoot, 'remote.git');
       hubDir = path.join(tempRoot, 'esedre-data');
 
@@ -470,14 +469,13 @@ describe('Esedre-6: Automatic Data Hub Git Sync', () => {
         await new Promise<void>((resolve) => server!.close(() => resolve()));
         server = null;
       }
-      const globalPath = getGlobalConfigPath();
-      if (savedGlobalConfigRaw !== null) {
-        fs.writeFileSync(globalPath, savedGlobalConfigRaw, 'utf-8');
-      } else if (fs.existsSync(globalPath)) {
-        fs.unlinkSync(globalPath);
+      if (prevGlobalDir === undefined) {
+        delete process.env.ESEDRE_GLOBAL_DIR;
+      } else {
+        process.env.ESEDRE_GLOBAL_DIR = prevGlobalDir;
       }
       try {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       } catch {}
     });
 

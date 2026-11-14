@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 export interface WorkerIdentityInput {
   holder?: string;
@@ -22,39 +22,86 @@ export interface ResolvedWorkerIdentity {
   worktree?: string;
 }
 
+function findGitDirUpward(startDir: string): string | null {
+  let current = path.resolve(startDir);
+  while (true) {
+    const dotGit = path.join(current, '.git');
+    try {
+      if (fs.existsSync(dotGit)) {
+        const st = fs.statSync(dotGit);
+        if (st.isDirectory()) {
+          return dotGit;
+        }
+        if (st.isFile()) {
+          const raw = fs.readFileSync(dotGit, 'utf-8');
+          const match = raw.match(/^gitdir:\s*(.+)$/im);
+          if (match && match[1]) {
+            const target = path.resolve(current, match[1].trim());
+            if (fs.existsSync(target)) {
+              return target;
+            }
+          }
+        }
+      }
+    } catch {}
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+  return null;
+}
+
 export function detectGitBranch(cwd?: string): string | undefined {
   const targetCwd = cwd || process.cwd();
-  try {
-    const out = execSync('git branch --show-current', {
-      cwd: targetCwd,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      encoding: 'utf-8',
-      timeout: 1500,
-    }).trim();
-    if (out) return out;
-  } catch {}
+  const gitDir = process.env.GIT_DIR
+    ? path.resolve(targetCwd, process.env.GIT_DIR)
+    : findGitDirUpward(targetCwd);
 
-  try {
-    const out = execSync('git symbolic-ref --short HEAD', {
-      cwd: targetCwd,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      encoding: 'utf-8',
-      timeout: 1500,
-    }).trim();
-    if (out) return out;
-  } catch {}
-
-  try {
-    const out = execSync('git rev-parse --abbrev-ref HEAD', {
-      cwd: targetCwd,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      encoding: 'utf-8',
-      timeout: 1500,
-    }).trim();
-    return out && out !== 'HEAD' ? out : undefined;
-  } catch {
+  if (!gitDir) {
     return undefined;
   }
+
+  try {
+    const headPath = path.join(gitDir, 'HEAD');
+    if (fs.existsSync(headPath)) {
+      const headRaw = fs.readFileSync(headPath, 'utf-8').trim();
+      if (headRaw.startsWith('ref:')) {
+        const refTarget = headRaw.slice(4).trim();
+        const headsPrefix = 'refs/heads/';
+        if (refTarget.startsWith(headsPrefix)) {
+          const branchName = refTarget.slice(headsPrefix.length).trim();
+          if (branchName) {
+            return branchName;
+          }
+        }
+      } else if (/^[0-9a-f]{40,64}$/i.test(headRaw)) {
+        return undefined;
+      }
+    }
+  } catch {}
+
+  for (const args of [
+    ['branch', '--show-current'],
+    ['symbolic-ref', '--short', 'HEAD'],
+    ['rev-parse', '--abbrev-ref', 'HEAD'],
+  ]) {
+    try {
+      const out = execFileSync('git', args, {
+        cwd: targetCwd,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        encoding: 'utf-8',
+        timeout: 4000,
+        windowsHide: true,
+      }).trim();
+      if (out && out !== 'HEAD') {
+        return out;
+      }
+    } catch {}
+  }
+
+  return undefined;
 }
 
 function resolveCanonicalPath(p: string): string {

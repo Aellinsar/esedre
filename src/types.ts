@@ -225,6 +225,7 @@ export interface TicketDetail {
   breakdown: string[];
   technicalDetails?: string[];
   openQuestions?: string[];
+  hasUnparsedMarkdown?: boolean;
   raw: string;
 }
 

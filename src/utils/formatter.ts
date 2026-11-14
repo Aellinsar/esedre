@@ -546,12 +546,32 @@ export function formatMilestoneListTable(milestones: Milestone[], tickets?: Esed
     const flag = m.featureFlag || '-';
     let progress = '-';
     if (tickets) {
-      const mTickets = tickets.filter(
-        (t) =>
-          t.meta.milestone &&
-          (t.meta.milestone.toLowerCase() === String(m.id).toLowerCase() ||
-            t.meta.milestone.toLowerCase() === m.title.toLowerCase())
-      );
+      const mIdLower = String(m.id).toLowerCase();
+      const mTitleLower = m.title.toLowerCase();
+      const mProjLower = m.project.toLowerCase();
+      const mTickets = tickets.filter((t) => {
+        if (!t.meta.milestone) return false;
+        const msLower = t.meta.milestone.trim().toLowerCase();
+        if (msLower === `${mProjLower}:${mIdLower}` || msLower === `${mProjLower}:${mTitleLower}`) {
+          return true;
+        }
+        const prefixMatch = msLower.match(/^([a-z0-9]{1,8}):(.+)$/);
+        if (prefixMatch && prefixMatch[1] !== mProjLower) {
+          return false;
+        }
+        const tProj = (t.projectDescriptor?.code || t.meta.project || '').trim().toLowerCase();
+        if (msLower === mIdLower) {
+          return !tProj || tProj === mProjLower;
+        }
+        if (msLower === mTitleLower) {
+          if (!tProj || tProj === mProjLower) return true;
+          const hasLocalSameTitle = milestones.some(
+            (other) => other.project.toLowerCase() === tProj && other.title.toLowerCase() === mTitleLower
+          );
+          return !hasLocalSameTitle;
+        }
+        return false;
+      });
       const completed = mTickets.filter((t) => t.meta.status === 'Completed').length;
       progress = `${completed}/${mTickets.length}`;
     }
