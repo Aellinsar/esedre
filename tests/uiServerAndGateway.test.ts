@@ -179,7 +179,11 @@ describe('UI Server & Gateway Path Resolution', () => {
       expect(res.body).toContain('index.html not found');
     });
 
-    it('protects against directory traversal attempts', async () => {
+    it('protects against directory traversal and sibling-prefix escapes', async () => {
+      const siblingSecretDir = `${webDir}-secret`;
+      fs.mkdirSync(siblingSecretDir, { recursive: true });
+      fs.writeFileSync(path.join(siblingSecretDir, 'secret.txt'), 'TOP_SECRET_SIBLING');
+
       const instance = await createTestUiServer(webDir);
       uiServer = instance.server;
 
@@ -188,6 +192,27 @@ describe('UI Server & Gateway Path Resolution', () => {
       // Should fall back safely to index.html within webDir, NOT expose root filesystem
       expect(res.status).toBe(200);
       expect(res.body).toContain('<title>Mock Esedre</title>');
+
+      // Attempt sibling-prefix directory escape (../web-secret/secret.txt)
+      const parsed = new URL(instance.url);
+      const siblingRes = await new Promise<{ status?: number; body: string }>((resolve, reject) => {
+        const req = http.request(
+          {
+            hostname: parsed.hostname,
+            port: parsed.port,
+            path: '/../web-secret/secret.txt',
+            method: 'GET',
+          },
+          (r) => {
+            let b = '';
+            r.on('data', (c) => (b += c));
+            r.on('end', () => resolve({ status: r.statusCode, body: b }));
+          }
+        );
+        req.on('error', reject);
+        req.end();
+      });
+      expect(siblingRes.body).not.toContain('TOP_SECRET_SIBLING');
     });
   });
 

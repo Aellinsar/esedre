@@ -42,7 +42,7 @@ export function startUiServer(port: number, webDir: string): http.Server {
     let filePath = path.join(webDir, safePath);
     const resolvedFilePath = path.resolve(filePath);
     const resolvedWebDir = path.resolve(webDir);
-    if (!resolvedFilePath.startsWith(resolvedWebDir)) {
+    if (resolvedFilePath !== resolvedWebDir && !resolvedFilePath.startsWith(resolvedWebDir + path.sep)) {
       res.writeHead(403, { 'Content-Type': 'text/plain' });
       res.end('Access Denied: Path escapes web root.');
       return;

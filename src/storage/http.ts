@@ -149,6 +149,8 @@ export class HttpStorageAdapter implements StorageAdapter {
         payloadBuffer = Buffer.from(JSON.stringify(body), 'utf-8');
         headers['Content-Type'] = 'application/json; charset=utf-8';
         headers['Content-Length'] = String(payloadBuffer.length);
+      } else if (method !== 'GET') {
+        headers['Content-Type'] = 'application/json; charset=utf-8';
       }
 
       const req = transport.request(

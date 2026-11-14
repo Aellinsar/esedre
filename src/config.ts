@@ -98,6 +98,7 @@ export interface EsedrePortsConfig {
 export interface RemoteServerConfig {
   host?: string;
   timeoutMs?: number;
+  corsOrigins?: string[];
 }
 
 export interface EsedreConfig {
@@ -277,6 +278,29 @@ export function expandHome(filePath: string): string {
     return path.join(os.homedir(), filePath.slice(1));
   }
   return filePath;
+}
+
+export function resolveConfiguredCorsOrigins(config?: EsedreConfig | null): string[] {
+  const origins = new Set<string>();
+
+  const addAll = (list?: string[] | null) => {
+    if (!Array.isArray(list)) return;
+    for (const item of list) {
+      if (typeof item === 'string') {
+        const trimmed = item.trim();
+        if (trimmed) origins.add(trimmed);
+      }
+    }
+  };
+
+  if (process.env.ESEDRE_CORS_ORIGINS) {
+    addAll(process.env.ESEDRE_CORS_ORIGINS.split(','));
+  }
+
+  addAll(config?.server?.corsOrigins);
+  addAll(readGlobalConfig()?.server?.corsOrigins);
+
+  return Array.from(origins);
 }
 
 export function readGlobalConfig(): EsedreConfig | null {

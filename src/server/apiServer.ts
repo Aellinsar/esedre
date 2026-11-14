@@ -5,10 +5,18 @@ import crypto from 'node:crypto';
 import { StorageAdapter } from '../storage/adapter.js';
 import { SecurityFilter } from '../securityFilter.js';
 import { generateProjectSnapshot } from '../snapshot.js';
-import { validateProjectCode, validateProjectName, readGlobalConfig, updateGlobalGitSyncConfig } from '../config.js';
+import {
+  EsedreConfig,
+  validateProjectCode,
+  validateProjectName,
+  readGlobalConfig,
+  resolveConfiguredCorsOrigins,
+  updateGlobalGitSyncConfig,
+} from '../config.js';
 import { CURRENT_ESEDRE_VERSION, GitSyncStatusReport, ProjectSyncMode } from '../types.js';
 import { CURRENT_DATA_VERSION } from '../migrations/index.js';
 import { globalGitSyncCoordinator, getGitSyncStatusReport, normalizeRealPath } from '../sync/gitSync.js';
+import { evaluateApiRequestSecurity } from './originSecurity.js';
 
 async function buildEnrichedSyncStatusReport(
   reqStorage: StorageAdapter,
@@ -114,13 +122,28 @@ function readJsonBody(req: http.IncomingMessage): Promise<any> {
   });
 }
 
+const responseCorsHeaders = new WeakMap<http.ServerResponse, Record<string, string>>();
+
+function readWorkspaceConfigSafe(workspaceRoot: string): EsedreConfig | null {
+  if (!workspaceRoot) return null;
+  const cfgPath = path.join(workspaceRoot, '.esedre', 'esedre.json');
+  if (!fs.existsSync(cfgPath)) return null;
+  try {
+    const raw = fs.readFileSync(cfgPath, 'utf-8').replace(/^\uFEFF/, '');
+    return JSON.parse(raw) as EsedreConfig;
+  } catch {
+    return null;
+  }
+}
+
 function sendJson(res: http.ServerResponse, status: number, data: any, extraHeaders?: Record<string, string>) {
+  const corsHeaders = responseCorsHeaders.get(res) || {};
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-esedre-allowed-projects, If-None-Match',
     'Access-Control-Expose-Headers': 'ETag',
+    ...corsHeaders,
     ...(extraHeaders || {}),
   });
   res.end(JSON.stringify(data));
@@ -343,22 +366,28 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
     const rawUrl = req.url || '/';
     const parsedPath = rawUrl.split('?')[0];
 
-    // Handle CORS preflight for API paths
-    if (req.method === 'OPTIONS') {
-      if (parsedPath.startsWith('/api') || parsedPath.startsWith('/esedre/api')) {
-        res.writeHead(204, {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-esedre-allowed-projects',
-        });
-        res.end();
-        return true;
-      }
+    if (!parsedPath.startsWith('/api') && !parsedPath.startsWith('/esedre/api')) {
       return false;
     }
 
-    if (!parsedPath.startsWith('/api') && !parsedPath.startsWith('/esedre/api')) {
-      return false;
+    const configuredOrigins = resolveConfiguredCorsOrigins(readWorkspaceConfigSafe(workspaceRoot));
+    const security = evaluateApiRequestSecurity(req, configuredOrigins);
+    if (!security.allowed) {
+      sendJson(res, security.status, { error: security.error });
+      return true;
+    }
+
+    responseCorsHeaders.set(res, security.corsHeaders);
+
+    // Handle CORS preflight for API paths
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-esedre-allowed-projects, If-None-Match',
+        ...security.corsHeaders,
+      });
+      res.end();
+      return true;
     }
 
     const url = new URL(rawUrl, 'http://127.0.0.1');
@@ -483,9 +512,9 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
 
           if (!sinceRevision && ifNoneMatch && ifNoneMatch === entry.revision) {
             res.writeHead(304, {
-              'Access-Control-Allow-Origin': '*',
               'Access-Control-Expose-Headers': 'ETag',
               ETag: `"${entry.revision}"`,
+              ...security.corsHeaders,
             });
             res.end();
             return true;
@@ -627,6 +656,7 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
             'Content-Type': contentType,
             'Content-Length': stat.size,
             'Cache-Control': 'public, max-age=86400',
+            ...security.corsHeaders,
           });
           fs.createReadStream(filePath).pipe(res);
           return true;
