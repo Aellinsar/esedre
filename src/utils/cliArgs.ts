@@ -28,6 +28,7 @@ const BOOLEAN_OPTIONS: Record<string, { short?: string }> = {
   'include-raw': {},
   includeRaw: {},
   'include-completed': {},
+  'no-include-completed': {},
   includeCompleted: {},
   compact: {},
   raw: {},
@@ -394,6 +395,12 @@ export function parseCliArgs(rawArgs: string[]): ParsedCliArgs {
     if (name === 'no-commit') {
       flags['no-commit'] = value;
       flags['commit'] = !value;
+      return;
+    }
+    if (name === 'no-include-completed') {
+      flags['no-include-completed'] = value;
+      flags['include-completed'] = !value;
+      flags['includeCompleted'] = !value;
       return;
     }
     flags[name] = value;

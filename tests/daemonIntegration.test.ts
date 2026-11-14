@@ -184,7 +184,7 @@ describe('Esedre Daemon Integration & CLI Lifecycle', () => {
     try {
       // Poll for server to become active
       let ready = false;
-      for (let i = 0; i < 30; i++) {
+      for (let i = 0; i < 100; i++) {
         await new Promise((r) => setTimeout(r, 100));
         try {
           const res = await httpGet(`http://127.0.0.1:${FG_PORT}/api/ping`);

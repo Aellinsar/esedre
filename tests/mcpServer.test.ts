@@ -361,7 +361,7 @@ describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
 
     afterEach(() => {
       if (fs.existsSync(workspaceDir)) {
-        fs.rmSync(workspaceDir, { recursive: true, force: true });
+        fs.rmSync(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
     });
 
@@ -1150,7 +1150,7 @@ describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
         },
       });
 
-      // 5. Get custom ticket without includeRaw -> automatically preserves detail.raw to prevent data loss
+      // 5. Get custom ticket without includeRaw -> omits detail.raw by default while preserving secondary Overview and Root Cause in parsed arrays
       const getCustomRes = await callRpc(wsServer, {
         jsonrpc: '2.0',
         id: 607,
@@ -1161,14 +1161,30 @@ describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
         },
       });
       const customFetched = JSON.parse(getCustomRes.result.content[0].text);
-      expect(customFetched.detail.breakdown).toEqual([]);
-      expect(customFetched.detail.raw).toBeDefined();
-      expect(customFetched.detail.raw).toContain('## Overview');
-      expect(customFetched.detail.raw).toContain('## Root Cause & Defects');
+      expect(customFetched.detail.summary).toBe('Summary for custom heading ticket.');
+      expect(customFetched.detail.breakdown).toEqual([
+        '**Overview**: Custom overview prose not captured by standard breakdown arrays.',
+      ]);
+      expect(customFetched.detail.technicalDetails).toEqual(['Custom root cause item.']);
+      expect(customFetched.detail.raw).toBeUndefined();
+      expect(customFetched.detail.hasUnparsedMarkdown).toBeUndefined();
       expect(customFetched.meta.links).toBeUndefined();
       expect(customFetched.links).toHaveLength(1);
 
-      // 6. Get custom ticket with explicit includeRaw: false -> honors explicit false override
+      // 6. Get custom ticket with explicit includeRaw: true and includeRaw: false
+      const getCustomRawRes = await callRpc(wsServer, {
+        jsonrpc: '2.0',
+        id: 6071,
+        method: 'tools/call',
+        params: {
+          name: 'esedre_get_ticket',
+          arguments: { ticketId: 2, project: 'Conquest', includeRaw: true },
+        },
+      });
+      const customWithRaw = JSON.parse(getCustomRawRes.result.content[0].text);
+      expect(customWithRaw.detail.raw).toContain('## Overview');
+      expect(customWithRaw.detail.raw).toContain('## Root Cause & Defects');
+
       const getCustomNoRawRes = await callRpc(wsServer, {
         jsonrpc: '2.0',
         id: 608,

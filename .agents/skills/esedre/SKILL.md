@@ -27,8 +27,8 @@ When Esedre MCP is active in your agent session (`.agents/mcp.json` or `.agents/
 
 | Tool | Purpose | Key Arguments |
 |---|---|---|
-| `esedre_list_tickets` | List roadmap tickets with filters | `project` (e.g. `Core`, `Web`, `Esedre`), `status`, `type`, `priority`, `milestone`, `featureFlag`, `leased`, `leasedBy`, `isBlocked`, `linkedTo`, `search`, `includePlan`, `compact`, `includeCompleted` |
-| `esedre_get_ticket` | Full specification, summary, comments, links, lease, revision & sha1 | `ticketId` (numeric e.g. `12` or compound e.g. `Core-12`) |
+| `esedre_list_tickets` | List roadmap tickets with filters | `project` (e.g. `Core`, `Web`, `Esedre`, or `all`), `status`, `type`, `priority`, `milestone`, `featureFlag`, `leased`, `leasedBy`, `isBlocked`, `linkedTo`, `search`, `includePlan`, `compact`, `includeCompleted` |
+| `esedre_get_ticket` | Full specification, summary, comments, links, lease, revision & sha1 (omits `detail.raw` by default; sets `detail.hasUnparsedMarkdown: true` when code blocks or tables exist) | `ticketId` (numeric e.g. `12` or compound e.g. `Core-12`), `project`, `includeRaw` |
 | `esedre_get_plan` | Active implementation plan markdown | `ticketId` (numeric or compound) |
 | `esedre_save_plan` | Save implementation plan markdown with OCC | `ticketId`, `planMarkdown`/`plan`/`content`, `lastHash` |
 | `esedre_create_ticket` | Mint a new ticket with auto sequential ID | `title` (max 48 chars), `type`, `project`, `priority`, `milestone`, `featureFlag`, `effort`, `summary`, `detail`, `links` (`[{ relation, targetTicketId }]`) |
@@ -51,7 +51,7 @@ Both `esedre` and `ese` work interchangeably. On POSIX shells use `.esedre/ese <
 
 ### List Tickets
 ```bash
-.esedre/ese list [-p|--project <code|all>] [-s|--status <status>] [-t|--type <type>] [-P|--priority <priority>] [-m|--milestone <name|none>] [--flag <flag|none>] [--blocked] [--leased] [--leased-by <holder>] [--linked-to <ticketKey>] [-q|--search <q>] [--compact] [--include-completed] [--json]
+.esedre/ese list [-p|--project <code|all>] [-s|--status <status>] [-t|--type <type>] [-P|--priority <priority>] [-m|--milestone <name|none>] [--flag <flag|none>] [--blocked] [--leased] [--leased-by <holder>] [--linked-to <ticketKey>] [-q|--search <q>] [--compact] [--include-completed | --no-include-completed] [--json]
 ```
 
 ### Read Ticket Details

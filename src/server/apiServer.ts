@@ -454,7 +454,7 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
           const search = url.searchParams.get('search') || undefined;
 
           const tickets = await reqStorage.listTickets({
-            project: project === 'all' ? undefined : project,
+            project: project && project.trim().toLowerCase() === 'all' ? undefined : project,
             status,
             type,
             category,
@@ -681,7 +681,8 @@ export function createApiHandler(storage: StorageAdapter, workspaceRoot: string)
             sendJson(res, 400, { error: 'Project query parameter is required for snapshot generation (no default fallback).' });
             return true;
           }
-          const snapshot = await generateProjectSnapshot(reqStorage, projectCode, workspaceRoot);
+          const targetDir = reqStorage.getProjectRepoRoot?.(projectCode) || workspaceRoot;
+          const snapshot = await generateProjectSnapshot(reqStorage, projectCode, targetDir);
           sendJson(res, 200, snapshot);
           return true;
         }

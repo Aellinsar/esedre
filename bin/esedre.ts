@@ -10,7 +10,7 @@ import { formatTicketListTable, formatTicketDetail, formatMilestoneListTable, fo
 import { parseCliArgs, ParsedCliArgs } from '../src/utils/cliArgs.js';
 import { EsedreMcpServer } from '../src/mcp/server.js';
 import { handleAntigravityPreToolHookCli } from '../src/mcp/antigravityHook.js';
-import { TicketType, TicketCategory, TicketStatus, TicketPriority, Milestone, MilestoneStatus, ProjectDescriptor, EsedreConflictError, EsedreLeaseConflictError, TicketLinkRelation } from '../src/types.js';
+import { TicketType, TicketCategory, TicketStatus, TicketPriority, Milestone, MilestoneStatus, ProjectDescriptor, EsedreConflictError, EsedreLeaseConflictError, TicketLinkRelation, isTerminalTicketStatus } from '../src/types.js';
 import { resolveWorkerIdentity } from '../src/utils/identity.js';
 import { initLogger } from '../src/utils/logger.js';
 import {
@@ -36,7 +36,7 @@ import {
 } from '../src/config.js';
 import { globalGitSyncCoordinator, getGitSyncStatusReport } from '../src/sync/gitSync.js';
 import { detectProjectManifest } from '../src/utils/manifestDetector.js';
-import { generateProjectSnapshot } from '../src/snapshot.js';
+import { generateProjectSnapshot, getConflictingWorkspaceProjectCode } from '../src/snapshot.js';
 import {
   configureWorkspace,
   initWorkspace,
@@ -279,20 +279,44 @@ async function refreshCliSnapshotAfterMutation(
   projectCodes: (string | undefined | null)[]
 ): Promise<void> {
   const seen = new Set<string>();
+  const configuredCode =
+    typeof discovered.config?.projectCode === 'string' && discovered.config.projectCode.trim()
+      ? discovered.config.projectCode.trim()
+      : undefined;
+
   for (const rawCode of projectCodes) {
     if (!rawCode || typeof rawCode !== 'string' || !rawCode.trim()) continue;
     const code = rawCode.trim();
     const lower = code.toLowerCase();
-    if (seen.has(lower)) continue;
+    if (lower === 'all' || seen.has(lower)) continue;
     seen.add(lower);
     try {
-      const targetOutputDir =
-        (discovered.config?.projectCode &&
-        discovered.config.projectCode.toLowerCase() === lower
-          ? discovered.workspaceRoot
-          : storage.getProjectRepoRoot?.(code)) ||
-        (fs.existsSync(path.join(discovered.workspaceRoot, '.esedre', 'esedre.json')) ? discovered.workspaceRoot : undefined);
-      if (targetOutputDir && fs.existsSync(targetOutputDir)) {
+      let targetOutputDir: string | undefined;
+      if (configuredCode && configuredCode.toLowerCase() === lower) {
+        targetOutputDir = discovered.workspaceRoot;
+      } else {
+        targetOutputDir = storage.getProjectRepoRoot?.(code);
+        if (
+          !targetOutputDir &&
+          !configuredCode &&
+          !getConflictingWorkspaceProjectCode(discovered.workspaceRoot, code)
+        ) {
+          const existingSnapPath = path.join(discovered.workspaceRoot, '.esedre', 'snapshot.json');
+          if (fs.existsSync(existingSnapPath)) {
+            try {
+              const rawSnap = JSON.parse(fs.readFileSync(existingSnapPath, 'utf-8'));
+              if (rawSnap?.projectCode && String(rawSnap.projectCode).trim().toLowerCase() === lower) {
+                targetOutputDir = discovered.workspaceRoot;
+              }
+            } catch {}
+          }
+        }
+      }
+      if (
+        targetOutputDir &&
+        fs.existsSync(targetOutputDir) &&
+        !getConflictingWorkspaceProjectCode(targetOutputDir, code)
+      ) {
         await generateProjectSnapshot(storage, code, targetOutputDir);
       }
     } catch {}
@@ -1167,12 +1191,35 @@ async function main(): Promise<void> {
           console.error(`${colors.red}Error: Project code is required (--project <code> or configure projectCode in esedre.json).${colors.reset}`);
           process.exit(1);
         }
-        const targetOutputDir =
-          (discovered.config?.projectCode &&
-          discovered.config.projectCode.toLowerCase() === projectCode.toLowerCase()
-            ? discovered.workspaceRoot
-            : storage.getProjectRepoRoot?.(projectCode)) || discovered.workspaceRoot;
         const includePlans = Boolean(flags['include-plans'] || flags['includePlans']);
+        const configuredCode =
+          typeof discovered.config?.projectCode === 'string' && discovered.config.projectCode.trim()
+            ? discovered.config.projectCode.trim()
+            : undefined;
+        const explicitTargetDir =
+          configuredCode && configuredCode.toLowerCase() === projectCode.trim().toLowerCase()
+            ? discovered.workspaceRoot
+            : storage.getProjectRepoRoot?.(projectCode);
+        const conflictingWorkspaceCode = !explicitTargetDir
+          ? getConflictingWorkspaceProjectCode(discovered.workspaceRoot, projectCode)
+          : null;
+
+        if (conflictingWorkspaceCode) {
+          if (isJson) {
+            const snapshot = await generateProjectSnapshot(storage, projectCode, discovered.workspaceRoot, {
+              includePlans,
+              skipDiskWrite: true,
+            });
+            console.log(JSON.stringify(snapshot, null, 2));
+            return;
+          }
+          console.error(
+            `${colors.red}Error: Project '${projectCode}' has no registered repository root, and current workspace belongs to '${conflictingWorkspaceCode}' (.esedre/snapshot.json preserved).${colors.reset}`
+          );
+          process.exit(1);
+        }
+
+        const targetOutputDir = explicitTargetDir || discovered.workspaceRoot;
         const snapshot = await generateProjectSnapshot(storage, projectCode, targetOutputDir, { includePlans });
         if (isJson) {
           console.log(JSON.stringify(snapshot, null, 2));
@@ -1600,8 +1647,24 @@ async function main(): Promise<void> {
       case 'list': {
         printDuplicateProjectWarnings(storage, isJson);
         const rawProject = flags['project'] as string;
-        const project = rawProject === 'all' ? undefined : (rawProject || discovered.config?.projectCode || undefined);
+        const project =
+          rawProject && rawProject.trim().toLowerCase() === 'all'
+            ? undefined
+            : (rawProject || discovered.config?.projectCode || undefined);
         const status = (flags['status'] as TicketStatus) || undefined;
+        const isCompact = Boolean(flags['compact']);
+        const includeCompleted =
+          flags['include-completed'] !== undefined
+            ? Boolean(flags['include-completed'])
+            : flags['includeCompleted'] !== undefined
+              ? Boolean(flags['includeCompleted'])
+              : true;
+        const rawStatusLower = typeof status === 'string' ? status.trim().toLowerCase() : '';
+        const isExplicitClosedQuery =
+          rawStatusLower === 'completed' ||
+          rawStatusLower === 'complete' ||
+          rawStatusLower === 'rejected' ||
+          rawStatusLower === 'closed';
         const type = ((flags['type'] as TicketType) || (flags['category'] as TicketType)) || undefined;
         const category = type;
         const rawPriority = flags['priority'] as string;
@@ -1627,29 +1690,55 @@ async function main(): Promise<void> {
         const leased = flags['leased'] !== undefined ? Boolean(flags['leased']) : undefined;
         const leasedBy = (flags['leased-by'] as string) || (flags['leasedBy'] as string) || undefined;
 
-        const tickets = await storage.listTickets({ project, status, type, category, priority, milestone, featureFlag, search, isBlocked, linkedTo, leased, leasedBy });
+        const rawTickets = await storage.listTickets({ project, status, type, category, priority, milestone, featureFlag, search, isBlocked, linkedTo, leased, leasedBy });
+        const tickets =
+          includeCompleted === false && !isExplicitClosedQuery
+            ? rawTickets.filter((t) => !isTerminalTicketStatus(t.meta.status))
+            : rawTickets;
         if (discovered.config?.projectCode && !fs.existsSync(path.join(discovered.workspaceRoot, '.esedre', 'snapshot.json'))) {
-          await refreshCliSnapshotAfterMutation(storage, discovered, [project || discovered.config.projectCode]);
+          await refreshCliSnapshotAfterMutation(storage, discovered, [discovered.config.projectCode, project]);
         }
         if (isJson) {
-          console.log(JSON.stringify(tickets.map((t) => ({
-            id: t.meta.id,
-            title: normalizeDashesAndMojibake(t.meta.title),
-            type: t.meta.type || t.meta.category,
-            category: t.meta.type || t.meta.category,
-            status: t.meta.status,
-            priority: t.meta.priority,
-            complexity: normalizeDashesAndMojibake(t.meta.complexity),
-            effort: normalizeDashesAndMojibake(t.meta.estimatedEffort),
-            milestone: t.meta.milestone,
-            featureFlag: t.meta.featureFlag,
-            inheritedFeatureFlag: t.meta.inheritedFeatureFlag,
-            project: t.projectDescriptor?.code || t.meta.project || 'UNASSIGNED',
-            sha1: t.sha1 || t.meta.sha1,
-            isBlocked: t.isBlocked,
-            links: t.links,
-            lease: t.lease || null,
-          })), null, 2));
+          console.log(JSON.stringify(tickets.map((t) => {
+            if (isCompact) {
+              return {
+                id: t.meta.id,
+                title: normalizeDashesAndMojibake(t.meta.title),
+                type: t.meta.type || t.meta.category,
+                category: t.meta.type || t.meta.category,
+                status: t.meta.status,
+                ...(t.meta.priority ? { priority: t.meta.priority } : {}),
+                ...(t.meta.complexity ? { complexity: normalizeDashesAndMojibake(t.meta.complexity) } : {}),
+                ...(t.meta.estimatedEffort ? { effort: normalizeDashesAndMojibake(t.meta.estimatedEffort) } : {}),
+                ...(t.meta.milestone ? { milestone: t.meta.milestone } : {}),
+                ...(t.meta.featureFlag ? { featureFlag: t.meta.featureFlag } : {}),
+                ...(t.meta.inheritedFeatureFlag ? { inheritedFeatureFlag: t.meta.inheritedFeatureFlag } : {}),
+                project: t.projectDescriptor?.code || t.meta.project || 'UNASSIGNED',
+                sha1: t.sha1 || t.meta.sha1,
+                ...(t.isBlocked ? { isBlocked: true } : {}),
+                ...(t.links && t.links.length > 0 ? { linkCount: t.links.length } : {}),
+                ...(t.lease ? { leasedBy: t.lease.holder } : {}),
+              };
+            }
+            return {
+              id: t.meta.id,
+              title: normalizeDashesAndMojibake(t.meta.title),
+              type: t.meta.type || t.meta.category,
+              category: t.meta.type || t.meta.category,
+              status: t.meta.status,
+              priority: t.meta.priority,
+              complexity: normalizeDashesAndMojibake(t.meta.complexity),
+              effort: normalizeDashesAndMojibake(t.meta.estimatedEffort),
+              milestone: t.meta.milestone,
+              featureFlag: t.meta.featureFlag,
+              inheritedFeatureFlag: t.meta.inheritedFeatureFlag,
+              project: t.projectDescriptor?.code || t.meta.project || 'UNASSIGNED',
+              sha1: t.sha1 || t.meta.sha1,
+              isBlocked: t.isBlocked,
+              links: t.links,
+              lease: t.lease || null,
+            };
+          }), null, 2));
         } else {
           if (tickets.length === 0) {
             console.log(`${colors.dim}No tickets found matching criteria.${colors.reset}`);
@@ -1994,9 +2083,12 @@ async function main(): Promise<void> {
             console.error(`${colors.red}Error: Milestone "${idStr}" not found.${colors.reset}`);
             process.exit(1);
           }
-          const tickets = await storage.listTickets({ project, milestone: String(milestone.id) });
+          const tickets = await storage.listTickets({
+            project: 'all',
+            milestone: `${milestone.project}:${milestone.id}`,
+          });
           if (discovered.config?.projectCode && !fs.existsSync(path.join(discovered.workspaceRoot, '.esedre', 'snapshot.json'))) {
-            await refreshCliSnapshotAfterMutation(storage, discovered, [project || milestone.project || discovered.config.projectCode]);
+            await refreshCliSnapshotAfterMutation(storage, discovered, [discovered.config.projectCode, milestone.project]);
           }
           if (isJson) {
             const includeDetails = Boolean(flags['include-details'] || flags['includeDetails']);
@@ -2156,7 +2248,8 @@ async function main(): Promise<void> {
           }
           const success = await storage.deleteMilestone(idStr, project);
           if (success) {
-            await refreshCliSnapshotAfterMutation(storage, discovered, [project]);
+            const targetMsProject = idStr.includes(':') ? idStr.split(':')[0] : project;
+            await refreshCliSnapshotAfterMutation(storage, discovered, [targetMsProject]);
           }
           if (isJson) {
             console.log(JSON.stringify({ success, id: idStr }, null, 2));
@@ -2485,7 +2578,7 @@ async function main(): Promise<void> {
             project,
           });
           await refreshCliSnapshotAfterMutation(storage, discovered, [
-            project,
+            res.lease?.project || project,
           ]);
           if (false) ({
           });
@@ -2515,7 +2608,7 @@ async function main(): Promise<void> {
             project,
           });
           await refreshCliSnapshotAfterMutation(storage, discovered, [
-            project,
+            lease.project || project,
           ]);
           if (false) ({
           });
@@ -2543,7 +2636,7 @@ async function main(): Promise<void> {
             project,
           });
           await refreshCliSnapshotAfterMutation(storage, discovered, [
-            project,
+            res.previousLease?.project || project,
           ]);
           if (false) ({
           });

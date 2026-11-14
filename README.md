@@ -115,7 +115,7 @@ Core day-to-day workflow commands for scoping, viewing, planning, and verifying 
 
 | Command | Usage | Description |
 |---|---|---|
-| `list` | `ese list [-p\|--project <code\|all>] [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name\|none>] [--flag <flag\|none>] [--blocked] [--leased] [--leased-by <holder>] [--linked-to <key>] [--compact] [--include-completed] [--json]` | List roadmap tickets with optional filters. Defaults to the active project. |
+| `list` | `ese list [-p\|--project <code\|all>] [-s\|--status <status>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name\|none>] [--flag <flag\|none>] [--blocked] [--leased] [--leased-by <holder>] [--linked-to <key>] [--compact] [--include-completed \| --no-include-completed] [--json]` | List roadmap tickets with optional filters. Defaults to the active project. |
 | `get` | `ese get <id...> [--json]` | View ticket specifications, feature/task/fix breakdown, comments, links, active lease, and SHA-1 hash for one or more tickets. |
 | `plan` | `ese plan <id> [--set "<markdown\|none>"] [--file <path>] [--last-hash <h>]` | Read, update, or clear the active implementation plan markdown. |
 | `create` | `ese create --title "..." [-p\|--project <code>] [-t\|--type <type>] [-P\|--priority <priority>] [-m\|--milestone <name>] [--flag <flag>] [--detail "<md>"] [--file <path>] [--plan "<md>"] [--plan-file <path>] [--link <rel>:<targetId>]` | Create a new ticket with auto-sequential ID, optional priority, optional milestone, optional feature flag, specification markdown, optional implementation plan, and optional atomic initial links (`--link` repeatable). Title strictly capped at 48 chars. |
@@ -255,7 +255,7 @@ To connect Esedre to **Google Antigravity**, **Claude Code**, **Cursor**, or any
 
 ### Registered Tools
 - `esedre_list_tickets`: List tickets with optional project, status, type, priority, milestone, featureFlag, isBlocked, leased, leasedBy, linkedTo, search, includePlan, compact, or includeCompleted filter.
-- `esedre_get_ticket`: Retrieve full specification, summary, comments, revision, links, active lease, blocker status, and content hash (`sha1`). Deduplicates `meta` fields and omits `detail.raw` by default when `detail.md` is losslessly represented by parsed sections (pass `includeRaw: true` to force raw markdown).
+- `esedre_get_ticket`: Retrieve full specification, summary, comments, revision, links, active lease, blocker status, and content hash (`sha1`). Deduplicates `meta` fields, omits `detail.raw` by default (`includeRaw: false`, pass `includeRaw: true` to include raw markdown), and sets `detail.hasUnparsedMarkdown: true` when fenced code blocks or Markdown tables were omitted from parsed sections.
 - `esedre_get_plan` & `esedre_save_plan`: Inspect and update implementation plans (`planMarkdown`, `plan`, or `content`) with optimistic concurrency (`lastHash`).
 - `esedre_create_ticket`: Mint new roadmap tickets with project code validation (up to 8 chars), optional priority, optional milestone, optional featureFlag, specification detail markdown, and atomic initial `links`.
 - `esedre_update_ticket`: Modify status, title, type, priority, milestone, summary, specification detail (`detail`/`detailMarkdown`), complexity, or effort with optimistic concurrency (`lastHash`).

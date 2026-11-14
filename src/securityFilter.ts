@@ -167,7 +167,11 @@ export class SecurityFilter implements StorageAdapter {
   }
 
   public async listTickets(filter?: ListTicketsFilter): Promise<EsedreTicket[]> {
-    if (filter?.project && !isProjectAuthorized(filter.project, this.config.allowedProjects)) {
+    if (
+      filter?.project &&
+      filter.project.trim().toLowerCase() !== 'all' &&
+      !isProjectAuthorized(filter.project, this.config.allowedProjects)
+    ) {
       throw new EsedreAuthorizationError(filter.project);
     }
     const tickets = await this.target.listTickets(filter);
@@ -297,7 +301,11 @@ export class SecurityFilter implements StorageAdapter {
   }
 
   public async listMilestones(projectCode?: string): Promise<Milestone[]> {
-    if (projectCode && projectCode !== 'all' && !isProjectAuthorized(projectCode, this.config.allowedProjects)) {
+    if (
+      projectCode &&
+      projectCode.trim().toLowerCase() !== 'all' &&
+      !isProjectAuthorized(projectCode, this.config.allowedProjects)
+    ) {
       throw new EsedreAuthorizationError(projectCode);
     }
     const all = await this.target.listMilestones(projectCode);
@@ -311,10 +319,18 @@ export class SecurityFilter implements StorageAdapter {
   }
 
   public async getMilestone(id: number | string, projectCode?: string): Promise<Milestone | null> {
-    if (projectCode && projectCode !== 'all' && !isProjectAuthorized(projectCode, this.config.allowedProjects)) {
+    if (
+      projectCode &&
+      projectCode.trim().toLowerCase() !== 'all' &&
+      !isProjectAuthorized(projectCode, this.config.allowedProjects)
+    ) {
       throw new EsedreAuthorizationError(projectCode);
     }
-    const milestone = await this.target.getMilestone(id, projectCode || this.config.projectCode);
+    const effectiveProject =
+      projectCode && projectCode.trim().toLowerCase() === 'all'
+        ? 'all'
+        : projectCode || this.config.projectCode;
+    const milestone = await this.target.getMilestone(id, effectiveProject);
     if (!milestone) return null;
     if (milestone.project && !isProjectAuthorized(milestone.project, this.config.allowedProjects)) {
       throw new EsedreAuthorizationError(milestone.project);
@@ -677,7 +693,11 @@ export class SecurityFilter implements StorageAdapter {
   }
 
   public async listLeases(projectCode?: string): Promise<TicketLease[]> {
-    if (projectCode && projectCode !== 'all' && !isProjectAuthorized(projectCode, this.config.allowedProjects)) {
+    if (
+      projectCode &&
+      projectCode.trim().toLowerCase() !== 'all' &&
+      !isProjectAuthorized(projectCode, this.config.allowedProjects)
+    ) {
       throw new EsedreAuthorizationError(projectCode);
     }
     const allLeases = await this.target.listLeases(projectCode);
