@@ -45,7 +45,13 @@ import {
   GitSyncStatusReport,
   GitSyncResult,
 } from '../types.js';
-import { globalGitSyncCoordinator, getGitSyncStatusReport } from '../sync/gitSync.js';
+import {
+  globalGitSyncCoordinator,
+  getGitSyncStatusReport,
+  withHubWorkingTreeLock,
+  withMultiDirectoryLocks,
+  normalizeRealPath,
+} from '../sync/gitSync.js';
 import {
   CURRENT_DATA_VERSION,
   assertProjectCompatible,
@@ -154,6 +160,31 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       },
       this.getEffectiveSyncConfig()
     );
+  }
+
+  private withLocationsLock<T>(
+    locs: Array<ResolvedProjectLocation | undefined>,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    const targets: Array<{ dir: string; crossProcess: boolean }> = [];
+    for (const loc of locs) {
+      if (!loc) continue;
+      if (loc.sourceType === 'hub' && loc.hubDir) {
+        targets.push({ dir: loc.hubDir, crossProcess: true });
+      } else if (loc.ticketsDir) {
+        targets.push({ dir: loc.ticketsDir, crossProcess: false });
+      }
+    }
+    return withMultiDirectoryLocks(targets, fn);
+  }
+
+  public handleExternalHubWorkingTreeUpdate(_updatedHubDir: string): void {
+    this.invalidateTicketCache();
+    this.invalidateMilestoneCache();
+    this.refreshConfig();
+    if (this.activeWatchers.size > 0) {
+      this.ensureTicketWatchers();
+    }
   }
 
   private resolveTicketVersionStamps(
@@ -345,7 +376,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         );
 
         if ((i + 1) % chunkSize === 0 && i + 1 < workItems.length) {
-          await new Promise<void>((resolve) => setImmediate(resolve));
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
           if (this.prewarmAborted) return;
           if (options?.onChunkYield) {
             await options.onChunkYield(i + 1, workItems.length);
@@ -465,6 +496,9 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       this.config = {};
       this.refreshConfig();
     }
+    globalGitSyncCoordinator.registerWeakHubUpdateListener(this, (adapter, updatedHubDir) => {
+      adapter.handleExternalHubWorkingTreeUpdate(updatedHubDir);
+    });
   }
 
   public refreshConfig(): void {
@@ -939,85 +973,98 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     }
 
     if (targetHub) {
-      const normalizedTargetHub = path.resolve(targetHub).toLowerCase();
-      const existingLocations = this.resolveProjectLocations();
-      const existingConflict = existingLocations.find((l) => {
-        if (l.project.code.toLowerCase() !== cleanLower) return false;
-        if (l.sourceType === 'hub' && l.hubDir) {
-          return path.resolve(l.hubDir).toLowerCase() !== normalizedTargetHub;
-        }
-        return false;
-      });
-      if (existingConflict && existingConflict.hubDir) {
-        const conflictLoc = path.basename(existingConflict.hubDir);
-        throw new Error(
-          `Project code "${cleanCode}" already exists in another data hub (${conflictLoc}). Duplicate project codes across hubs are not supported.`
-        );
-      }
-
-      const hubProjectsDir = path.join(targetHub, 'projects');
-      let resolvedDirName = cleanCode;
-
-      // Case-remembering directory resolution: match existing directory case-insensitively
-      if (fs.existsSync(hubProjectsDir)) {
-        try {
-          const entries = fs.readdirSync(hubProjectsDir, { withFileTypes: true });
-          const matchedDir = entries.find(
-            (e) => e.isDirectory() && e.name.toLowerCase() === cleanLower
+      const resolvedTargetHub = targetHub;
+      return withHubWorkingTreeLock(resolvedTargetHub, async () => {
+        const normalizedTargetHub = path.resolve(resolvedTargetHub).toLowerCase();
+        const existingLocations = this.resolveProjectLocations();
+        const existingConflict = existingLocations.find((l) => {
+          if (l.project.code.toLowerCase() !== cleanLower) return false;
+          if (l.sourceType === 'hub' && l.hubDir) {
+            return path.resolve(l.hubDir).toLowerCase() !== normalizedTargetHub;
+          }
+          return false;
+        });
+        if (existingConflict && existingConflict.hubDir) {
+          const conflictLoc = path.basename(existingConflict.hubDir);
+          throw new Error(
+            `Project code "${cleanCode}" already exists in another data hub (${conflictLoc}). Duplicate project codes across hubs are not supported.`
           );
-          if (matchedDir) {
-            resolvedDirName = matchedDir.name;
-          }
-        } catch {}
-      }
+        }
 
-      const projectDir = path.join(hubProjectsDir, resolvedDirName);
-      const ticketsDir = path.join(projectDir, 'tickets');
-      if (!fs.existsSync(ticketsDir)) {
-        fs.mkdirSync(ticketsDir, { recursive: true });
-      }
+        const hubProjectsDir = path.join(resolvedTargetHub, 'projects');
+        let resolvedDirName = cleanCode;
 
-      const pJsonPath = path.join(projectDir, 'project.json');
-      let existingPJson: any = null;
-      if (fs.existsSync(pJsonPath)) {
-        try { existingPJson = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8')); } catch {}
-      }
+        // Case-remembering directory resolution: match existing directory case-insensitively
+        if (fs.existsSync(hubProjectsDir)) {
+          try {
+            const entries = fs.readdirSync(hubProjectsDir, { withFileTypes: true });
+            const matchedDir = entries.find(
+              (e) => e.isDirectory() && e.name.toLowerCase() === cleanLower
+            );
+            if (matchedDir) {
+              resolvedDirName = matchedDir.name;
+            }
+          } catch {}
+        }
 
-      // Case-remembering code resolution: preserve original code casing if project already exists
-      const resolvedCode = existingPJson?.code || resolvedDirName || cleanCode;
+        const projectDir = path.join(hubProjectsDir, resolvedDirName);
+        const ticketsDir = path.join(projectDir, 'tickets');
+        if (!fs.existsSync(ticketsDir)) {
+          fs.mkdirSync(ticketsDir, { recursive: true });
+        }
 
-      const existingProjects = await this.getProjects();
-      const maxId = existingProjects.reduce((max, p) => Math.max(max, p.id || 0), 0);
-      const id = existingPJson?.id || (maxId + 1);
-      const projectDesc: ProjectDescriptor = {
-        id,
-        code: resolvedCode,
-        name: cleanName,
-        description: cleanDesc,
-        colors,
-        ...(existingPJson ? (existingPJson.schemaVersion ? { schemaVersion: existingPJson.schemaVersion } : {}) : { schemaVersion: CURRENT_DATA_VERSION }),
-        ...(existingPJson ? (existingPJson.esedreVersion ? { esedreVersion: existingPJson.esedreVersion } : {}) : { esedreVersion: CURRENT_ESEDRE_VERSION }),
-        ...(existingPJson?.pinSchemaVersion !== undefined ? { pinSchemaVersion: existingPJson.pinSchemaVersion } : {}),
+        const pJsonPath = path.join(projectDir, 'project.json');
+        let existingPJson: any = null;
+        if (fs.existsSync(pJsonPath)) {
+          try { existingPJson = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8')); } catch {}
+        }
 
-      };
+        // Case-remembering code resolution: preserve original code casing if project already exists
+        const resolvedCode = existingPJson?.code || resolvedDirName || cleanCode;
 
-      writeSafeFile(pJsonPath, JSON.stringify(projectDesc, null, 2) + '\n');
+        const existingProjects = await this.getProjects();
+        const maxId = existingProjects.reduce((max, p) => Math.max(max, p.id || 0), 0);
+        const id = existingPJson?.id || (maxId + 1);
+        const projectDesc: ProjectDescriptor = {
+          id,
+          code: resolvedCode,
+          name: cleanName,
+          description: cleanDesc,
+          colors,
+          ...(existingPJson ? (existingPJson.schemaVersion ? { schemaVersion: existingPJson.schemaVersion } : {}) : { schemaVersion: CURRENT_DATA_VERSION }),
+          ...(existingPJson ? (existingPJson.esedreVersion ? { esedreVersion: existingPJson.esedreVersion } : {}) : { esedreVersion: CURRENT_ESEDRE_VERSION }),
+          ...(existingPJson?.pinSchemaVersion !== undefined ? { pinSchemaVersion: existingPJson.pinSchemaVersion } : {}),
+        };
 
-      const hubProjectsFile = path.join(targetHub, 'projects.json');
-      if (fs.existsSync(hubProjectsFile)) {
-        try {
-          const arr: ProjectDescriptor[] = JSON.parse(fs.readFileSync(hubProjectsFile, 'utf-8'));
-          const idx = arr.findIndex((p) => p.code.toLowerCase() === cleanLower);
-          if (idx >= 0) {
-            arr[idx] = projectDesc;
-          } else {
-            arr.push(projectDesc);
-          }
-          writeSafeFile(hubProjectsFile, JSON.stringify(arr, null, 2) + '\n');
-        } catch {}
-      }
+        writeSafeFile(pJsonPath, JSON.stringify(projectDesc, null, 2) + '\n');
 
-      return projectDesc;
+        const hubProjectsFile = path.join(resolvedTargetHub, 'projects.json');
+        if (fs.existsSync(hubProjectsFile)) {
+          try {
+            const arr: ProjectDescriptor[] = JSON.parse(fs.readFileSync(hubProjectsFile, 'utf-8'));
+            const idx = arr.findIndex((p) => p.code.toLowerCase() === cleanLower);
+            if (idx >= 0) {
+              arr[idx] = projectDesc;
+            } else {
+              arr.push(projectDesc);
+            }
+            writeSafeFile(hubProjectsFile, JSON.stringify(arr, null, 2) + '\n');
+          } catch {}
+        }
+
+        globalGitSyncCoordinator.enqueueMutation(
+          {
+            hubDir: resolvedTargetHub,
+            action: 'update-project',
+            project: resolvedCode,
+            title: cleanName,
+            timestamp: new Date().toISOString(),
+          },
+          this.getEffectiveSyncConfig()
+        );
+
+        return projectDesc;
+      });
     }
 
     // 2. Standalone in-repo topology
@@ -1088,78 +1135,85 @@ export class FilesystemStorageAdapter implements StorageAdapter {
 
     assertProjectCompatible(loc.project, { operation: 'write' });
 
-    const updatedDesc: ProjectDescriptor = {
-      ...loc.project,
-      ...(input.name !== undefined ? { name: input.name.trim() } : {}),
-      ...(input.description !== undefined ? { description: input.description.trim() } : {}),
-      ...(input.colors !== undefined ? { colors: input.colors } : {}),
-      ...(input.techStack !== undefined ? { techStack: input.techStack } : {}),
-      ...(input.groundingRules !== undefined ? { groundingRules: input.groundingRules } : {}),
-      ...(input.guidelinesRef !== undefined ? { guidelinesRef: input.guidelinesRef } : {}),
-    };
+    return this.withLocationsLock([loc], async () => {
+      const updatedDesc: ProjectDescriptor = {
+        ...loc.project,
+        ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+        ...(input.description !== undefined ? { description: input.description.trim() } : {}),
+        ...(input.colors !== undefined ? { colors: input.colors } : {}),
+        ...(input.techStack !== undefined ? { techStack: input.techStack } : {}),
+        ...(input.groundingRules !== undefined ? { groundingRules: input.groundingRules } : {}),
+        ...(input.guidelinesRef !== undefined ? { guidelinesRef: input.guidelinesRef } : {}),
+      };
 
-    if (loc.sourceType === 'hub' && loc.hubDir) {
-      const projectDir = path.dirname(loc.ticketsDir);
-      const pJsonPath = path.join(projectDir, 'project.json');
-      let existingPJson: any = {};
-      if (fs.existsSync(pJsonPath)) {
-        try { existingPJson = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8')); } catch {}
-      }
-      const mergedPJson = { ...existingPJson, ...updatedDesc };
-      writeSafeFile(pJsonPath, JSON.stringify(mergedPJson, null, 2) + '\n');
-
-      const hubProjectsFile = path.join(loc.hubDir, 'projects.json');
-      const subHubProjectsFile = path.join(loc.hubDir, 'projects', 'projects.json');
-      for (const f of [hubProjectsFile, subHubProjectsFile]) {
-        if (fs.existsSync(f)) {
-          try {
-            const arr: ProjectDescriptor[] = JSON.parse(fs.readFileSync(f, 'utf-8'));
-            const idx = arr.findIndex((p) => p.code.toLowerCase() === cleanLower);
-            if (idx >= 0) {
-              arr[idx] = { ...arr[idx], ...updatedDesc };
-              writeSafeFile(f, JSON.stringify(arr, null, 2) + '\n');
-            }
-          } catch {}
-        }
-      }
-    } else {
-      // In-repo or federated
-      const projectDir = loc.sourceType === 'federated' ? path.dirname(loc.ticketsDir) : path.join(this.workspaceRoot, '.esedre');
-      const candidates = [
-        path.join(projectDir, 'project.json'),
-        path.join(this.workspaceRoot, '.esedre', 'project.json'),
-        path.join(this.workspaceRoot, 'project.json'),
-      ];
-      for (const pJsonPath of candidates) {
+      if (loc.sourceType === 'hub' && loc.hubDir) {
+        const projectDir = path.dirname(loc.ticketsDir);
+        const pJsonPath = path.join(projectDir, 'project.json');
+        let existingPJson: any = {};
         if (fs.existsSync(pJsonPath)) {
-          try {
-            const existing = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8'));
-            const merged = { ...existing, ...updatedDesc };
-            writeSafeFile(pJsonPath, JSON.stringify(merged, null, 2) + '\n');
-          } catch {}
+          try { existingPJson = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8')); } catch {}
         }
-      }
-      const pJsonListCandidates = [
-        path.join(projectDir, 'projects.json'),
-        path.join(this.workspaceRoot, '.esedre', 'projects.json'),
-        path.join(this.workspaceRoot, 'projects.json'),
-      ];
-      for (const projectsJsonPath of pJsonListCandidates) {
-        if (fs.existsSync(projectsJsonPath)) {
-          try {
-            const arr: ProjectDescriptor[] = JSON.parse(fs.readFileSync(projectsJsonPath, 'utf-8'));
-            const idx = arr.findIndex((p) => p.code.toLowerCase() === cleanLower);
-            if (idx >= 0) {
-              arr[idx] = { ...arr[idx], ...updatedDesc };
-              writeSafeFile(projectsJsonPath, JSON.stringify(arr, null, 2) + '\n');
-            }
-          } catch {}
-        }
-      }
-    }
+        const mergedPJson = { ...existingPJson, ...updatedDesc };
+        writeSafeFile(pJsonPath, JSON.stringify(mergedPJson, null, 2) + '\n');
 
-    this.refreshConfig();
-    return updatedDesc;
+        const hubProjectsFile = path.join(loc.hubDir, 'projects.json');
+        const subHubProjectsFile = path.join(loc.hubDir, 'projects', 'projects.json');
+        for (const f of [hubProjectsFile, subHubProjectsFile]) {
+          if (fs.existsSync(f)) {
+            try {
+              const arr: ProjectDescriptor[] = JSON.parse(fs.readFileSync(f, 'utf-8'));
+              const idx = arr.findIndex((p) => p.code.toLowerCase() === cleanLower);
+              if (idx >= 0) {
+                arr[idx] = { ...arr[idx], ...updatedDesc };
+                writeSafeFile(f, JSON.stringify(arr, null, 2) + '\n');
+              }
+            } catch {}
+          }
+        }
+      } else {
+        // In-repo or federated
+        const projectDir = loc.sourceType === 'federated' ? path.dirname(loc.ticketsDir) : path.join(this.workspaceRoot, '.esedre');
+        const candidates = [
+          path.join(projectDir, 'project.json'),
+          path.join(this.workspaceRoot, '.esedre', 'project.json'),
+          path.join(this.workspaceRoot, 'project.json'),
+        ];
+        for (const pJsonPath of candidates) {
+          if (fs.existsSync(pJsonPath)) {
+            try {
+              const existing = JSON.parse(fs.readFileSync(pJsonPath, 'utf-8'));
+              const merged = { ...existing, ...updatedDesc };
+              writeSafeFile(pJsonPath, JSON.stringify(merged, null, 2) + '\n');
+            } catch {}
+          }
+        }
+        const pJsonListCandidates = [
+          path.join(projectDir, 'projects.json'),
+          path.join(this.workspaceRoot, '.esedre', 'projects.json'),
+          path.join(this.workspaceRoot, 'projects.json'),
+        ];
+        for (const projectsJsonPath of pJsonListCandidates) {
+          if (fs.existsSync(projectsJsonPath)) {
+            try {
+              const arr: ProjectDescriptor[] = JSON.parse(fs.readFileSync(projectsJsonPath, 'utf-8'));
+              const idx = arr.findIndex((p) => p.code.toLowerCase() === cleanLower);
+              if (idx >= 0) {
+                arr[idx] = { ...arr[idx], ...updatedDesc };
+                writeSafeFile(projectsJsonPath, JSON.stringify(arr, null, 2) + '\n');
+              }
+            } catch {}
+          }
+        }
+      }
+
+      this.refreshConfig();
+      this.recordHubSyncMutation(loc, {
+        action: 'update-project',
+        project: updatedDesc.code,
+        title: updatedDesc.name,
+      });
+      return updatedDesc;
+    });
   }
 
   public async renameProjectCode(input: RenameProjectCodeInput): Promise<RenameProjectCodeResult> {
@@ -1194,6 +1248,8 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         throw new Error(`Project code "${cleanNew}" collides with existing project "${collision.project.code}".`);
       }
     }
+
+    return this.withLocationsLock(locations, async () => {
 
     let migratedTicketsCount = 0;
     const updatedHubs: string[] = [];
@@ -1449,6 +1505,11 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     this.invalidateTicketCache();
     this.invalidateMilestoneCache();
     this.refreshConfig();
+    this.recordHubSyncMutation(loc, {
+      action: 'update-project',
+      project: cleanNew,
+      title: updatedDesc.name,
+    });
     return {
       success: true,
       oldCode: cleanOld,
@@ -1458,6 +1519,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       updatedHubs,
       updatedConfigs,
     };
+    });
   }
 
   public getMilestonesPath(loc: ResolvedProjectLocation): string {
@@ -1601,46 +1663,48 @@ export class FilesystemStorageAdapter implements StorageAdapter {
 
     assertProjectCompatible(targetLoc.project, { operation: 'write', feature: 'milestones' });
 
-    const existing = this.readProjectMilestones(targetLoc);
-    const existingIds = existing
-      .map((m) => (typeof m.id === 'number' ? m.id : parseInt(String(m.id), 10)))
-      .filter((n) => !isNaN(n));
-    const nextId = existingIds.length > 0 ? Math.max(...existingIds) + 1 : 1;
-
     const now = new Date().toISOString();
     const title = normalizeDashesAndMojibake(input.title || '').trim();
     if (!title) {
       throw new Error('Milestone title is required.');
     }
 
-    const milestone: Milestone = {
-      id: nextId,
-      project: targetLoc.project.code,
-      title,
-      description: input.description && !isClearSentinel(input.description) ? normalizeDashesAndMojibake(input.description).trim() : undefined,
-      status: input.status !== undefined ? validateMilestoneStatus(String(input.status)) : 'Planned',
-      featureFlag: input.featureFlag ? normalizeDashesAndMojibake(input.featureFlag).trim() : undefined,
-      targetDate: input.targetDate ? normalizeDashesAndMojibake(input.targetDate).trim() : undefined,
-      createdAt: now,
-      updatedAt: now,
-    };
+    const chosenLoc = targetLoc;
+    return this.withLocationsLock([chosenLoc], async () => {
+      const existing = this.readProjectMilestones(chosenLoc);
+      const existingIds = existing
+        .map((m) => (typeof m.id === 'number' ? m.id : parseInt(String(m.id), 10)))
+        .filter((n) => !isNaN(n));
+      const nextId = existingIds.length > 0 ? Math.max(...existingIds) + 1 : 1;
 
-    existing.push(milestone);
-    this.writeProjectMilestones(targetLoc, existing);
-    this.recordHubSyncMutation(targetLoc, {
-      action: 'create-milestone',
-      project: targetLoc.project.code,
-      milestoneId: milestone.id,
-      title: milestone.title,
+      const milestone: Milestone = {
+        id: nextId,
+        project: chosenLoc.project.code,
+        title,
+        description: input.description && !isClearSentinel(input.description) ? normalizeDashesAndMojibake(input.description).trim() : undefined,
+        status: input.status !== undefined ? validateMilestoneStatus(String(input.status)) : 'Planned',
+        featureFlag: input.featureFlag ? normalizeDashesAndMojibake(input.featureFlag).trim() : undefined,
+        targetDate: input.targetDate ? normalizeDashesAndMojibake(input.targetDate).trim() : undefined,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      existing.push(milestone);
+      this.writeProjectMilestones(chosenLoc, existing);
+      this.recordHubSyncMutation(chosenLoc, {
+        action: 'create-milestone',
+        project: chosenLoc.project.code,
+        milestoneId: milestone.id,
+        title: milestone.title,
+      });
+      return milestone;
     });
-    return milestone;
   }
 
   public async updateMilestone(id: number | string, input: UpdateMilestoneInput, projectCode?: string): Promise<Milestone> {
     const locations = this.resolveProjectLocations();
     const targetId = String(id).trim().toLowerCase();
     let foundLoc: ResolvedProjectLocation | undefined;
-    let foundIndex = -1;
 
     for (const loc of locations) {
       if (projectCode && projectCode !== 'all' && !isProjectMatch(loc.project.code, projectCode)) continue;
@@ -1650,58 +1714,66 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       );
       if (idx >= 0) {
         foundLoc = loc;
-        foundIndex = idx;
         break;
       }
     }
 
-    if (!foundLoc || foundIndex < 0) {
+    if (!foundLoc) {
       throw new Error(`Milestone '${id}' not found.`);
     }
 
     assertProjectCompatible(foundLoc.project, { operation: 'write', feature: 'milestones' });
 
-    const now = new Date().toISOString();
-    const list = this.readProjectMilestones(foundLoc);
-    const m = list[foundIndex];
+    const chosenLoc = foundLoc;
+    return this.withLocationsLock([chosenLoc], async () => {
+      const now = new Date().toISOString();
+      const list = this.readProjectMilestones(chosenLoc);
+      const foundIndex = list.findIndex(
+        (m) => String(m.id).toLowerCase() === targetId || m.title.toLowerCase() === targetId
+      );
+      if (foundIndex < 0) {
+        throw new Error(`Milestone '${id}' not found.`);
+      }
+      const m = list[foundIndex];
 
-    if (input.title !== undefined) { const nextTitle = normalizeDashesAndMojibake(String(input.title)).trim(); if (!nextTitle) throw new Error('Milestone title cannot be empty.'); m.title = nextTitle; }
-    if (input.description !== undefined) {
-      if (isClearSentinel(input.description)) { delete m.description; } else { m.description = normalizeDashesAndMojibake(String(input.description)).trim(); }
-    }
-    if (input.status !== undefined) {
-      const nextStatus = validateMilestoneStatus(String(input.status)); input.status = nextStatus; m.status = nextStatus;
-      if (input.status === 'Completed' && !m.completedAt) {
-        m.completedAt = now;
-      } else if (input.status !== 'Completed') {
-        delete m.completedAt;
+      if (input.title !== undefined) { const nextTitle = normalizeDashesAndMojibake(String(input.title)).trim(); if (!nextTitle) throw new Error('Milestone title cannot be empty.'); m.title = nextTitle; }
+      if (input.description !== undefined) {
+        if (isClearSentinel(input.description)) { delete m.description; } else { m.description = normalizeDashesAndMojibake(String(input.description)).trim(); }
       }
-    }
-    if (input.featureFlag !== undefined) {
-      if (isClearSentinel(input.featureFlag)) {
-        delete m.featureFlag;
-      } else {
-        m.featureFlag = normalizeDashesAndMojibake(String(input.featureFlag)).trim();
+      if (input.status !== undefined) {
+        const nextStatus = validateMilestoneStatus(String(input.status)); input.status = nextStatus; m.status = nextStatus;
+        if (input.status === 'Completed' && !m.completedAt) {
+          m.completedAt = now;
+        } else if (input.status !== 'Completed') {
+          delete m.completedAt;
+        }
       }
-    }
-    if (input.targetDate !== undefined) {
-      if (isClearSentinel(input.targetDate)) {
-        delete m.targetDate;
-      } else {
-        m.targetDate = normalizeDashesAndMojibake(String(input.targetDate)).trim();
+      if (input.featureFlag !== undefined) {
+        if (isClearSentinel(input.featureFlag)) {
+          delete m.featureFlag;
+        } else {
+          m.featureFlag = normalizeDashesAndMojibake(String(input.featureFlag)).trim();
+        }
       }
-    }
-    m.updatedAt = now;
-    m.project = foundLoc.project.code;
+      if (input.targetDate !== undefined) {
+        if (isClearSentinel(input.targetDate)) {
+          delete m.targetDate;
+        } else {
+          m.targetDate = normalizeDashesAndMojibake(String(input.targetDate)).trim();
+        }
+      }
+      m.updatedAt = now;
+      m.project = chosenLoc.project.code;
 
-    this.writeProjectMilestones(foundLoc, list);
-    this.recordHubSyncMutation(foundLoc, {
-      action: 'update-milestone',
-      project: foundLoc.project.code,
-      milestoneId: m.id,
-      title: m.title,
+      this.writeProjectMilestones(chosenLoc, list);
+      this.recordHubSyncMutation(chosenLoc, {
+        action: 'update-milestone',
+        project: chosenLoc.project.code,
+        milestoneId: m.id,
+        title: m.title,
+      });
+      return m;
     });
-    return m;
   }
 
   public async deleteMilestone(id: number | string, projectCode?: string): Promise<boolean> {
@@ -1710,19 +1782,28 @@ export class FilesystemStorageAdapter implements StorageAdapter {
 
     for (const loc of locations) {
       if (projectCode && projectCode !== 'all' && !isProjectMatch(loc.project.code, projectCode)) continue;
-      const list = this.readProjectMilestones(loc);
-      const filtered = list.filter(
-        (m) => String(m.id).toLowerCase() !== targetId && m.title.toLowerCase() !== targetId
+      const preview = this.readProjectMilestones(loc);
+      const hasMatch = preview.some(
+        (m) => String(m.id).toLowerCase() === targetId || m.title.toLowerCase() === targetId
       );
-      if (filtered.length !== list.length) {
+      if (hasMatch) {
         assertProjectCompatible(loc.project, { operation: 'write', feature: 'milestones' });
-        this.writeProjectMilestones(loc, filtered);
-        this.recordHubSyncMutation(loc, {
-          action: 'update-milestone',
-          project: loc.project.code,
-          milestoneId: id,
+        return this.withLocationsLock([loc], async () => {
+          const list = this.readProjectMilestones(loc);
+          const filtered = list.filter(
+            (m) => String(m.id).toLowerCase() !== targetId && m.title.toLowerCase() !== targetId
+          );
+          if (filtered.length !== list.length) {
+            this.writeProjectMilestones(loc, filtered);
+            this.recordHubSyncMutation(loc, {
+              action: 'update-milestone',
+              project: loc.project.code,
+              milestoneId: id,
+            });
+            return true;
+          }
+          return false;
         });
-        return true;
       }
     }
     return false;
@@ -3057,21 +3138,9 @@ ${body.trim()}\n`;
 
     assertProjectCompatible(targetLoc.project, { operation: 'write' });
 
-    if (!fs.existsSync(targetLoc.ticketsDir)) {
-      fs.mkdirSync(targetLoc.ticketsDir, { recursive: true });
-    }
-
-    const existing = fs.readdirSync(targetLoc.ticketsDir, { withFileTypes: true }).filter((d) => d.isDirectory() && !isNaN(parseInt(d.name, 10))).map((d) => parseInt(d.name, 10));
-    const nextId = existing.length > 0 ? Math.max(0, ...existing) + 1 : 1;
-    const newTicketKey = `${targetLoc.project.code}-${nextId}`;
-
-    const resolvedInitialLinks: Array<{
-      relation: TicketLinkRelation;
-      targetInfo: NonNullable<ReturnType<FilesystemStorageAdapter['resolveTicketIdentifier']>>;
-    }> = [];
+    const prelimLinkLocs: ResolvedProjectLocation[] = [];
     if (Array.isArray(input.links) && input.links.length > 0) {
       assertProjectCompatible(targetLoc.project, { operation: 'write', feature: 'ticket-linking' });
-      const seenTargets = new Set<string>();
       for (const linkSpec of input.links) {
         const rel = linkSpec.relation;
         if (!INVERSE_RELATIONS[rel]) {
@@ -3083,21 +3152,51 @@ ${body.trim()}\n`;
         if (rawTarget === undefined || rawTarget === null || String(rawTarget).trim() === '') {
           throw new Error('Link targetTicketId is required.');
         }
-        const targetInfo = this.resolveTicketIdentifier(rawTarget, targetLoc.project.code);
-        if (!targetInfo) {
+        const prelimTarget = this.resolveTicketIdentifier(rawTarget, targetLoc.project.code);
+        if (!prelimTarget) {
           throw new Error(`Target ticket #${rawTarget} could not be located.`);
         }
-        assertProjectCompatible(targetInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
-        if (targetInfo.key.toLowerCase() === newTicketKey.toLowerCase()) {
-          throw new Error(`Cannot link ticket ${newTicketKey} to itself.`);
-        }
-        const dedupeKey = targetInfo.key.toLowerCase();
-        if (!seenTargets.has(dedupeKey)) {
-          seenTargets.add(dedupeKey);
-          resolvedInitialLinks.push({ relation: rel, targetInfo });
-        }
+        assertProjectCompatible(prelimTarget.loc.project, { operation: 'write', feature: 'ticket-linking' });
+        prelimLinkLocs.push(prelimTarget.loc);
       }
     }
+
+    const chosenTargetLoc = targetLoc;
+    return this.withLocationsLock([chosenTargetLoc, ...prelimLinkLocs], async () => {
+      if (!fs.existsSync(chosenTargetLoc.ticketsDir)) {
+        fs.mkdirSync(chosenTargetLoc.ticketsDir, { recursive: true });
+      }
+
+      const existing = fs
+        .readdirSync(chosenTargetLoc.ticketsDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && !isNaN(parseInt(d.name, 10)))
+        .map((d) => parseInt(d.name, 10));
+      const nextId = existing.length > 0 ? Math.max(0, ...existing) + 1 : 1;
+      const newTicketKey = `${chosenTargetLoc.project.code}-${nextId}`;
+
+      const resolvedInitialLinks: Array<{
+        relation: TicketLinkRelation;
+        targetInfo: NonNullable<ReturnType<FilesystemStorageAdapter['resolveTicketIdentifier']>>;
+      }> = [];
+      if (Array.isArray(input.links) && input.links.length > 0) {
+        const seenTargets = new Set<string>();
+        for (const linkSpec of input.links) {
+          const rel = linkSpec.relation;
+          const rawTarget = linkSpec.targetTicketId ?? linkSpec.targetId;
+          const targetInfo = this.resolveTicketIdentifier(rawTarget!, chosenTargetLoc.project.code);
+          if (!targetInfo) {
+            throw new Error(`Target ticket #${rawTarget} could not be located.`);
+          }
+          if (targetInfo.key.toLowerCase() === newTicketKey.toLowerCase()) {
+            throw new Error(`Cannot link ticket ${newTicketKey} to itself.`);
+          }
+          const dedupeKey = targetInfo.key.toLowerCase();
+          if (!seenTargets.has(dedupeKey)) {
+            seenTargets.add(dedupeKey);
+            resolvedInitialLinks.push({ relation: rel, targetInfo });
+          }
+        }
+      }
 
 
 
@@ -3115,7 +3214,7 @@ ${body.trim()}\n`;
         throw new Error(`Invalid priority "${input.priority}". Allowed values: Critical, High, Medium, Low`);
       }
     }
-    const ticketDir = path.join(targetLoc.ticketsDir, String(nextId));
+    const ticketDir = path.join(chosenTargetLoc.ticketsDir, String(nextId));
     fs.mkdirSync(ticketDir, { recursive: true });
 
     const now = new Date().toISOString();
@@ -3131,7 +3230,7 @@ ${body.trim()}\n`;
     let initialFlag: string | undefined;
 
     if (cleanMilestone) {
-      const pMilestones = this.readProjectMilestones(targetLoc);
+      const pMilestones = this.readProjectMilestones(chosenTargetLoc);
       const mMatch = pMilestones.find(
         (m) =>
           String(m.id).toLowerCase() === cleanMilestone?.toLowerCase() ||
@@ -3166,9 +3265,9 @@ ${body.trim()}\n`;
       revision: 1,
       isActivePlanning: false,
       status: 'Planned',
-      projectId: targetLoc.project.id,
-      project: targetLoc.project.code,
-      ...this.resolveTicketVersionStamps(targetLoc.project, null),
+      projectId: chosenTargetLoc.project.id,
+      project: chosenTargetLoc.project.code,
+      ...this.resolveTicketVersionStamps(chosenTargetLoc.project, null),
       ...(resolvedInitialLinks.length > 0
         ? {
             links: resolvedInitialLinks.map(({ relation, targetInfo }) => ({
@@ -3234,13 +3333,13 @@ ${input.summary || 'Summary to be defined.'}
           );
           if (existingTargetLink) {
             existingTargetLink.relation = inverseRel;
-            existingTargetLink.targetProject = targetLoc.project.code;
+            existingTargetLink.targetProject = chosenTargetLoc.project.code;
             existingTargetLink.targetId = nextId;
           } else {
             targetMeta.links.push({
               relation: inverseRel,
               targetKey: newTicketKey,
-              targetProject: targetLoc.project.code,
+              targetProject: chosenTargetLoc.project.code,
               targetId: nextId,
               createdAt: now,
               ...(input.submittedBy ? { createdBy: normalizeDashesAndMojibake(input.submittedBy) } : {}),
@@ -3248,59 +3347,78 @@ ${input.summary || 'Summary to be defined.'}
           }
           targetMeta.updatedAt = now;
           targetMeta.revision = (targetMeta.revision || 1) + 1;
-        Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
           Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
           writeSafeFile(targetMetaPath, JSON.stringify(targetMeta, null, 2) + '\n');
           this.invalidateTicketCache(targetInfo.ticketDir);
+          if (
+            targetInfo.loc.sourceType === 'hub' &&
+            targetInfo.loc.hubDir &&
+            (!chosenTargetLoc.hubDir ||
+              normalizeRealPath(targetInfo.loc.hubDir) !== normalizeRealPath(chosenTargetLoc.hubDir))
+          ) {
+            this.recordHubSyncMutation(targetInfo.loc, {
+              action: 'link-ticket',
+              project: targetInfo.project,
+              ticketId: targetInfo.id,
+              ticketKey: targetInfo.key,
+              targetKey: newTicketKey,
+            });
+          }
         } catch {}
       }
     }
 
-    const created = await this.getTicket(`${targetLoc.project.code}-${nextId}`);
-    this.recordHubSyncMutation(targetLoc, {
+    const created = await this.getTicket(`${chosenTargetLoc.project.code}-${nextId}`);
+    this.recordHubSyncMutation(chosenTargetLoc, {
       action: 'create-ticket',
-      project: targetLoc.project.code,
+      project: chosenTargetLoc.project.code,
       ticketId: nextId,
       ticketKey: newTicketKey,
       title: cleanTitle,
     });
     if (initialPlan) {
-      this.recordHubSyncMutation(targetLoc, {
+      this.recordHubSyncMutation(chosenTargetLoc, {
         action: 'save-plan',
-        project: targetLoc.project.code,
+        project: chosenTargetLoc.project.code,
         ticketId: nextId,
         ticketKey: newTicketKey,
       });
     }
     return created!;
+    });
   }
 
   public async updateTicket(id: number | string, updates: UpdateTicketInput, lastHash?: string): Promise<EsedreTicket> {
-    const existing = await this.getTicket(id);
-    if (!existing) {
+    const prelimLoc = this.findTicketLocation(id);
+    if (!prelimLoc) {
       throw new Error(`Ticket #${id} does not exist`);
     }
+    assertProjectCompatible(prelimLoc.loc.project, { operation: 'write' });
 
-    if (lastHash !== undefined) {
-      const currentHash = existing.sha1 || computeTicketHash(existing);
-      const matchesCurrent = verifyTicketHash(currentHash, lastHash);
-      const matchesPreClaim = Boolean(
-        !matchesCurrent &&
-          existing.lease?.preClaimSha1 &&
-          existing.lease?.claimRevision === existing.meta.revision &&
-          verifyTicketHash(existing.lease.preClaimSha1, lastHash)
-      );
-      if (!matchesCurrent && !matchesPreClaim) {
-        throw new EsedreConflictError(id, currentHash, lastHash);
+    return this.withLocationsLock([prelimLoc.loc], async () => {
+      const existing = await this.getTicket(id);
+      if (!existing) {
+        throw new Error(`Ticket #${id} does not exist`);
       }
-    }
 
-    const locInfo = this.findTicketLocation(id);
-    if (!locInfo) {
-      throw new Error(`Ticket #${id} could not be located on disk`);
-    }
+      if (lastHash !== undefined) {
+        const currentHash = existing.sha1 || computeTicketHash(existing);
+        const matchesCurrent = verifyTicketHash(currentHash, lastHash);
+        const matchesPreClaim = Boolean(
+          !matchesCurrent &&
+            existing.lease?.preClaimSha1 &&
+            existing.lease?.claimRevision === existing.meta.revision &&
+            verifyTicketHash(existing.lease.preClaimSha1, lastHash)
+        );
+        if (!matchesCurrent && !matchesPreClaim) {
+          throw new EsedreConflictError(id, currentHash, lastHash);
+        }
+      }
 
-    assertProjectCompatible(locInfo.loc.project, { operation: 'write' });
+      const locInfo = this.findTicketLocation(id);
+      if (!locInfo) {
+        throw new Error(`Ticket #${id} could not be located on disk`);
+      }
 
     const metaPath = path.join(locInfo.ticketDir, 'meta.json');
     const now = new Date().toISOString();
@@ -3548,6 +3666,7 @@ ${input.summary || 'Summary to be defined.'}
       });
     }
     return updatedTicket;
+    });
   }
 
   public async getPlan(id: number | string): Promise<string | null> {
@@ -3564,98 +3683,110 @@ ${input.summary || 'Summary to be defined.'}
       throw new Error('Plan markdown content is required and must be a string');
     }
 
-    const ticket = await this.getTicket(id);
-    if (!ticket) {
+    const prelimLoc = this.findTicketLocation(id);
+    if (!prelimLoc) {
       throw new Error(`Ticket #${id} does not exist`);
     }
+    assertProjectCompatible(prelimLoc.loc.project, { operation: 'write' });
 
-    if (lastHash !== undefined) {
-      const currentHash = ticket.sha1 || computeTicketHash(ticket);
-      const matchesCurrent = verifyTicketHash(currentHash, lastHash);
-      const matchesPreClaim = Boolean(
-        !matchesCurrent &&
-          ticket.lease?.preClaimSha1 &&
-          ticket.lease?.claimRevision === ticket.meta.revision &&
-          verifyTicketHash(ticket.lease.preClaimSha1, lastHash)
-      );
-      if (!matchesCurrent && !matchesPreClaim) {
-        throw new EsedreConflictError(id, currentHash, lastHash);
+    return this.withLocationsLock([prelimLoc.loc], async () => {
+      const ticket = await this.getTicket(id);
+      if (!ticket) {
+        throw new Error(`Ticket #${id} does not exist`);
       }
-    }
 
-    const locInfo = this.findTicketLocation(id);
-    if (!locInfo) {
-      throw new Error(`Ticket #${id} could not be located on disk`);
-    }
-
-    assertProjectCompatible(locInfo.loc.project, { operation: 'write' });
-
-    const planPath = path.join(locInfo.ticketDir, 'implementation_plan.md');
-    if (isClearSentinel(planMarkdown)) {
-      if (fs.existsSync(planPath)) {
-        try { fs.unlinkSync(planPath); } catch {}
+      if (lastHash !== undefined) {
+        const currentHash = ticket.sha1 || computeTicketHash(ticket);
+        const matchesCurrent = verifyTicketHash(currentHash, lastHash);
+        const matchesPreClaim = Boolean(
+          !matchesCurrent &&
+            ticket.lease?.preClaimSha1 &&
+            ticket.lease?.claimRevision === ticket.meta.revision &&
+            verifyTicketHash(ticket.lease.preClaimSha1, lastHash)
+        );
+        if (!matchesCurrent && !matchesPreClaim) {
+          throw new EsedreConflictError(id, currentHash, lastHash);
+        }
       }
-    } else {
-      writeSafeFile(planPath, normalizeDashesAndMojibake(planMarkdown));
-    }
 
-    const metaPath = path.join(locInfo.ticketDir, 'meta.json');
-    if (fs.existsSync(metaPath)) {
-      try {
-        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-        meta.updatedAt = new Date().toISOString();
-        meta.revision = (meta.revision || 1) + 1;
-        Object.assign(meta, this.resolveTicketVersionStamps(locInfo.loc.project, meta));
-        writeSafeFile(metaPath, JSON.stringify(meta, null, 2) + '\n');
-      } catch {}
-    }
-    this.invalidateTicketCache(locInfo.ticketDir);
-    this.recordHubSyncMutation(locInfo.loc, {
-      action: 'save-plan',
-      project: locInfo.loc.project.code,
-      ticketId: locInfo.id,
-      ticketKey: `${locInfo.loc.project.code}-${locInfo.id}`,
+      const locInfo = this.findTicketLocation(id);
+      if (!locInfo) {
+        throw new Error(`Ticket #${id} could not be located on disk`);
+      }
+
+      const planPath = path.join(locInfo.ticketDir, 'implementation_plan.md');
+      if (isClearSentinel(planMarkdown)) {
+        if (fs.existsSync(planPath)) {
+          try { fs.unlinkSync(planPath); } catch {}
+        }
+      } else {
+        writeSafeFile(planPath, normalizeDashesAndMojibake(planMarkdown));
+      }
+
+      const metaPath = path.join(locInfo.ticketDir, 'meta.json');
+      if (fs.existsSync(metaPath)) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+          meta.updatedAt = new Date().toISOString();
+          meta.revision = (meta.revision || 1) + 1;
+          Object.assign(meta, this.resolveTicketVersionStamps(locInfo.loc.project, meta));
+          writeSafeFile(metaPath, JSON.stringify(meta, null, 2) + '\n');
+        } catch {}
+      }
+      this.invalidateTicketCache(locInfo.ticketDir);
+      this.recordHubSyncMutation(locInfo.loc, {
+        action: 'save-plan',
+        project: locInfo.loc.project.code,
+        ticketId: locInfo.id,
+        ticketKey: `${locInfo.loc.project.code}-${locInfo.id}`,
+      });
     });
   }
 
   public async addComment(id: number | string, comment: { author: string; text: string }): Promise<TicketComment> {
-    const ticket = await this.getTicket(id);
-    if (!ticket) {
+    const prelimLoc = this.findTicketLocation(id);
+    if (!prelimLoc) {
       throw new Error(`Ticket #${id} does not exist`);
     }
+    assertProjectCompatible(prelimLoc.loc.project, { operation: 'write' });
 
-    const locInfo = this.findTicketLocation(id);
-    if (!locInfo) {
-      throw new Error(`Ticket #${id} could not be located on disk`);
-    }
+    return this.withLocationsLock([prelimLoc.loc], async () => {
+      const ticket = await this.getTicket(id);
+      if (!ticket) {
+        throw new Error(`Ticket #${id} does not exist`);
+      }
 
-    assertProjectCompatible(locInfo.loc.project, { operation: 'write' });
+      const locInfo = this.findTicketLocation(id);
+      if (!locInfo) {
+        throw new Error(`Ticket #${id} could not be located on disk`);
+      }
 
-    const commentsPath = path.join(locInfo.ticketDir, 'comments.json');
-    let comments: TicketComment[] = [];
-    if (fs.existsSync(commentsPath)) {
-      try {
-        comments = JSON.parse(fs.readFileSync(commentsPath, 'utf-8'));
-      } catch {}
-    }
+      const commentsPath = path.join(locInfo.ticketDir, 'comments.json');
+      let comments: TicketComment[] = [];
+      if (fs.existsSync(commentsPath)) {
+        try {
+          comments = JSON.parse(fs.readFileSync(commentsPath, 'utf-8'));
+        } catch {}
+      }
 
-    const newComment: TicketComment = {
-      id: `${locInfo.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      timestamp: new Date().toISOString(),
-      author: normalizeDashesAndMojibake(comment.author || 'User'),
-      text: normalizeDashesAndMojibake(comment.text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()),
-    };
+      const newComment: TicketComment = {
+        id: `${locInfo.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        timestamp: new Date().toISOString(),
+        author: normalizeDashesAndMojibake(comment.author || 'User'),
+        text: normalizeDashesAndMojibake(comment.text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()),
+      };
 
-    comments.push(newComment);
-    writeSafeFile(commentsPath, JSON.stringify(comments, null, 2) + '\n');
-    this.invalidateTicketCache(locInfo.ticketDir);
-    this.recordHubSyncMutation(locInfo.loc, {
-      action: 'add-comment',
-      project: locInfo.loc.project.code,
-      ticketId: locInfo.id,
-      ticketKey: `${locInfo.loc.project.code}-${locInfo.id}`,
+      comments.push(newComment);
+      writeSafeFile(commentsPath, JSON.stringify(comments, null, 2) + '\n');
+      this.invalidateTicketCache(locInfo.ticketDir);
+      this.recordHubSyncMutation(locInfo.loc, {
+        action: 'add-comment',
+        project: locInfo.loc.project.code,
+        ticketId: locInfo.id,
+        ticketKey: `${locInfo.loc.project.code}-${locInfo.id}`,
+      });
+      return newComment;
     });
-    return newComment;
   }
 
   public async getAnswers(id: number | string): Promise<Record<string, string>> {
@@ -3677,18 +3808,27 @@ ${input.summary || 'Summary to be defined.'}
       throw new Error(`Ticket #${id} could not be located on disk`);
     }
 
-    const answersPath = path.join(locInfo.ticketDir, 'answers.json');
-    let currentAnswers: Record<string, string> = {};
-    if (fs.existsSync(answersPath)) {
-      try {
-        currentAnswers = JSON.parse(fs.readFileSync(answersPath, 'utf-8'));
-      } catch {}
-    }
+    return this.withLocationsLock([locInfo.loc], async () => {
+      const answersPath = path.join(locInfo.ticketDir, 'answers.json');
+      let currentAnswers: Record<string, string> = {};
+      if (fs.existsSync(answersPath)) {
+        try {
+          currentAnswers = JSON.parse(fs.readFileSync(answersPath, 'utf-8'));
+        } catch {}
+      }
 
-    currentAnswers[String(questionIndex)] = normalizeDashesAndMojibake(answer);
-    writeSafeFile(answersPath, JSON.stringify(currentAnswers, null, 2) + '\n');
-    this.invalidateTicketCache(locInfo.ticketDir);
-    return currentAnswers;
+      currentAnswers[String(questionIndex)] = normalizeDashesAndMojibake(answer);
+      writeSafeFile(answersPath, JSON.stringify(currentAnswers, null, 2) + '\n');
+      this.invalidateTicketCache(locInfo.ticketDir);
+      this.recordHubSyncMutation(locInfo.loc, {
+        action: 'update-ticket',
+        project: locInfo.loc.project.code,
+        ticketId: locInfo.id,
+        ticketKey: `${locInfo.loc.project.code}-${locInfo.id}`,
+        changedFields: ['answers'],
+      });
+      return currentAnswers;
+    });
   }
 
   public async saveDetail(
@@ -3701,42 +3841,44 @@ ${input.summary || 'Summary to be defined.'}
       throw new Error(`Ticket #${id} could not be located on disk`);
     }
 
-    let updatedMeta: TicketMeta | undefined;
-    if (metaUpdates && Object.keys(metaUpdates).length > 0) {
-      const updatedTicket = await this.updateTicket(id, metaUpdates);
-      updatedMeta = updatedTicket.meta;
-    } else {
-      const metaPath = path.join(locInfo.ticketDir, 'meta.json');
-      if (fs.existsSync(metaPath)) {
-        try {
-          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-          meta.updatedAt = new Date().toISOString();
-          meta.revision = (meta.revision || 1) + 1;
-        Object.assign(meta, this.resolveTicketVersionStamps(locInfo.loc.project, meta));
-          writeSafeFile(metaPath, JSON.stringify(meta, null, 2) + '\n');
-        } catch {}
+    return this.withLocationsLock([locInfo.loc], async () => {
+      let updatedMeta: TicketMeta | undefined;
+      if (metaUpdates && Object.keys(metaUpdates).length > 0) {
+        const updatedTicket = await this.updateTicket(id, metaUpdates);
+        updatedMeta = updatedTicket.meta;
+      } else {
+        const metaPath = path.join(locInfo.ticketDir, 'meta.json');
+        if (fs.existsSync(metaPath)) {
+          try {
+            const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+            meta.updatedAt = new Date().toISOString();
+            meta.revision = (meta.revision || 1) + 1;
+            Object.assign(meta, this.resolveTicketVersionStamps(locInfo.loc.project, meta));
+            writeSafeFile(metaPath, JSON.stringify(meta, null, 2) + '\n');
+          } catch {}
+        }
       }
-    }
 
-    const detailPath = path.join(locInfo.ticketDir, 'detail.md');
-    writeSafeFile(detailPath, normalizeDashesAndMojibake(detailMarkdown));
-    this.invalidateTicketCache(locInfo.ticketDir);
+      const detailPath = path.join(locInfo.ticketDir, 'detail.md');
+      writeSafeFile(detailPath, normalizeDashesAndMojibake(detailMarkdown));
+      this.invalidateTicketCache(locInfo.ticketDir);
 
-    const finalTicket = await this.getTicket(`${locInfo.loc.project.code}-${locInfo.id}`);
-    if (!metaUpdates || Object.keys(metaUpdates).length === 0) {
-      this.recordHubSyncMutation(locInfo.loc, {
-        action: 'update-ticket',
-        project: locInfo.loc.project.code,
-        ticketId: locInfo.id,
-        ticketKey: `${locInfo.loc.project.code}-${locInfo.id}`,
-        title: finalTicket?.meta.title,
-      });
-    }
-    return {
-      success: true,
-      meta: finalTicket?.meta || updatedMeta,
-      detail: detailMarkdown,
-    };
+      const finalTicket = await this.getTicket(`${locInfo.loc.project.code}-${locInfo.id}`);
+      if (!metaUpdates || Object.keys(metaUpdates).length === 0) {
+        this.recordHubSyncMutation(locInfo.loc, {
+          action: 'update-ticket',
+          project: locInfo.loc.project.code,
+          ticketId: locInfo.id,
+          ticketKey: `${locInfo.loc.project.code}-${locInfo.id}`,
+          title: finalTicket?.meta.title,
+        });
+      }
+      return {
+        success: true,
+        meta: finalTicket?.meta || updatedMeta,
+        detail: detailMarkdown,
+      };
+    });
   }
 
   public async getInlineComments(id: number | string): Promise<any[]> {
@@ -3763,25 +3905,33 @@ ${input.summary || 'Summary to be defined.'}
       throw new Error(`Ticket #${id} could not be located on disk`);
     }
 
-    const inlinesPath = path.join(locInfo.ticketDir, 'inline-comments.json');
-    let currentInlines: any[] = [];
-    if (fs.existsSync(inlinesPath)) {
-      try {
-        currentInlines = JSON.parse(fs.readFileSync(inlinesPath, 'utf-8'));
-      } catch {}
-    }
+    return this.withLocationsLock([locInfo.loc], async () => {
+      const inlinesPath = path.join(locInfo.ticketDir, 'inline-comments.json');
+      let currentInlines: any[] = [];
+      if (fs.existsSync(inlinesPath)) {
+        try {
+          currentInlines = JSON.parse(fs.readFileSync(inlinesPath, 'utf-8'));
+        } catch {}
+      }
 
-    const newEntry = {
-      id: `${locInfo.id}-ic-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      selectedText: normalizeDashesAndMojibake(selectedText),
-      comment: normalizeDashesAndMojibake(comment.trim()),
-      author: normalizeDashesAndMojibake(author || 'Developer'),
-      timestamp: new Date().toISOString(),
-    };
-    currentInlines.push(newEntry);
-    writeSafeFile(inlinesPath, JSON.stringify(currentInlines, null, 2) + '\n');
-    this.invalidateTicketCache(locInfo.ticketDir);
-    return currentInlines;
+      const newEntry = {
+        id: `${locInfo.id}-ic-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        selectedText: normalizeDashesAndMojibake(selectedText),
+        comment: normalizeDashesAndMojibake(comment.trim()),
+        author: normalizeDashesAndMojibake(author || 'Developer'),
+        timestamp: new Date().toISOString(),
+      };
+      currentInlines.push(newEntry);
+      writeSafeFile(inlinesPath, JSON.stringify(currentInlines, null, 2) + '\n');
+      this.invalidateTicketCache(locInfo.ticketDir);
+      this.recordHubSyncMutation(locInfo.loc, {
+        action: 'add-comment',
+        project: locInfo.loc.project.code,
+        ticketId: locInfo.id,
+        ticketKey: `${locInfo.loc.project.code}-${locInfo.id}`,
+      });
+      return currentInlines;
+    });
   }
 
   public async saveAttachment(
@@ -3794,36 +3944,45 @@ ${input.summary || 'Summary to be defined.'}
       throw new Error(`Ticket #${id} could not be located on disk`);
     }
 
-    const attachmentsDir = path.join(locInfo.ticketDir, 'attachments');
-    if (!fs.existsSync(attachmentsDir)) {
-      fs.mkdirSync(attachmentsDir, { recursive: true });
-    }
-
     const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024;
     if (buffer.length > MAX_ATTACHMENT_SIZE_BYTES) {
       throw new Error(`Attachment exceeds maximum allowable size of 10MB (received ${(buffer.length / (1024 * 1024)).toFixed(1)}MB)`);
     }
 
-    const MAX_TICKET_ATTACHMENTS = 30;
-    const existingFiles = fs.readdirSync(attachmentsDir);
-    if (existingFiles.length >= MAX_TICKET_ATTACHMENTS) {
-      throw new Error(`Ticket #${id} has reached the maximum allowed limit of ${MAX_TICKET_ATTACHMENTS} attachments`);
-    }
+    return this.withLocationsLock([locInfo.loc], async () => {
+      const attachmentsDir = path.join(locInfo.ticketDir, 'attachments');
+      if (!fs.existsSync(attachmentsDir)) {
+        fs.mkdirSync(attachmentsDir, { recursive: true });
+      }
 
-    let safeName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
-    if (!safeName || safeName === '.' || safeName === '..' || safeName.replace(/_/g, '') === '') {
-      safeName = `attachment_${Date.now()}`;
-    }
-    let targetFile = path.join(attachmentsDir, safeName);
-    if (fs.existsSync(targetFile)) {
-      const ext = path.extname(safeName);
-      const nameWithoutExt = path.basename(safeName, ext);
-      safeName = `${nameWithoutExt}_${Date.now()}${ext}`;
-      targetFile = path.join(attachmentsDir, safeName);
-    }
-    writeSafeFile(targetFile, buffer);
-    this.invalidateTicketCache(locInfo.ticketDir);
-    return { filename: safeName, relativePath: `attachments/${safeName}` };
+      const MAX_TICKET_ATTACHMENTS = 30;
+      const existingFiles = fs.readdirSync(attachmentsDir);
+      if (existingFiles.length >= MAX_TICKET_ATTACHMENTS) {
+        throw new Error(`Ticket #${id} has reached the maximum allowed limit of ${MAX_TICKET_ATTACHMENTS} attachments`);
+      }
+
+      let safeName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+      if (!safeName || safeName === '.' || safeName === '..' || safeName.replace(/_/g, '') === '') {
+        safeName = `attachment_${Date.now()}`;
+      }
+      let targetFile = path.join(attachmentsDir, safeName);
+      if (fs.existsSync(targetFile)) {
+        const ext = path.extname(safeName);
+        const nameWithoutExt = path.basename(safeName, ext);
+        safeName = `${nameWithoutExt}_${Date.now()}${ext}`;
+        targetFile = path.join(attachmentsDir, safeName);
+      }
+      writeSafeFile(targetFile, buffer);
+      this.invalidateTicketCache(locInfo.ticketDir);
+      this.recordHubSyncMutation(locInfo.loc, {
+        action: 'update-ticket',
+        project: locInfo.loc.project.code,
+        ticketId: locInfo.id,
+        ticketKey: `${locInfo.loc.project.code}-${locInfo.id}`,
+        changedFields: ['attachment'],
+      });
+      return { filename: safeName, relativePath: `attachments/${safeName}` };
+    });
   }
 
   public getAttachmentPath(id: number | string, filename: string): string | null {
@@ -4024,88 +4183,110 @@ ${input.summary || 'Summary to be defined.'}
       }
     }
 
-    const now = new Date().toISOString();
-    const sourceMetaPath = path.join(sourceInfo.ticketDir, 'meta.json');
-    const sourceMeta: TicketMeta = JSON.parse(fs.readFileSync(sourceMetaPath, 'utf-8'));
-    sourceMeta.links = sourceMeta.links || [];
-
-    for (const targetInfo of resolvedTargets) {
-      const existingSourceLink = sourceMeta.links.find(
-        (l) => l.targetKey.toLowerCase() === targetInfo.key.toLowerCase()
-      );
-      if (existingSourceLink) {
-        existingSourceLink.relation = relation;
-        existingSourceLink.targetProject = targetInfo.project;
-        existingSourceLink.targetId = targetInfo.id;
-      } else {
-        sourceMeta.links.push({
-          relation,
-          targetKey: targetInfo.key,
-          targetProject: targetInfo.project,
-          targetId: targetInfo.id,
-          createdAt: now,
-          createdBy: options?.author ? normalizeDashesAndMojibake(options.author) : undefined,
-        });
-      }
-    }
-
-    sourceMeta.updatedAt = now;
-    sourceMeta.revision = (sourceMeta.revision || 1) + 1;
-    Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
-    Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
-    writeSafeFile(sourceMetaPath, JSON.stringify(sourceMeta, null, 2) + '\n');
-    this.invalidateTicketCache(sourceInfo.ticketDir);
-
-    const updatedTargets: EsedreTicket[] = [];
-    const inverseRel = INVERSE_RELATIONS[relation];
-    for (const targetInfo of resolvedTargets) {
-      const targetMetaPath = path.join(targetInfo.ticketDir, 'meta.json');
-      if (fs.existsSync(targetMetaPath)) {
-        try {
-          const targetMeta: TicketMeta = JSON.parse(fs.readFileSync(targetMetaPath, 'utf-8'));
-          targetMeta.links = targetMeta.links || [];
-          const existingTargetLink = targetMeta.links.find(
-            (l) => l.targetKey.toLowerCase() === sourceInfo.key.toLowerCase()
+    return this.withLocationsLock([sourceInfo.loc, ...resolvedTargets.map((t) => t.loc)], async () => {
+      for (const targetInfo of resolvedTargets) {
+        if (this.wouldCreateCycle(sourceInfo.key, targetInfo.key, relation)) {
+          throw new Error(
+            `Circular dependency detected: linking ${sourceInfo.key} -> ${targetInfo.key} with "${relation}" forms a cycle.`
           );
-
-          if (existingTargetLink) {
-            existingTargetLink.relation = inverseRel;
-            existingTargetLink.targetProject = sourceInfo.project;
-            existingTargetLink.targetId = sourceInfo.id;
-          } else {
-            targetMeta.links.push({
-              relation: inverseRel,
-              targetKey: sourceInfo.key,
-              targetProject: sourceInfo.project,
-              targetId: sourceInfo.id,
-              createdAt: now,
-              createdBy: options?.author ? normalizeDashesAndMojibake(options.author) : undefined,
-            });
-          }
-
-          targetMeta.updatedAt = now;
-          targetMeta.revision = (targetMeta.revision || 1) + 1;
-        Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
-          Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
-          writeSafeFile(targetMetaPath, JSON.stringify(targetMeta, null, 2) + '\n');
-          this.invalidateTicketCache(targetInfo.ticketDir);
-          const updatedTarget = await this.getTicket(targetInfo.key);
-          if (updatedTarget) {
-            updatedTargets.push(updatedTarget);
-          }
-        } catch {}
+        }
       }
-    }
 
-    const updatedSource = (await this.getTicket(sourceInfo.key))!;
-    this.recordHubSyncMutation(sourceInfo.loc, {
-      action: 'link-ticket',
-      project: sourceInfo.project,
-      ticketId: sourceInfo.id,
-      ticketKey: sourceInfo.key,
-      targetKey: resolvedTargets.map((t) => t.key).join(', '),
+      const now = new Date().toISOString();
+      const sourceMetaPath = path.join(sourceInfo.ticketDir, 'meta.json');
+      const sourceMeta: TicketMeta = JSON.parse(fs.readFileSync(sourceMetaPath, 'utf-8'));
+      sourceMeta.links = sourceMeta.links || [];
+
+      for (const targetInfo of resolvedTargets) {
+        const existingSourceLink = sourceMeta.links.find(
+          (l) => l.targetKey.toLowerCase() === targetInfo.key.toLowerCase()
+        );
+        if (existingSourceLink) {
+          existingSourceLink.relation = relation;
+          existingSourceLink.targetProject = targetInfo.project;
+          existingSourceLink.targetId = targetInfo.id;
+        } else {
+          sourceMeta.links.push({
+            relation,
+            targetKey: targetInfo.key,
+            targetProject: targetInfo.project,
+            targetId: targetInfo.id,
+            createdAt: now,
+            createdBy: options?.author ? normalizeDashesAndMojibake(options.author) : undefined,
+          });
+        }
+      }
+
+      sourceMeta.updatedAt = now;
+      sourceMeta.revision = (sourceMeta.revision || 1) + 1;
+      Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
+      writeSafeFile(sourceMetaPath, JSON.stringify(sourceMeta, null, 2) + '\n');
+      this.invalidateTicketCache(sourceInfo.ticketDir);
+
+      const updatedTargets: EsedreTicket[] = [];
+      const inverseRel = INVERSE_RELATIONS[relation];
+      for (const targetInfo of resolvedTargets) {
+        const targetMetaPath = path.join(targetInfo.ticketDir, 'meta.json');
+        if (fs.existsSync(targetMetaPath)) {
+          try {
+            const targetMeta: TicketMeta = JSON.parse(fs.readFileSync(targetMetaPath, 'utf-8'));
+            targetMeta.links = targetMeta.links || [];
+            const existingTargetLink = targetMeta.links.find(
+              (l) => l.targetKey.toLowerCase() === sourceInfo.key.toLowerCase()
+            );
+
+            if (existingTargetLink) {
+              existingTargetLink.relation = inverseRel;
+              existingTargetLink.targetProject = sourceInfo.project;
+              existingTargetLink.targetId = sourceInfo.id;
+            } else {
+              targetMeta.links.push({
+                relation: inverseRel,
+                targetKey: sourceInfo.key,
+                targetProject: sourceInfo.project,
+                targetId: sourceInfo.id,
+                createdAt: now,
+                createdBy: options?.author ? normalizeDashesAndMojibake(options.author) : undefined,
+              });
+            }
+
+            targetMeta.updatedAt = now;
+            targetMeta.revision = (targetMeta.revision || 1) + 1;
+            Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
+            writeSafeFile(targetMetaPath, JSON.stringify(targetMeta, null, 2) + '\n');
+            this.invalidateTicketCache(targetInfo.ticketDir);
+            const updatedTarget = await this.getTicket(targetInfo.key);
+            if (updatedTarget) {
+              updatedTargets.push(updatedTarget);
+            }
+            if (
+              targetInfo.loc.sourceType === 'hub' &&
+              targetInfo.loc.hubDir &&
+              (!sourceInfo.loc.hubDir ||
+                normalizeRealPath(targetInfo.loc.hubDir) !== normalizeRealPath(sourceInfo.loc.hubDir))
+            ) {
+              this.recordHubSyncMutation(targetInfo.loc, {
+                action: 'link-ticket',
+                project: targetInfo.project,
+                ticketId: targetInfo.id,
+                ticketKey: targetInfo.key,
+                targetKey: sourceInfo.key,
+              });
+            }
+          } catch {}
+        }
+      }
+
+      const updatedSource = (await this.getTicket(sourceInfo.key))!;
+      this.recordHubSyncMutation(sourceInfo.loc, {
+        action: 'link-ticket',
+        project: sourceInfo.project,
+        ticketId: sourceInfo.id,
+        ticketKey: sourceInfo.key,
+        targetKey: resolvedTargets.map((t) => t.key).join(', '),
+      });
+      return { source: updatedSource, targets: updatedTargets };
     });
-    return { source: updatedSource, targets: updatedTargets };
   }
 
   public async removeTicketLinks(
@@ -4146,77 +4327,89 @@ ${input.summary || 'Summary to be defined.'}
       }
     }
 
-    const targetKeySet = new Set(resolvedTargets.map((t) => t.targetKey.toLowerCase()));
-    const now = new Date().toISOString();
-    const sourceMetaPath = path.join(sourceInfo.ticketDir, 'meta.json');
-    if (fs.existsSync(sourceMetaPath)) {
-      try {
-        const sourceMeta: TicketMeta = JSON.parse(fs.readFileSync(sourceMetaPath, 'utf-8'));
-        if (Array.isArray(sourceMeta.links)) {
-          const originalLen = sourceMeta.links.length;
-          sourceMeta.links = sourceMeta.links.filter(
-            (l) =>
-              !(
-                targetKeySet.has(l.targetKey.toLowerCase()) &&
-                (!options?.relation || l.relation === options.relation)
-              )
-          );
-          if (sourceMeta.links.length !== originalLen) {
-            sourceMeta.updatedAt = now;
-            sourceMeta.revision = (sourceMeta.revision || 1) + 1;
-            Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
-    Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
-            Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
-            writeSafeFile(sourceMetaPath, JSON.stringify(sourceMeta, null, 2) + '\n');
-            this.invalidateTicketCache(sourceInfo.ticketDir);
-          }
-        }
-      } catch {}
-    }
-
-    const updatedTargets: EsedreTicket[] = [];
-    for (const { targetInfo } of resolvedTargets) {
-      if (!targetInfo) continue;
-      const targetMetaPath = path.join(targetInfo.ticketDir, 'meta.json');
-      if (fs.existsSync(targetMetaPath)) {
+    return this.withLocationsLock([sourceInfo.loc, ...resolvedTargets.map((t) => t.targetInfo?.loc)], async () => {
+      const targetKeySet = new Set(resolvedTargets.map((t) => t.targetKey.toLowerCase()));
+      const now = new Date().toISOString();
+      const sourceMetaPath = path.join(sourceInfo.ticketDir, 'meta.json');
+      if (fs.existsSync(sourceMetaPath)) {
         try {
-          const targetMeta: TicketMeta = JSON.parse(fs.readFileSync(targetMetaPath, 'utf-8'));
-          if (Array.isArray(targetMeta.links)) {
-            const originalLen = targetMeta.links.length;
-            targetMeta.links = targetMeta.links.filter(
+          const sourceMeta: TicketMeta = JSON.parse(fs.readFileSync(sourceMetaPath, 'utf-8'));
+          if (Array.isArray(sourceMeta.links)) {
+            const originalLen = sourceMeta.links.length;
+            sourceMeta.links = sourceMeta.links.filter(
               (l) =>
                 !(
-                  l.targetKey.toLowerCase() === sourceInfo.key.toLowerCase() &&
-                  (!options?.relation || l.relation === INVERSE_RELATIONS[options.relation])
+                  targetKeySet.has(l.targetKey.toLowerCase()) &&
+                  (!options?.relation || l.relation === options.relation)
                 )
             );
-            if (targetMeta.links.length !== originalLen) {
-              targetMeta.updatedAt = now;
-              targetMeta.revision = (targetMeta.revision || 1) + 1;
-              Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
-        Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
-              Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
-              writeSafeFile(targetMetaPath, JSON.stringify(targetMeta, null, 2) + '\n');
-              this.invalidateTicketCache(targetInfo.ticketDir);
+            if (sourceMeta.links.length !== originalLen) {
+              sourceMeta.updatedAt = now;
+              sourceMeta.revision = (sourceMeta.revision || 1) + 1;
+              Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
+              writeSafeFile(sourceMetaPath, JSON.stringify(sourceMeta, null, 2) + '\n');
+              this.invalidateTicketCache(sourceInfo.ticketDir);
             }
-          }
-          const updatedTarget = await this.getTicket(targetInfo.key);
-          if (updatedTarget) {
-            updatedTargets.push(updatedTarget);
           }
         } catch {}
       }
-    }
 
-    const updatedSource = (await this.getTicket(sourceInfo.key))!;
-    this.recordHubSyncMutation(sourceInfo.loc, {
-      action: 'unlink-ticket',
-      project: sourceInfo.project,
-      ticketId: sourceInfo.id,
-      ticketKey: sourceInfo.key,
-      targetKey: resolvedTargets.map((t) => t.targetKey).join(', '),
+      const updatedTargets: EsedreTicket[] = [];
+      for (const { targetInfo } of resolvedTargets) {
+        if (!targetInfo) continue;
+        const targetMetaPath = path.join(targetInfo.ticketDir, 'meta.json');
+        if (fs.existsSync(targetMetaPath)) {
+          try {
+            const targetMeta: TicketMeta = JSON.parse(fs.readFileSync(targetMetaPath, 'utf-8'));
+            if (Array.isArray(targetMeta.links)) {
+              const originalLen = targetMeta.links.length;
+              targetMeta.links = targetMeta.links.filter(
+                (l) =>
+                  !(
+                    l.targetKey.toLowerCase() === sourceInfo.key.toLowerCase() &&
+                    (!options?.relation || l.relation === INVERSE_RELATIONS[options.relation])
+                  )
+              );
+              if (targetMeta.links.length !== originalLen) {
+                targetMeta.updatedAt = now;
+                targetMeta.revision = (targetMeta.revision || 1) + 1;
+                Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
+                writeSafeFile(targetMetaPath, JSON.stringify(targetMeta, null, 2) + '\n');
+                this.invalidateTicketCache(targetInfo.ticketDir);
+                if (
+                  targetInfo.loc.sourceType === 'hub' &&
+                  targetInfo.loc.hubDir &&
+                  (!sourceInfo.loc.hubDir ||
+                    normalizeRealPath(targetInfo.loc.hubDir) !== normalizeRealPath(sourceInfo.loc.hubDir))
+                ) {
+                  this.recordHubSyncMutation(targetInfo.loc, {
+                    action: 'unlink-ticket',
+                    project: targetInfo.project,
+                    ticketId: targetInfo.id,
+                    ticketKey: targetInfo.key,
+                    targetKey: sourceInfo.key,
+                  });
+                }
+              }
+            }
+            const updatedTarget = await this.getTicket(targetInfo.key);
+            if (updatedTarget) {
+              updatedTargets.push(updatedTarget);
+            }
+          } catch {}
+        }
+      }
+
+      const updatedSource = (await this.getTicket(sourceInfo.key))!;
+      this.recordHubSyncMutation(sourceInfo.loc, {
+        action: 'unlink-ticket',
+        project: sourceInfo.project,
+        ticketId: sourceInfo.id,
+        ticketKey: sourceInfo.key,
+        targetKey: resolvedTargets.map((t) => t.targetKey).join(', '),
+      });
+      return { source: updatedSource, targets: updatedTargets };
     });
-    return { source: updatedSource, targets: updatedTargets };
   }
 
   public async addTicketLink(
@@ -4225,114 +4418,8 @@ ${input.summary || 'Summary to be defined.'}
     targetId: number | string,
     options?: { author?: string; project?: string }
   ): Promise<{ source: EsedreTicket; target?: EsedreTicket }> {
-    if (!INVERSE_RELATIONS[relation]) {
-      throw new Error(
-        `Invalid link relation: "${relation}". Valid relations: ${Object.keys(INVERSE_RELATIONS).join(', ')}`
-      );
-    }
-
-    const sourceInfo = this.resolveTicketIdentifier(sourceId, options?.project || this.config.projectCode);
-    if (!sourceInfo) {
-      throw new Error(`Source ticket #${sourceId} could not be located.`);
-    }
-
-    assertProjectCompatible(sourceInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
-
-    const targetInfo = this.resolveTicketIdentifier(
-      targetId,
-      options?.project || sourceInfo.project || this.config.projectCode
-    );
-    if (!targetInfo) {
-      throw new Error(`Target ticket #${targetId} could not be located.`);
-    }
-
-    assertProjectCompatible(targetInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
-
-    if (sourceInfo.key.toLowerCase() === targetInfo.key.toLowerCase()) {
-      throw new Error(`Cannot link ticket ${sourceInfo.key} to itself.`);
-    }
-
-    if (this.wouldCreateCycle(sourceInfo.key, targetInfo.key, relation)) {
-      throw new Error(
-        `Circular dependency detected: linking ${sourceInfo.key} -> ${targetInfo.key} with "${relation}" forms a cycle.`
-      );
-    }
-
-    const now = new Date().toISOString();
-    const sourceMetaPath = path.join(sourceInfo.ticketDir, 'meta.json');
-    const sourceMeta: TicketMeta = JSON.parse(fs.readFileSync(sourceMetaPath, 'utf-8'));
-    sourceMeta.links = sourceMeta.links || [];
-
-    const existingSourceLink = sourceMeta.links.find(
-      (l) => l.targetKey.toLowerCase() === targetInfo.key.toLowerCase()
-    );
-
-    if (existingSourceLink) {
-      existingSourceLink.relation = relation;
-      existingSourceLink.targetProject = targetInfo.project;
-      existingSourceLink.targetId = targetInfo.id;
-    } else {
-      sourceMeta.links.push({
-        relation,
-        targetKey: targetInfo.key,
-        targetProject: targetInfo.project,
-        targetId: targetInfo.id,
-        createdAt: now,
-        createdBy: options?.author ? normalizeDashesAndMojibake(options.author) : undefined,
-      });
-    }
-
-    sourceMeta.updatedAt = now;
-    sourceMeta.revision = (sourceMeta.revision || 1) + 1;
-    Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
-    writeSafeFile(sourceMetaPath, JSON.stringify(sourceMeta, null, 2) + '\n');
-    this.invalidateTicketCache(sourceInfo.ticketDir);
-
-    // Update target ticket bi-directionally if accessible
-    let updatedTarget: EsedreTicket | undefined;
-    const targetMetaPath = path.join(targetInfo.ticketDir, 'meta.json');
-    if (fs.existsSync(targetMetaPath)) {
-      try {
-        const targetMeta: TicketMeta = JSON.parse(fs.readFileSync(targetMetaPath, 'utf-8'));
-        targetMeta.links = targetMeta.links || [];
-        const inverseRel = INVERSE_RELATIONS[relation];
-        const existingTargetLink = targetMeta.links.find(
-          (l) => l.targetKey.toLowerCase() === sourceInfo.key.toLowerCase()
-        );
-
-        if (existingTargetLink) {
-          existingTargetLink.relation = inverseRel;
-          existingTargetLink.targetProject = sourceInfo.project;
-          existingTargetLink.targetId = sourceInfo.id;
-        } else {
-          targetMeta.links.push({
-            relation: inverseRel,
-            targetKey: sourceInfo.key,
-            targetProject: sourceInfo.project,
-            targetId: sourceInfo.id,
-            createdAt: now,
-            createdBy: options?.author ? normalizeDashesAndMojibake(options.author) : undefined,
-          });
-        }
-
-        targetMeta.updatedAt = now;
-        targetMeta.revision = (targetMeta.revision || 1) + 1;
-        Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
-        writeSafeFile(targetMetaPath, JSON.stringify(targetMeta, null, 2) + '\n');
-        this.invalidateTicketCache(targetInfo.ticketDir);
-        updatedTarget = (await this.getTicket(targetInfo.key)) || undefined;
-      } catch {}
-    }
-
-    const updatedSource = (await this.getTicket(sourceInfo.key))!;
-    this.recordHubSyncMutation(sourceInfo.loc, {
-      action: 'link-ticket',
-      project: sourceInfo.project,
-      ticketId: sourceInfo.id,
-      ticketKey: sourceInfo.key,
-      targetKey: targetInfo.key,
-    });
-    return { source: updatedSource, target: updatedTarget };
+    const res = await this.addTicketLinks(sourceId, relation, [targetId], options);
+    return { source: res.source, target: res.targets[0] };
   }
 
   public async removeTicketLink(
@@ -4340,86 +4427,8 @@ ${input.summary || 'Summary to be defined.'}
     targetId: number | string,
     options?: { relation?: TicketLinkRelation; project?: string }
   ): Promise<{ source: EsedreTicket; target?: EsedreTicket }> {
-    const sourceInfo = this.resolveTicketIdentifier(sourceId, options?.project || this.config.projectCode);
-    if (!sourceInfo) {
-      throw new Error(`Source ticket #${sourceId} could not be located.`);
-    }
-
-    assertProjectCompatible(sourceInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
-
-    const targetInfo = this.resolveTicketIdentifier(
-      targetId,
-      options?.project || sourceInfo.project || this.config.projectCode
-    );
-    if (targetInfo) {
-      assertProjectCompatible(targetInfo.loc.project, { operation: 'write', feature: 'ticket-linking' });
-    }
-    const targetKey = targetInfo ? targetInfo.key : String(targetId).trim();
-
-    const now = new Date().toISOString();
-    const sourceMetaPath = path.join(sourceInfo.ticketDir, 'meta.json');
-    if (fs.existsSync(sourceMetaPath)) {
-      try {
-        const sourceMeta: TicketMeta = JSON.parse(fs.readFileSync(sourceMetaPath, 'utf-8'));
-        if (Array.isArray(sourceMeta.links)) {
-          const originalLen = sourceMeta.links.length;
-          sourceMeta.links = sourceMeta.links.filter(
-            (l) =>
-              !(
-                l.targetKey.toLowerCase() === targetKey.toLowerCase() &&
-                (!options?.relation || l.relation === options.relation)
-              )
-          );
-          if (sourceMeta.links.length !== originalLen) {
-            sourceMeta.updatedAt = now;
-            sourceMeta.revision = (sourceMeta.revision || 1) + 1;
-            Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
-    Object.assign(sourceMeta, this.resolveTicketVersionStamps(sourceInfo.loc.project, sourceMeta));
-            writeSafeFile(sourceMetaPath, JSON.stringify(sourceMeta, null, 2) + '\n');
-            this.invalidateTicketCache(sourceInfo.ticketDir);
-          }
-        }
-      } catch {}
-    }
-
-    let updatedTarget: EsedreTicket | undefined;
-    if (targetInfo) {
-      const targetMetaPath = path.join(targetInfo.ticketDir, 'meta.json');
-      if (fs.existsSync(targetMetaPath)) {
-        try {
-          const targetMeta: TicketMeta = JSON.parse(fs.readFileSync(targetMetaPath, 'utf-8'));
-          if (Array.isArray(targetMeta.links)) {
-            const originalLen = targetMeta.links.length;
-            targetMeta.links = targetMeta.links.filter(
-              (l) =>
-                !(
-                  l.targetKey.toLowerCase() === sourceInfo.key.toLowerCase() &&
-                  (!options?.relation || l.relation === INVERSE_RELATIONS[options.relation])
-                )
-            );
-            if (targetMeta.links.length !== originalLen) {
-              targetMeta.updatedAt = now;
-              targetMeta.revision = (targetMeta.revision || 1) + 1;
-              Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
-        Object.assign(targetMeta, this.resolveTicketVersionStamps(targetInfo.loc.project, targetMeta));
-              writeSafeFile(targetMetaPath, JSON.stringify(targetMeta, null, 2) + '\n');
-              this.invalidateTicketCache(targetInfo.ticketDir);
-              updatedTarget = (await this.getTicket(targetInfo.key)) || undefined;
-            }
-          }
-        } catch {}
-      }
-    }
-
-    const updatedSource = (await this.getTicket(sourceInfo.key))!;
-    this.recordHubSyncMutation(sourceInfo.loc, {
-      action: 'unlink-ticket',
-      project: sourceInfo.project,
-      ticketId: sourceInfo.id,
-      ticketKey: sourceInfo.key,
-      targetKey,
-    });
-    return { source: updatedSource, target: updatedTarget };
+    const res = await this.removeTicketLinks(sourceId, [targetId], options);
+    return { source: res.source, target: res.targets[0] };
   }
 
   private readValidLeaseFromDir(ticketDir: string, projectCode: string, ticketId: number): TicketLease | null {
@@ -4450,112 +4459,114 @@ ${input.summary || 'Summary to be defined.'}
 
     assertProjectCompatible(resolved.loc.project, { operation: 'write', feature: 'ticket-leases' });
 
-    let effectiveWorktree: string | undefined;
-    const isRemoteHostname = Boolean(
-      input.hostname?.trim() && input.hostname.trim().toLowerCase() !== os.hostname().toLowerCase(),
-    );
-    if (input.worktree?.trim()) {
-      effectiveWorktree = path.resolve(input.worktree.trim());
-    } else if (!isRemoteHostname) {
-      const projectRepoRoot = this.getProjectRepoRoot(resolved.project);
-      if (projectRepoRoot) {
-        effectiveWorktree =
-          isPathInside(process.cwd(), projectRepoRoot) && isWorkspaceOrGitDir(process.cwd())
-            ? process.cwd()
-            : projectRepoRoot;
-      } else if (isWorkspaceOrGitDir(this.workspaceRoot)) {
-        effectiveWorktree = this.workspaceRoot;
+    return this.withLocationsLock([resolved.loc], async () => {
+      let effectiveWorktree: string | undefined;
+      const isRemoteHostname = Boolean(
+        input.hostname?.trim() && input.hostname.trim().toLowerCase() !== os.hostname().toLowerCase(),
+      );
+      if (input.worktree?.trim()) {
+        effectiveWorktree = path.resolve(input.worktree.trim());
+      } else if (!isRemoteHostname) {
+        const projectRepoRoot = this.getProjectRepoRoot(resolved.project);
+        if (projectRepoRoot) {
+          effectiveWorktree =
+            isPathInside(process.cwd(), projectRepoRoot) && isWorkspaceOrGitDir(process.cwd())
+              ? process.cwd()
+              : projectRepoRoot;
+        } else if (isWorkspaceOrGitDir(this.workspaceRoot)) {
+          effectiveWorktree = this.workspaceRoot;
+        }
       }
-    }
 
-    const identity = resolveWorkerIdentity({
-      holder: input.holder,
-      agentType: input.agentType,
-      hostname: input.hostname,
-      sessionId: input.sessionId,
-      branch: input.branch,
-      worktree: effectiveWorktree,
-      configDefaultAuthor: this.config.defaultAuthor,
-    });
-
-    const ttlMinutes =
-      typeof input.ttlMinutes === 'number' && input.ttlMinutes > 0
-        ? Math.min(Math.max(1, Math.round(input.ttlMinutes)), 24 * 60)
-        : DEFAULT_LEASE_TTL_MINUTES;
-
-    const existingLease = this.readValidLeaseFromDir(resolved.ticketDir, resolved.project, resolved.id);
-    let renewed = false;
-    let overridden = false;
-
-    if (existingLease) {
-      const isSameHolder = existingLease.holder.toLowerCase() === identity.holder.toLowerCase();
-      if (!isSameHolder && !input.force) {
-        throw new EsedreLeaseConflictError(resolved.key, existingLease);
-      }
-      if (isSameHolder) {
-        renewed = true;
-      } else {
-        overridden = true;
-      }
-    }
-
-    const now = new Date();
-    const nowIso = now.toISOString();
-    const expiresIso = new Date(now.getTime() + ttlMinutes * 60 * 1000).toISOString();
-
-    const lease: TicketLease = {
-      ticketId: resolved.id,
-      ticketKey: resolved.key,
-      project: resolved.project,
-      holder: normalizeDashesAndMojibake(identity.holder),
-      ...(identity.agentType ? { agentType: normalizeDashesAndMojibake(identity.agentType) } : {}),
-      ...(identity.hostname ? { hostname: normalizeDashesAndMojibake(identity.hostname) } : {}),
-      ...(identity.sessionId ? { sessionId: normalizeDashesAndMojibake(identity.sessionId) } : {}),
-      ...(identity.branch ? { branch: normalizeDashesAndMojibake(identity.branch) } : {}),
-      ...(identity.worktree ? { worktree: identity.worktree } : {}),
-      claimedAt: renewed && existingLease ? existingLease.claimedAt : nowIso,
-      renewedAt: nowIso,
-      expiresAt: expiresIso,
-      ttlMinutes,
-    };
-
-    const leasePath = path.join(resolved.ticketDir, 'lease.json');
-    writeSafeFile(leasePath, JSON.stringify(lease, null, 2) + '\n');
-    this.invalidateTicketCache(resolved.ticketDir);
-
-    let ticket = (await this.getTicket(resolved.key))!;
-    const preClaimSha1 = ticket.sha1 || computeTicketHash(ticket);
-    const targetStatus = input.statusOnClaim ?? (ticket.meta.status === 'Planned' ? 'In Development' : undefined);
-    if (targetStatus && ticket.meta.status !== targetStatus) {
-      ticket = await this.updateTicket(resolved.key, {
-        status: targetStatus,
-        isActivePlanning: targetStatus === 'In Development' ? true : ticket.meta.isActivePlanning,
+      const identity = resolveWorkerIdentity({
+        holder: input.holder,
+        agentType: input.agentType,
+        hostname: input.hostname,
+        sessionId: input.sessionId,
+        branch: input.branch,
+        worktree: effectiveWorktree,
+        configDefaultAuthor: this.config.defaultAuthor,
       });
-      if (preClaimSha1 && ticket.meta.revision) {
-        lease.preClaimSha1 = preClaimSha1;
-        lease.claimRevision = ticket.meta.revision;
+
+      const ttlMinutes =
+        typeof input.ttlMinutes === 'number' && input.ttlMinutes > 0
+          ? Math.min(Math.max(1, Math.round(input.ttlMinutes)), 24 * 60)
+          : DEFAULT_LEASE_TTL_MINUTES;
+
+      const existingLease = this.readValidLeaseFromDir(resolved.ticketDir, resolved.project, resolved.id);
+      let renewed = false;
+      let overridden = false;
+
+      if (existingLease) {
+        const isSameHolder = existingLease.holder.toLowerCase() === identity.holder.toLowerCase();
+        if (!isSameHolder && !input.force) {
+          throw new EsedreLeaseConflictError(resolved.key, existingLease);
+        }
+        if (isSameHolder) {
+          renewed = true;
+        } else {
+          overridden = true;
+        }
+      }
+
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const expiresIso = new Date(now.getTime() + ttlMinutes * 60 * 1000).toISOString();
+
+      const lease: TicketLease = {
+        ticketId: resolved.id,
+        ticketKey: resolved.key,
+        project: resolved.project,
+        holder: normalizeDashesAndMojibake(identity.holder),
+        ...(identity.agentType ? { agentType: normalizeDashesAndMojibake(identity.agentType) } : {}),
+        ...(identity.hostname ? { hostname: normalizeDashesAndMojibake(identity.hostname) } : {}),
+        ...(identity.sessionId ? { sessionId: normalizeDashesAndMojibake(identity.sessionId) } : {}),
+        ...(identity.branch ? { branch: normalizeDashesAndMojibake(identity.branch) } : {}),
+        ...(identity.worktree ? { worktree: identity.worktree } : {}),
+        claimedAt: renewed && existingLease ? existingLease.claimedAt : nowIso,
+        renewedAt: nowIso,
+        expiresAt: expiresIso,
+        ttlMinutes,
+      };
+
+      const leasePath = path.join(resolved.ticketDir, 'lease.json');
+      writeSafeFile(leasePath, JSON.stringify(lease, null, 2) + '\n');
+      this.invalidateTicketCache(resolved.ticketDir);
+
+      let ticket = (await this.getTicket(resolved.key))!;
+      const preClaimSha1 = ticket.sha1 || computeTicketHash(ticket);
+      const targetStatus = input.statusOnClaim ?? (ticket.meta.status === 'Planned' ? 'In Development' : undefined);
+      if (targetStatus && ticket.meta.status !== targetStatus) {
+        ticket = await this.updateTicket(resolved.key, {
+          status: targetStatus,
+          isActivePlanning: targetStatus === 'In Development' ? true : ticket.meta.isActivePlanning,
+        });
+        if (preClaimSha1 && ticket.meta.revision) {
+          lease.preClaimSha1 = preClaimSha1;
+          lease.claimRevision = ticket.meta.revision;
+          writeSafeFile(leasePath, JSON.stringify(lease, null, 2) + '\n');
+          this.invalidateTicketCache(resolved.ticketDir);
+          ticket = (await this.getTicket(resolved.key))!;
+        }
+      } else if (
+        renewed &&
+        existingLease?.preClaimSha1 &&
+        existingLease?.claimRevision === ticket.meta.revision
+      ) {
+        lease.preClaimSha1 = existingLease.preClaimSha1;
+        lease.claimRevision = existingLease.claimRevision;
         writeSafeFile(leasePath, JSON.stringify(lease, null, 2) + '\n');
         this.invalidateTicketCache(resolved.ticketDir);
         ticket = (await this.getTicket(resolved.key))!;
       }
-    } else if (
-      renewed &&
-      existingLease?.preClaimSha1 &&
-      existingLease?.claimRevision === ticket.meta.revision
-    ) {
-      lease.preClaimSha1 = existingLease.preClaimSha1;
-      lease.claimRevision = existingLease.claimRevision;
-      writeSafeFile(leasePath, JSON.stringify(lease, null, 2) + '\n');
-      this.invalidateTicketCache(resolved.ticketDir);
-      ticket = (await this.getTicket(resolved.key))!;
-    }
 
-    return {
-      lease,
-      ticket,
-      renewed,
-      ...(overridden ? { overridden: true } : {}),
-    };
+      return {
+        lease,
+        ticket,
+        renewed,
+        ...(overridden ? { overridden: true } : {}),
+      };
+    });
   }
 
   public async renewLease(input: RenewLeaseInput): Promise<TicketLease> {
@@ -4564,36 +4575,38 @@ ${input.summary || 'Summary to be defined.'}
       throw new Error(`Ticket #${input.ticketId} could not be located.`);
     }
 
-    const existingLease = this.readValidLeaseFromDir(resolved.ticketDir, resolved.project, resolved.id);
-    if (!existingLease) {
-      throw new Error(`Ticket ${resolved.key} does not have an active lease to renew.`);
-    }
-
-    if (input.holder && !input.force) {
-      const requestedHolder = input.holder.trim().toLowerCase();
-      if (existingLease.holder.toLowerCase() !== requestedHolder) {
-        throw new EsedreLeaseConflictError(resolved.key, existingLease);
+    return this.withLocationsLock([resolved.loc], async () => {
+      const existingLease = this.readValidLeaseFromDir(resolved.ticketDir, resolved.project, resolved.id);
+      if (!existingLease) {
+        throw new Error(`Ticket ${resolved.key} does not have an active lease to renew.`);
       }
-    }
 
-    const ttlMinutes =
-      typeof input.ttlMinutes === 'number' && input.ttlMinutes > 0
-        ? Math.min(Math.max(1, Math.round(input.ttlMinutes)), 24 * 60)
-        : existingLease.ttlMinutes || DEFAULT_LEASE_TTL_MINUTES;
+      if (input.holder && !input.force) {
+        const requestedHolder = input.holder.trim().toLowerCase();
+        if (existingLease.holder.toLowerCase() !== requestedHolder) {
+          throw new EsedreLeaseConflictError(resolved.key, existingLease);
+        }
+      }
 
-    const now = new Date();
-    const updatedLease: TicketLease = {
-      ...existingLease,
-      ...(input.holder ? { holder: normalizeDashesAndMojibake(input.holder.trim()) } : {}),
-      renewedAt: now.toISOString(),
-      expiresAt: new Date(now.getTime() + ttlMinutes * 60 * 1000).toISOString(),
-      ttlMinutes,
-    };
+      const ttlMinutes =
+        typeof input.ttlMinutes === 'number' && input.ttlMinutes > 0
+          ? Math.min(Math.max(1, Math.round(input.ttlMinutes)), 24 * 60)
+          : existingLease.ttlMinutes || DEFAULT_LEASE_TTL_MINUTES;
 
-    const leasePath = path.join(resolved.ticketDir, 'lease.json');
-    writeSafeFile(leasePath, JSON.stringify(updatedLease, null, 2) + '\n');
-    this.invalidateTicketCache(resolved.ticketDir);
-    return updatedLease;
+      const now = new Date();
+      const updatedLease: TicketLease = {
+        ...existingLease,
+        ...(input.holder ? { holder: normalizeDashesAndMojibake(input.holder.trim()) } : {}),
+        renewedAt: now.toISOString(),
+        expiresAt: new Date(now.getTime() + ttlMinutes * 60 * 1000).toISOString(),
+        ttlMinutes,
+      };
+
+      const leasePath = path.join(resolved.ticketDir, 'lease.json');
+      writeSafeFile(leasePath, JSON.stringify(updatedLease, null, 2) + '\n');
+      this.invalidateTicketCache(resolved.ticketDir);
+      return updatedLease;
+    });
   }
 
   public async releaseTicket(
@@ -4604,29 +4617,31 @@ ${input.summary || 'Summary to be defined.'}
       throw new Error(`Ticket #${input.ticketId} could not be located.`);
     }
 
-    const existingLease = this.readValidLeaseFromDir(resolved.ticketDir, resolved.project, resolved.id);
-    if (!existingLease) {
-      return { released: false, ticketKey: resolved.key };
-    }
-
-    if (input.holder && !input.force) {
-      const requestedHolder = input.holder.trim().toLowerCase();
-      if (existingLease.holder.toLowerCase() !== requestedHolder) {
-        throw new EsedreLeaseConflictError(resolved.key, existingLease);
+    return this.withLocationsLock([resolved.loc], async () => {
+      const existingLease = this.readValidLeaseFromDir(resolved.ticketDir, resolved.project, resolved.id);
+      if (!existingLease) {
+        return { released: false, ticketKey: resolved.key };
       }
-    }
 
-    const leasePath = path.join(resolved.ticketDir, 'lease.json');
-    if (fs.existsSync(leasePath)) {
-      try { fs.unlinkSync(leasePath); } catch {}
-    }
-    this.invalidateTicketCache(resolved.ticketDir);
+      if (input.holder && !input.force) {
+        const requestedHolder = input.holder.trim().toLowerCase();
+        if (existingLease.holder.toLowerCase() !== requestedHolder) {
+          throw new EsedreLeaseConflictError(resolved.key, existingLease);
+        }
+      }
 
-    return {
-      released: true,
-      ticketKey: resolved.key,
-      previousLease: existingLease,
-    };
+      const leasePath = path.join(resolved.ticketDir, 'lease.json');
+      if (fs.existsSync(leasePath)) {
+        try { fs.unlinkSync(leasePath); } catch {}
+      }
+      this.invalidateTicketCache(resolved.ticketDir);
+
+      return {
+        released: true,
+        ticketKey: resolved.key,
+        previousLease: existingLease,
+      };
+    });
   }
 
   public async getTicketLease(id: number | string, projectCode?: string): Promise<TicketLease | null> {

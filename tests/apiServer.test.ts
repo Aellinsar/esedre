@@ -10,15 +10,18 @@ import { SecurityFilter } from '../src/securityFilter.js';
 function request(
   url: string,
   method: string = 'GET',
-  body?: any
+  body?: any,
+  extraHeaders: Record<string, string> = {}
 ): Promise<{ status?: number; headers: http.IncomingHttpHeaders; body: string; json: () => any }> {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
-    const postData = body ? JSON.stringify(body) : undefined;
+    const postData =
+      body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body);
     const headers: http.OutgoingHttpHeaders = {
-      'Content-Type': 'application/json',
+      ...(typeof body === 'string' ? {} : { 'Content-Type': 'application/json' }),
+      ...extraHeaders,
     };
-    if (postData) {
+    if (postData !== undefined) {
       headers['Content-Length'] = Buffer.byteLength(postData);
     }
 
@@ -103,11 +106,114 @@ describe('Esedre REST API Server', () => {
     }
   });
 
-  it('handles CORS preflight OPTIONS with 204 status', async () => {
-    const res = await request(`${baseUrl}/api/planning/tickets`, 'OPTIONS');
-    expect(res.status).toBe(204);
-    expect(res.headers['access-control-allow-origin']).toBe('*');
-    expect(res.headers['access-control-allow-methods']).toContain('POST');
+  it('handles CORS preflight OPTIONS by reflecting trusted local/LAN origins and rejecting untrusted public origins', async () => {
+    // Non-browser OPTIONS without Origin succeeds without wildcard CORS
+    const noOriginRes = await request(`${baseUrl}/api/planning/tickets`, 'OPTIONS');
+    expect(noOriginRes.status).toBe(204);
+    expect(noOriginRes.headers['access-control-allow-origin']).toBeUndefined();
+    expect(noOriginRes.headers['access-control-allow-methods']).toContain('POST');
+
+    // Trusted localhost & LAN origins are reflected with Vary: Origin
+    const localOriginRes = await request(`${baseUrl}/api/planning/tickets`, 'OPTIONS', undefined, {
+      Origin: 'http://localhost:5173',
+    });
+    expect(localOriginRes.status).toBe(204);
+    expect(localOriginRes.headers['access-control-allow-origin']).toBe('http://localhost:5173');
+    expect(localOriginRes.headers['vary']).toBe('Origin');
+
+    const lanHostRes = await request(`${baseUrl}/api/planning/tickets`, 'OPTIONS', undefined, {
+      Origin: 'http://eris-2003ub313:5674',
+    });
+    expect(lanHostRes.status).toBe(204);
+    expect(lanHostRes.headers['access-control-allow-origin']).toBe('http://eris-2003ub313:5674');
+
+    const lanIpRes = await request(`${baseUrl}/api/planning/tickets`, 'OPTIONS', undefined, {
+      Origin: 'http://192.168.1.42:3000',
+    });
+    expect(lanIpRes.status).toBe(204);
+    expect(lanIpRes.headers['access-control-allow-origin']).toBe('http://192.168.1.42:3000');
+
+    // Same-origin behind HTTPS reverse proxy is automatically permitted
+    const reverseProxyRes = await request(`${baseUrl}/api/planning/tickets`, 'OPTIONS', undefined, {
+      Origin: 'https://planner.example.com',
+      'X-Forwarded-Host': 'planner.example.com',
+      'X-Forwarded-Proto': 'https',
+    });
+    expect(reverseProxyRes.status).toBe(204);
+    expect(reverseProxyRes.headers['access-control-allow-origin']).toBe('https://planner.example.com');
+
+    // Untrusted public website Origin is rejected with 403 and no CORS header
+    const evilPreflight = await request(`${baseUrl}/api/planning/tickets`, 'OPTIONS', undefined, {
+      Origin: 'https://evil-tracker.example.com',
+    });
+    expect(evilPreflight.status).toBe(403);
+    expect(evilPreflight.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('blocks cross-site browser CSRF, Origin: null, stripped-Origin Sec-Fetch-Site, form-POSTs, and DNS rebinding', async () => {
+    // 1. Cross-origin GET from untrusted public website is blocked
+    const evilGet = await request(`${baseUrl}/api/planning/all`, 'GET', undefined, {
+      Origin: 'https://random-blog.example.com',
+    });
+    expect(evilGet.status).toBe(403);
+    expect(evilGet.headers['access-control-allow-origin']).toBeUndefined();
+
+    // 2. Sandboxed iframe (Origin: null) POST mutation is blocked BEFORE creating a ticket
+    const nullOriginPost = await request(
+      `${baseUrl}/api/planning/tickets`,
+      'POST',
+      { title: 'Should Never Exist', projectCode: 'Core' },
+      { Origin: 'null' }
+    );
+    expect(nullOriginPost.status).toBe(403);
+
+    // 3. Browser request with stripped Origin (e.g. Referrer-Policy: no-referrer) is caught by Sec-Fetch-Site: cross-site
+    const strippedOriginFetch = await request(
+      `${baseUrl}/api/planning/tickets`,
+      'POST',
+      { title: 'Stripped Origin Attack', projectCode: 'Core' },
+      { 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'no-cors' }
+    );
+    expect(strippedOriginFetch.status).toBe(403);
+
+    // 4. HTML <form method="POST" enctype="text/plain"> without Origin is blocked by Content-Type gate (415)
+    const formPostAttack = await request(
+      `${baseUrl}/api/planning/tickets`,
+      'POST',
+      '{"title":"Form CSRF Ticket","projectCode":"Core"}',
+      { 'Content-Type': 'text/plain' }
+    );
+    expect(formPostAttack.status).toBe(415);
+
+    // 5. DNS rebinding (http://evil.example.com:5674 -> 127.0.0.1:5674) is blocked even when Origin matches Host
+    const dnsRebindGet = await request(`${baseUrl}/api/planning/all`, 'GET', undefined, {
+      Host: 'evil.example.com:5674',
+      Origin: 'http://evil.example.com:5674',
+      'Sec-Fetch-Site': 'same-origin',
+    });
+    expect(dnsRebindGet.status).toBe(403);
+
+    // Verify none of the blocked mutations created a ticket
+    const ticketsAfter = await request(`${baseUrl}/api/planning/tickets`, 'GET');
+    expect(ticketsAfter.json()).toHaveLength(1);
+
+    // 6. Explicit ESEDRE_CORS_ORIGINS allowlist permits configured public embed origin
+    const prevEnv = process.env.ESEDRE_CORS_ORIGINS;
+    process.env.ESEDRE_CORS_ORIGINS = 'https://docs.aroomwithamoose.com';
+    try {
+      const allowedPublicRes = await request(`${baseUrl}/api/planning/projects`, 'GET', undefined, {
+        Origin: 'https://docs.aroomwithamoose.com',
+        'Sec-Fetch-Site': 'cross-site',
+      });
+      expect(allowedPublicRes.status).toBe(200);
+      expect(allowedPublicRes.headers['access-control-allow-origin']).toBe('https://docs.aroomwithamoose.com');
+    } finally {
+      if (prevEnv === undefined) {
+        delete process.env.ESEDRE_CORS_ORIGINS;
+      } else {
+        process.env.ESEDRE_CORS_ORIGINS = prevEnv;
+      }
+    }
   });
 
   it('GET /api/planning/projects returns registered projects', async () => {

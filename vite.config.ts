@@ -36,7 +36,12 @@ function esedreApiPlugin(): Plugin {
 
 import fs from 'node:fs';
 import https from 'node:https';
-import { extractListsFromText, isIpAllowed } from './tools/tunnel/ipMatcher.ts';
+import {
+  extractListsFromText,
+  getIpv6Prefix64,
+  isCloudflareWarpIp,
+  isIpAllowed,
+} from './tools/tunnel/ipMatcher.ts';
 
 function resolveAllowedHosts(): string[] {
   const hosts = new Set(['localhost', '127.0.0.1', '::1']);
@@ -59,11 +64,26 @@ function resolveAllowedHosts(): string[] {
   return Array.from(hosts);
 }
 
+function normalizeUrlPath(rawUrl: string | undefined): string {
+  if (!rawUrl) return '/';
+  const rawPath = rawUrl.split('?')[0].split('#')[0];
+  let decoded = rawPath;
+  try {
+    decoded = decodeURIComponent(rawPath);
+  } catch {
+    return rawPath.toLowerCase();
+  }
+  return path.posix.normalize(decoded.replace(/\\/g, '/')).toLowerCase();
+}
+
 function tunnelSecurityPlugin(): Plugin {
   let cachedConstantsProfiles = { defaultAllow: [] as string[], gamedayAllow: [] as string[] };
   let lastConstantsMtime = 0;
   let lastMatchBlockCheckTime = 0;
   let isLiveMatchBlockActive = false;
+  let consecutiveProbeFailures = 0;
+  let pinnedWarpRule: { rule: string; expiresAt: number } | null = null;
+  const WARP_PIN_TTL_MS = 4 * 60 * 60 * 1000;
 
   function checkIspMatchBlockLive(): void {
     const now = Date.now();
@@ -71,29 +91,42 @@ function tunnelSecurityPlugin(): Plugin {
     lastMatchBlockCheckTime = now;
 
     const req = https.request('https://188.114.96.5', { timeout: 1500 }, () => {
+      consecutiveProbeFailures = 0;
       if (isLiveMatchBlockActive) {
         console.log(`\x1b[32m[Match-Day Ended] Spanish ISP block lifted. Reverted to DEFAULT_ALLOW_LIST.\x1b[0m`);
       }
       isLiveMatchBlockActive = false;
+      pinnedWarpRule = null;
     });
     req.on('timeout', () => {
       req.destroy(new Error('ETIMEDOUT'));
     });
     req.on('error', (err: Error & { code?: string }) => {
-      const isActive =
-        err?.message?.includes('self-signed') ||
-        err?.code === 'DEPTH_ZERO_SELF_SIGNED_CERT' ||
-        err?.code === 'ECONNRESET' ||
-        err?.message === 'ETIMEDOUT';
+      const certIntercepted =
+        Boolean(err?.message?.includes('self-signed')) || err?.code === 'DEPTH_ZERO_SELF_SIGNED_CERT';
+      const resetOrTimeout = err?.code === 'ECONNRESET' || err?.message === 'ETIMEDOUT';
+
+      if (certIntercepted) {
+        consecutiveProbeFailures = 2;
+      } else if (resetOrTimeout) {
+        consecutiveProbeFailures += 1;
+      } else {
+        consecutiveProbeFailures = 0;
+      }
+
+      const isActive = certIntercepted || consecutiveProbeFailures >= 2;
       if (isActive && !isLiveMatchBlockActive) {
-        console.log(`\x1b[33m[ISP Match-Day Block Detected]\x1b[0m Auto-activated GAMEDAY_ALLOW_LIST (WARP Subnet).\x1b[0m`);
+        console.log(`\x1b[33m[ISP Match-Day Block Detected]\x1b[0m Auto-activated adaptive GAMEDAY_ALLOW_LIST.\x1b[0m`);
+      }
+      if (!isActive) {
+        pinnedWarpRule = null;
       }
       isLiveMatchBlockActive = isActive;
     });
     req.end();
   }
 
-  function getDynamicExtraIps(): string[] {
+  function loadConstantsProfiles(): void {
     try {
       checkIspMatchBlockLive();
       const constantsPath = path.resolve(__dirname, 'tools/tunnel/constants.js');
@@ -107,48 +140,82 @@ function tunnelSecurityPlugin(): Plugin {
         }
       }
     } catch {}
-
-    return isLiveMatchBlockActive
-      ? [...cachedConstantsProfiles.defaultAllow, ...cachedConstantsProfiles.gamedayAllow]
-      : [...cachedConstantsProfiles.defaultAllow];
   }
 
   return {
     name: 'tunnel-security-plugin',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        // 0. Enforce Cloudflare Tunnel IP Whitelist if active
+        const cfIp = ((req.headers['cf-connecting-ip'] || '') as string).trim();
+        const isTunnelTraffic = Boolean(cfIp || req.headers['cf-ray']);
         const tunnelAllowedIps = process.env.TUNNEL_ALLOWED_IPS;
-        if (tunnelAllowedIps) {
-          const cfIp = (req.headers['cf-connecting-ip'] || '') as string;
-          if (cfIp) {
-            if (tunnelAllowedIps === '*') {
-              if (req.url === '/' || (!req.url?.startsWith('/@') && !req.url?.includes('.'))) {
-                console.log(`\x1b[32m[Tunnel Ingress - Public] Allowed IP: ${cfIp} (Path: ${req.url})\x1b[0m`);
-              }
-            } else {
-              const baseAllowedList = tunnelAllowedIps.split(',').map((s) => s.trim()).filter(Boolean);
-              const dynamicExtraIps = getDynamicExtraIps();
-              const combinedAllowedList = Array.from(new Set([...baseAllowedList, ...dynamicExtraIps]));
 
-              const allowed = isIpAllowed(cfIp, combinedAllowedList);
-              if (!allowed) {
-                const userAgent = (req.headers['user-agent'] || 'Unknown-Agent') as string;
-                console.warn(`\x1b[31m[Tunnel Hard-Drop] Unauthorized IP: ${cfIp} | Method: ${req.method} | Path: ${req.url} | Agent: "${userAgent}" -> Socket Terminated\x1b[0m`);
-                req.socket?.destroy();
-                return;
-              } else {
-                if (req.url === '/' || (!req.url?.startsWith('/@') && !req.url?.includes('.'))) {
-                  console.log(`\x1b[32m[Tunnel Ingress - Whitelist Match] Allowed IP: ${cfIp} (Path: ${req.url})\x1b[0m`);
-                }
+        // 0. Enforce Cloudflare Tunnel IP Whitelist (fail-closed if unexpected tunnel headers arrive)
+        if (isTunnelTraffic && !tunnelAllowedIps) {
+          console.warn(`\x1b[31m[Tunnel Hard-Drop] Unexpected Cloudflare header while tunnel mode is inactive -> Socket Terminated\x1b[0m`);
+          req.socket?.destroy();
+          return;
+        }
+
+        if (tunnelAllowedIps && cfIp) {
+          if (tunnelAllowedIps === '*') {
+            if (req.url === '/' || (!req.url?.startsWith('/@') && !req.url?.includes('.'))) {
+              console.log(`\x1b[32m[Tunnel Ingress - Public] Allowed IP: ${cfIp} (Path: ${req.url})\x1b[0m`);
+            }
+          } else {
+            loadConstantsProfiles();
+            const baseAllowedList = tunnelAllowedIps.split(',').map((s) => s.trim()).filter(Boolean);
+            const nonGamedayList = Array.from(new Set([...baseAllowedList, ...cachedConstantsProfiles.defaultAllow]));
+
+            let allowed = isIpAllowed(cfIp, nonGamedayList);
+
+            if (!allowed && isLiveMatchBlockActive && isCloudflareWarpIp(cfIp)) {
+              const now = Date.now();
+              if (pinnedWarpRule && pinnedWarpRule.expiresAt > now) {
+                allowed = isIpAllowed(cfIp, [pinnedWarpRule.rule]);
+              } else if (isIpAllowed(cfIp, cachedConstantsProfiles.gamedayAllow)) {
+                const v6Prefix = getIpv6Prefix64(cfIp);
+                const rule = v6Prefix ? `${v6Prefix}::/64` : `${cfIp}/32`;
+                pinnedWarpRule = { rule, expiresAt: now + WARP_PIN_TTL_MS };
+                allowed = true;
+                console.log(`\x1b[36m[WARP Session Pinned]\x1b[0m Locked match-day tunnel session to ${rule} for 4h.`);
               }
+            }
+
+            if (!allowed) {
+              const userAgent = (req.headers['user-agent'] || 'Unknown-Agent') as string;
+              console.warn(`\x1b[31m[Tunnel Hard-Drop] Unauthorized IP: ${cfIp} | Method: ${req.method} | Path: ${req.url} | Agent: "${userAgent}" -> Socket Terminated\x1b[0m`);
+              req.socket?.destroy();
+              return;
+            } else if (req.url === '/' || (!req.url?.startsWith('/@') && !req.url?.includes('.'))) {
+              console.log(`\x1b[32m[Tunnel Ingress - Whitelist Match] Allowed IP: ${cfIp} (Path: ${req.url})\x1b[0m`);
             }
           }
         }
 
+        // 1. Block direct HTTP reads of non-UI server/storage/config paths in Vite dev server
+        const normPath = normalizeUrlPath(req.url);
+        if (
+          normPath === '/.esedre' ||
+          normPath.startsWith('/.esedre/') ||
+          normPath.startsWith('/src/server/') ||
+          normPath.startsWith('/src/storage/') ||
+          normPath.startsWith('/src/mcp/') ||
+          normPath.startsWith('/src/sync/') ||
+          normPath.startsWith('/tools/') ||
+          normPath.startsWith('/scripts/')
+        ) {
+          res.statusCode = 403;
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          res.end('Forbidden');
+          return;
+        }
+
         const configuredAllowedHosts = resolveAllowedHosts();
-        const hostHeader = (req.headers['x-forwarded-host'] || req.headers['host'] || '') as string;
-        const hostname = hostHeader.split(',')[0].split(':')[0].toLowerCase().trim();
+        const hostHeader = (
+          isTunnelTraffic ? req.headers['x-forwarded-host'] || req.headers['host'] : req.headers['host']
+        ) as string | undefined;
+        const hostname = (hostHeader || '').split(',')[0].split(':')[0].toLowerCase().trim();
         const isDevHost =
           configuredAllowedHosts.includes(hostname) ||
           hostname === 'localhost' ||
@@ -199,7 +266,7 @@ function tunnelSecurityPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), esedreApiPlugin(), tunnelSecurityPlugin()],
+  plugins: [tunnelSecurityPlugin(), react(), tailwindcss(), esedreApiPlugin()],
   root: path.resolve(__dirname),
   base: './',
   build: {
@@ -207,9 +274,32 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    host: '0.0.0.0',
+    host: '127.0.0.1',
     port: 5674,
-    allowedHosts: true,
+    allowedHosts: resolveAllowedHosts(),
+    fs: {
+      strict: true,
+      allow: [
+        path.resolve(__dirname, 'index.html'),
+        path.resolve(__dirname, 'src/ui'),
+        path.resolve(__dirname, 'src/embed'),
+        path.resolve(__dirname, 'public'),
+        path.resolve(__dirname, 'node_modules'),
+      ],
+      deny: [
+        '.env',
+        '.env.*',
+        '*.{crt,pem,key}',
+        '**/.git/**',
+        '**/.esedre/**',
+        '**/src/server/**',
+        '**/src/storage/**',
+        '**/src/mcp/**',
+        '**/src/sync/**',
+        '**/tools/**',
+        '**/scripts/**',
+      ],
+    },
   },
 });
 

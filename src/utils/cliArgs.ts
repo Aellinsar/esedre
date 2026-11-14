@@ -40,6 +40,8 @@ const BOOLEAN_OPTIONS: Record<string, { short?: string }> = {
   hub: {},
   pull: {},
   push: {},
+  commit: {},
+  'no-commit': {},
 };
 
 const STRING_OPTIONS: Record<string, { short?: string }> = {
@@ -387,6 +389,11 @@ export function parseCliArgs(rawArgs: string[]): ParsedCliArgs {
     if (name === 'no-blocked') {
       flags['no-blocked'] = value;
       flags['blocked'] = !value;
+      return;
+    }
+    if (name === 'no-commit') {
+      flags['no-commit'] = value;
+      flags['commit'] = !value;
       return;
     }
     flags[name] = value;

@@ -62,16 +62,24 @@ export interface EsedreServerCluster {
 function proxyRequest(req: http.IncomingMessage, res: http.ServerResponse, targetPort: number, rewritePath?: (path: string) => string) {
   const targetPath = rewritePath ? rewritePath(req.url || '/') : req.url || '/';
 
+  const forwardedFor = req.headers['x-forwarded-for']
+    ? `${req.headers['x-forwarded-for']}, ${req.socket.remoteAddress || ''}`
+    : req.socket.remoteAddress || '';
+  const forwardedProto = (req.headers['x-forwarded-proto'] as string | undefined) || 'http';
+  const forwardedHost = (req.headers['x-forwarded-host'] as string | undefined) || req.headers.host || '';
+
   const options: http.RequestOptions = {
     hostname: '127.0.0.1',
     port: targetPort,
     path: targetPath,
     method: req.method,
+    agent: false,
     headers: {
       ...req.headers,
       host: `127.0.0.1:${targetPort}`,
-      'x-forwarded-for': req.socket.remoteAddress || '',
-      'x-forwarded-proto': 'http',
+      'x-forwarded-host': forwardedHost,
+      'x-forwarded-for': forwardedFor,
+      'x-forwarded-proto': forwardedProto,
     },
   };
 

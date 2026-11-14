@@ -21,7 +21,7 @@ import { FilesystemStorageAdapter } from './storage/filesystem.js';
 import { SecurityFilter } from './securityFilter.js';
 
 import { CURRENT_ESEDRE_VERSION } from './types.js';
-import { globalGitSyncCoordinator } from './sync/gitSync.js';
+import { globalGitSyncCoordinator, withHubWorkingTreeLock } from './sync/gitSync.js';
 import {
   CURRENT_DATA_VERSION,
   runProjectMigrations,
@@ -1244,7 +1244,10 @@ export async function upgradeProjectData(
   if (!loc) {
     throw new Error(`Project "${cleanCode}" not found`);
   }
-  const res = await runProjectMigrations(loc, storage, options);
+  const res =
+    loc.sourceType === 'hub' && loc.hubDir
+      ? await withHubWorkingTreeLock(loc.hubDir, () => runProjectMigrations(loc, storage, options))
+      : await runProjectMigrations(loc, storage, options);
   if (
     loc.sourceType === 'hub' &&
     loc.hubDir &&

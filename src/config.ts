@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { threadId } from 'node:worker_threads';
 import { CURRENT_ESEDRE_VERSION, GitSyncConfig } from './types.js';
 
 export type { GitSyncConfig };
@@ -98,6 +99,7 @@ export interface EsedrePortsConfig {
 export interface RemoteServerConfig {
   host?: string;
   timeoutMs?: number;
+  corsOrigins?: string[];
 }
 
 export interface EsedreConfig {
@@ -245,8 +247,31 @@ export function isProjectAuthorized(projectCode: string, allowedProjects?: strin
   return normalizedList.includes(normalized);
 }
 
-if (process.env.VITEST && !process.env.ESEDRE_VITEST_GLOBAL_DIR) {
-  process.env.ESEDRE_VITEST_GLOBAL_DIR = path.join(os.tmpdir(), `esedre-vitest-global-${process.pid}`);
+function resolveVitestWorkerGlobalDir(): string {
+  const poolId = process.env.VITEST_POOL_ID || process.env.VITEST_WORKER_ID || '0';
+  const ownerKey = `${process.pid}:p${poolId}:t${threadId}`;
+  if (
+    !process.env.ESEDRE_VITEST_GLOBAL_DIR ||
+    (threadId > 0 && process.env.ESEDRE_VITEST_OWNER_KEY !== ownerKey)
+  ) {
+    process.env.ESEDRE_VITEST_OWNER_KEY = ownerKey;
+    const isDirectVitestHost = Boolean(
+      threadId > 0 ||
+        (process.argv[1] && /vitest|tinypool/i.test(process.argv[1]))
+    );
+    const dirSuffix = isDirectVitestHost
+      ? `${process.pid}-p${poolId}-t${threadId}`
+      : `ppid${process.ppid || process.pid}-p${poolId}`;
+    process.env.ESEDRE_VITEST_GLOBAL_DIR = path.join(
+      os.tmpdir(),
+      `esedre-vitest-global-${dirSuffix}`
+    );
+  }
+  return process.env.ESEDRE_VITEST_GLOBAL_DIR;
+}
+
+if (process.env.VITEST) {
+  resolveVitestWorkerGlobalDir();
 }
 
 export function getGlobalConfigDir(): string {
@@ -254,9 +279,7 @@ export function getGlobalConfigDir(): string {
     return process.env.ESEDRE_GLOBAL_DIR;
   }
   if (process.env.VITEST) {
-    const testGlobalDir =
-      process.env.ESEDRE_VITEST_GLOBAL_DIR || path.join(os.tmpdir(), `esedre-vitest-global-${process.pid}`);
-    process.env.ESEDRE_VITEST_GLOBAL_DIR = testGlobalDir;
+    const testGlobalDir = resolveVitestWorkerGlobalDir();
     if (!fs.existsSync(testGlobalDir)) {
       try {
         fs.mkdirSync(testGlobalDir, { recursive: true });
@@ -277,6 +300,29 @@ export function expandHome(filePath: string): string {
     return path.join(os.homedir(), filePath.slice(1));
   }
   return filePath;
+}
+
+export function resolveConfiguredCorsOrigins(config?: EsedreConfig | null): string[] {
+  const origins = new Set<string>();
+
+  const addAll = (list?: string[] | null) => {
+    if (!Array.isArray(list)) return;
+    for (const item of list) {
+      if (typeof item === 'string') {
+        const trimmed = item.trim();
+        if (trimmed) origins.add(trimmed);
+      }
+    }
+  };
+
+  if (process.env.ESEDRE_CORS_ORIGINS) {
+    addAll(process.env.ESEDRE_CORS_ORIGINS.split(','));
+  }
+
+  addAll(config?.server?.corsOrigins);
+  addAll(readGlobalConfig()?.server?.corsOrigins);
+
+  return Array.from(origins);
 }
 
 export function readGlobalConfig(): EsedreConfig | null {

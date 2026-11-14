@@ -106,13 +106,14 @@ function inferEntriesFromStagedFiles(stagedFiles: string[], existingAnchors: Set
     const ticketMatch = norm.match(/^projects\/([^/]+)\/tickets\/(\d+)\/(.+)$/);
     if (ticketMatch) {
       const [, proj, id, file] = ticketMatch;
-      if (file.toLowerCase() === 'lease.json') continue;
+      const lowerFile = file.toLowerCase();
+      if (lowerFile === 'lease.json' || lowerFile.includes('.tmp.') || lowerFile.endsWith('.bak')) continue;
       const anchor = `#${proj}-${id}`;
       if (existingAnchors.has(anchor.toLowerCase())) continue;
       if (!byTicket.has(anchor)) {
         byTicket.set(anchor, new Set());
       }
-      byTicket.get(anchor)!.add(file.toLowerCase());
+      byTicket.get(anchor)!.add(lowerFile);
       continue;
     }
 
@@ -133,10 +134,17 @@ function inferEntriesFromStagedFiles(stagedFiles: string[], existingAnchors: Set
   const inferred: CoalescedEntry[] = [];
   for (const [anchor, files] of byTicket.entries()) {
     let summary = 'Sync ticket data';
+    const fileList = Array.from(files);
     if (files.size === 1 && (files.has('implementation_plan.md') || files.has('plan.md'))) {
       summary = 'Save implementation plan';
     } else if (files.size === 1 && files.has('comments.json')) {
       summary = 'Add comment on ticket';
+    } else if (files.size === 1 && files.has('inline-comments.json')) {
+      summary = 'Add inline review comment on ticket';
+    } else if (files.size === 1 && files.has('answers.json')) {
+      summary = 'Save question answers on ticket';
+    } else if (fileList.length > 0 && fileList.every((f) => f.startsWith('attachments/'))) {
+      summary = 'Add attachment to ticket';
     } else if (files.has('detail.md') && (files.has('implementation_plan.md') || files.has('plan.md'))) {
       summary = 'Update ticket specification and save implementation plan';
     } else if (files.has('detail.md') || files.has('meta.json')) {
@@ -161,8 +169,23 @@ export function formatSyncCommitMessage(
   stagedFiles: string[] = []
 ): FormattedSyncCommit {
   const grouped = new Map<string, { anchor: string; events: SyncMutationEvent[] }>();
+  const projectsWithTicketEvents = new Set<string>();
+  for (const ev of events) {
+    if (ev.project && (ev.ticketKey || ev.ticketId !== undefined)) {
+      projectsWithTicketEvents.add(ev.project.toLowerCase());
+    }
+  }
 
   for (const ev of events) {
+    if (
+      !ev.ticketKey &&
+      ev.ticketId === undefined &&
+      ev.project &&
+      ev.action === 'update-project' &&
+      projectsWithTicketEvents.has(ev.project.toLowerCase())
+    ) {
+      continue;
+    }
     let anchor: string;
     if (ev.ticketKey) {
       anchor = `#${ev.ticketKey.replace(/^#/, '')}`;

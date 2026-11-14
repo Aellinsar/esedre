@@ -122,6 +122,15 @@ export function extractListsFromText(content: string): { defaultAllow: string[];
   return { defaultAllow, gamedayAllow };
 }
 
+const WARP_CIDRS = ['2a09:bac0::/28', '104.28.0.0/16', '172.64.0.0/13'];
+
+export function isCloudflareWarpIp(ip: string | undefined | null): boolean {
+  if (!ip) return false;
+  const clean = ip.trim();
+  if (!clean) return false;
+  return WARP_CIDRS.some((cidr) => isIpInCidr(clean, cidr));
+}
+
 /**
  * Validates whether clientIp is permitted under the allowedIps list.
  */

@@ -272,7 +272,7 @@ describe('Project Settings & Rename Engine', () => {
       const mockReq: any = {
         url: '/api/planning/update-project',
         method: 'POST',
-        headers: {},
+        headers: { 'content-type': 'application/json' },
         on(event: string, cb: any) {
           if (event === 'data') {
             cb(JSON.stringify({ code: 'Profe', name: 'Updated Via API' }));
@@ -308,7 +308,7 @@ describe('Project Settings & Rename Engine', () => {
       const mockReq: any = {
         url: '/api/planning/rename-project',
         method: 'POST',
-        headers: {},
+        headers: { 'content-type': 'application/json' },
         on(event: string, cb: any) {
           if (event === 'data') {
             cb(JSON.stringify({ oldCode: 'Profe', newCode: 'L151', newName: 'Lab 151' }));
@@ -346,7 +346,7 @@ describe('Project Settings & Rename Engine', () => {
       const mockReq: any = {
         url: '/api/planning/update-project',
         method: 'POST',
-        headers: {},
+        headers: { 'content-type': 'application/json' },
         on(event: string, cb: any) {
           if (event === 'data') {
             cb(JSON.stringify({ name: 'No Code Provided' }));

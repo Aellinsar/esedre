@@ -56,28 +56,31 @@ function getCloudflaredPath() {
 }
 
 // 3. Check if local ISP is actively intercepting Cloudflare Edge with fake certs (matchday block)
-function checkIspMatchBlock() {
+function checkIspMatchBlockOnce() {
   return new Promise((resolve) => {
     const req = https.request('https://188.114.96.5', { timeout: 1500 }, () => {
-      resolve(false);
+      resolve({ blocked: false, certIntercepted: false });
     });
     req.on('timeout', () => {
       req.destroy(new Error('ETIMEDOUT'));
     });
     req.on('error', (err) => {
-      if (
-        err?.message?.includes('self-signed') ||
-        err?.code === 'DEPTH_ZERO_SELF_SIGNED_CERT' ||
-        err?.code === 'ECONNRESET' ||
-        err?.message === 'ETIMEDOUT'
-      ) {
-        resolve(true);
-      } else {
-        resolve(false);
-      }
+      const certIntercepted =
+        Boolean(err?.message?.includes('self-signed')) || err?.code === 'DEPTH_ZERO_SELF_SIGNED_CERT';
+      const resetOrTimeout = err?.code === 'ECONNRESET' || err?.message === 'ETIMEDOUT';
+      resolve({ blocked: certIntercepted || resetOrTimeout, certIntercepted });
     });
     req.end();
   });
+}
+
+async function checkIspMatchBlock() {
+  const first = await checkIspMatchBlockOnce();
+  if (!first.blocked) return false;
+  if (first.certIntercepted) return true;
+  // Require 2/2 consecutive failures for non-cert resets/timeouts to avoid transient false positives
+  const second = await checkIspMatchBlockOnce();
+  return second.blocked;
 }
 
 function isPortInUse(port) {
@@ -165,17 +168,17 @@ async function main() {
       allowedIpsEnv = detectedIps.join(',');
       console.log('🔒 [Security] IP WHITELIST ACTIVE:');
       console.log(`   - Allowed IP(s)/Ranges: ${detectedIps.join(', ')}`);
-      console.log('   - Direct Connections: Localhost & Local LAN');
-      console.log('   - External requests from other IPs will receive HTTP 403 Forbidden.');
+      console.log('   - Direct Connections: Localhost (127.0.0.1)');
+      console.log('   - External requests from other IPs will be hard-dropped.');
       console.log('   (Tip: Run "npm run net:all" to allow all external IPs)\n');
     } else {
-      console.warn('⚠️  [Security] Could not resolve external IP addresses. Permissive mode enabled.\n');
-      allowedIpsEnv = '*';
+      console.warn('⚠️  [Security] Could not resolve external IP addresses. Failing closed to loopback only.\n');
+      allowedIpsEnv = '127.0.0.1,::1';
     }
   }
 
-  // 4. Start Vite with environment variable and host binding
-  const vite = spawn(process.execPath, [viteCliPath, '--port=5674', '--host'], {
+  // 4. Start Vite bound strictly to localhost (cloudflared connects locally)
+  const vite = spawn(process.execPath, [viteCliPath, '--port=5674', '--host=127.0.0.1'], {
     stdio: 'inherit',
     env: {
       ...process.env,

@@ -125,8 +125,10 @@ export class HttpStorageAdapter implements StorageAdapter {
   private request<T = any>(
     method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
     apiPath: string,
-    body?: any
+    body?: any,
+    timeoutOverrideMs?: number
   ): Promise<{ status: number; data: T }> {
+    const effectiveTimeoutMs = timeoutOverrideMs ?? this.timeoutMs;
     return new Promise((resolve, reject) => {
       const targetUrl = new URL(apiPath, `${this.host}/`);
       const isHttps = targetUrl.protocol === 'https:';
@@ -149,6 +151,8 @@ export class HttpStorageAdapter implements StorageAdapter {
         payloadBuffer = Buffer.from(JSON.stringify(body), 'utf-8');
         headers['Content-Type'] = 'application/json; charset=utf-8';
         headers['Content-Length'] = String(payloadBuffer.length);
+      } else if (method !== 'GET') {
+        headers['Content-Type'] = 'application/json; charset=utf-8';
       }
 
       const req = transport.request(
@@ -156,7 +160,7 @@ export class HttpStorageAdapter implements StorageAdapter {
         {
           method,
           headers,
-          timeout: this.timeoutMs,
+          timeout: effectiveTimeoutMs,
         },
         (res) => {
           const chunks: Buffer[] = [];
@@ -187,7 +191,7 @@ export class HttpStorageAdapter implements StorageAdapter {
         req.destroy();
         reject(
           new Error(
-            `Connection timed out after ${this.timeoutMs}ms while contacting remote Esedre server at ${this.host}. Verify the remote daemon is running ('ese status --host ${this.host}') and reachable on your network.`
+            `Connection timed out after ${effectiveTimeoutMs}ms while contacting remote Esedre server at ${this.host}. Verify the remote daemon is running ('ese status --host ${this.host}') and reachable on your network.`
           )
         );
       });
@@ -767,7 +771,9 @@ export class HttpStorageAdapter implements StorageAdapter {
     const qs = hubDir ? `?hub=${encodeURIComponent(hubDir)}` : '';
     const { data } = await this.request<GitSyncStatusReport>(
       'GET',
-      `/api/planning/sync/status${qs}`
+      `/api/planning/sync/status${qs}`,
+      undefined,
+      Math.max(this.timeoutMs, 30000)
     );
     return data;
   }
@@ -782,7 +788,8 @@ export class HttpStorageAdapter implements StorageAdapter {
         ...(options.push !== undefined ? { push: options.push } : {}),
         ...(options.commit !== undefined ? { commit: options.commit } : {}),
         force: options.force ?? true,
-      }
+      },
+      Math.max(this.timeoutMs, 100000)
     );
     return Array.isArray(data?.results) ? data.results : [];
   }
