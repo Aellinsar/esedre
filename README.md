@@ -138,7 +138,7 @@ Manage the local web dashboard and API server:
 | `stop` | `ese stop [--port <n>]` | Stop the running Esedre background server daemon. |
 | `status` | `ese status [--port <n>] [--host <url>]` | Check health, uptime, and diagnostics of the running local or remote server. |
 | `logs` | `ese logs [--port <n>] [--lines <n>]` | Tail recent server output logs. |
-| `sync` | `ese sync [--status \| -s] [--pull] [--push] [--hub <path>] [--json]` | Synchronize configured Esedre data hub repository (`esedre-data`) with its Git remote. |
+| `sync` | `ese sync [--status \| -s] [--pull] [--push] [--commit \| --no-commit] [--hub <path>] [--json]` | Synchronize configured Esedre data hub repository (`esedre-data`) with its Git remote. |
 | `mcp` | `ese mcp` | Launch the Model Context Protocol stdio server for LLM agents. |
 
 ### Developer Administration (Human Machine Setup)
@@ -201,24 +201,26 @@ Esedre resolves whether to use `HttpStorageAdapter` (remote HTTP) or `Filesystem
 Esedre can automatically commit, pull with rebase, and push mutations in your dedicated ticket data hub (`esedre-data`) to GitHub while strictly leaving your project source code repositories untouched:
 
 ```bash
-# Enable automatic data hub Git synchronization in ~/.esedre/config.json
+# Enable automatic data hub Git synchronization in ~/.esedre/config.json (defaults: 5s debounce, 15m interval)
 ese configure set sync.enabled true
 
 # Optional: customize debounce window (seconds) and periodic pull interval (minutes)
-ese configure set sync.debounceSeconds 3
-ese configure set sync.intervalMinutes 5
+ese configure set sync.debounceSeconds 5
+ese configure set sync.intervalMinutes 15
 
-# Inspect data hub sync status, pending commits, and last synced SHA
+# Inspect data hub sync status, dirty file count, pending commits, and last synced SHA
 ese sync --status
 
-# Trigger an immediate manual sync (or --pull / --push only)
+# Trigger an immediate full sync (commit + pull/rebase + push), Pull Only (--pull), or Push Only (--push --no-commit)
 ese sync
 ```
 
+You can also configure sync settings, inspect per-project hub eligibility, and trigger **Sync Hub Now**, **Pull Only**, or **Push Only** from the **Global Esedre Settings** gear modal in the local Web UI (`ese start`).
+
 * **Hard Data-Hub Boundary (`verifyDataHubGitRepo`)**: Auto-sync verifies that the target directory is the top-level Git root of a dedicated Esedre data hub (`projects/` + `projects.json` or `.esedre-hub`) and refuses to operate on source code repositories, workspace repositories with `projectCode`, or subdirectories inside a parent repo.
-* **Ephemeral Lease Exclusion**: `projects/*/tickets/*/lease.json` files are excluded from staging so high-frequency agent lease claims and heartbeats never pollute Git commit history.
+* **Ephemeral Lease & Temp Exclusion**: `projects/*/tickets/*/lease.json`, `*.tmp.*`, and `*.bak` files are excluded from staging so high-frequency agent lease claims, heartbeats, and atomic file writes never pollute Git commit history.
 * **Clean Human Commit Messages**: Mutations within the debounce window coalesce into clean ticket-anchored commits (`[#Esedre-6] Complete ticket and update verification records` or `[#Esedre-6, #Esedre-51] Sync 2 ticket updates`) with zero conventional commit prefixes and zero em dashes.
-* **Non-Interactive Rebase & Conflict Recovery**: Sync runs with `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`, fetches and rebases (`git rebase --autostash`) before pushing, and automatically runs `git rebase --abort` if a merge conflict occurs so the data hub working tree is never left in a half-rebased state.
+* **Working-Tree Lock Serialization & Conflict Recovery**: Concurrent ticket mutations (`ese`, MCP, REST API) and Git staging/rebase serialize cleanly through `<gitDir>/esedre-worktree.lock` while network `fetch` and `push` run outside the working-tree lock. Sync runs with `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`, fetches and rebases (`git rebase --autostash`) before pushing, invalidates in-memory ticket/API caches when upstream commits arrive, and automatically runs `git rebase --abort` if a merge conflict occurs so the data hub working tree is never left in a half-rebased state.
 
 #### Unique Project Codes Across Data Hubs
 

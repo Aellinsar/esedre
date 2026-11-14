@@ -158,8 +158,8 @@
    - Normal read/write operations never silently auto-migrate older projects across multi-owner hubs; mutations enforce `assertProjectCompatible` (`EsedreVersionError`: `BELOW_MIN_SUPPORTED`, `ABOVE_CURRENT_ENGINE`, `FEATURE_REQUIRES_UPGRADE`, MCP `-32002`, REST `409`).
    - Explicit schema migrations run via `ese upgrade`, `ese upgrade --project <Code>`, or `ese upgrade --all` after creating an atomic timestamped backup in `~/.esedre/backups/`.
 7. **Automatic Data Hub Git Sync (`src/sync/`, `ese sync`)**:
-   - Opt-in via `ese configure set sync.enabled true` (`sync` in `~/.esedre/config.json`: `enabled`, `remote`, `branch`, `push`, `pullOnStart`, `debounceSeconds`, `intervalMinutes`) and on-demand via `ese sync [--status] [--pull] [--push] [--hub <path>]`.
-   - Enforces hard data-hub boundary verification (`verifyDataHubGitRepo`: only syncs top-level Git data hubs, never source or workspace repos), excludes ephemeral `lease.json` files, formats clean `[#<ProjectCode>-<id>] <Imperative Summary>` commits with zero conventional prefixes and zero em dashes, and runs non-interactive `fetch` + `rebase --autostash` with automatic `rebase --abort` on conflict.
+   - Opt-in via `ese configure set sync.enabled true` (`sync` in `~/.esedre/config.json`: `enabled`, `remote`, `branch`, `push`, `pullOnStart`, `debounceSeconds`, `intervalMinutes`) and on-demand via `ese sync [--status] [--pull] [--push] [--commit | --no-commit] [--hub <path>]`.
+   - Enforces hard data-hub boundary verification (`verifyDataHubGitRepo`: only syncs top-level Git data hubs, never source or workspace repos), serializes local working-tree mutations and Git index operations via cross-process `<gitDir>/esedre-worktree.lock`, excludes ephemeral `lease.json`, `*.tmp.*`, and `*.bak` files, formats clean `[#<ProjectCode>-<id>] <Imperative Summary>` commits with zero conventional prefixes and zero em dashes, and runs network-decoupled `fetch`/`push` with locked `rebase --autostash` and automatic `rebase --abort` on conflict.
 
 ---
 

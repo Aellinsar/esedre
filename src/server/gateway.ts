@@ -73,6 +73,7 @@ function proxyRequest(req: http.IncomingMessage, res: http.ServerResponse, targe
     port: targetPort,
     path: targetPath,
     method: req.method,
+    agent: false,
     headers: {
       ...req.headers,
       host: `127.0.0.1:${targetPort}`,

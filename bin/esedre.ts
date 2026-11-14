@@ -132,7 +132,7 @@ ${colors.bold}SERVICE DAEMON COMMANDS:${colors.reset}
   ${colors.bold}logs${colors.reset}        [--port <n>] [--lines <n>]
                Tail recent logs from the Esedre background server.
 
-  ${colors.bold}sync${colors.reset}        [--status | -s] [--pull] [--push] [--hub <path>] [--json]
+  ${colors.bold}sync${colors.reset}        [--status | -s] [--pull] [--push] [--commit | --no-commit] [--hub <path>] [--json]
                Synchronize configured Esedre data hub repository (esedre-data) with its Git remote.
 
   ${colors.bold}mcp${colors.reset}         Start the Model Context Protocol (MCP) JSON-RPC 2.0 stdio server for autonomous LLM coding agents.
@@ -1426,21 +1426,24 @@ async function main(): Promise<void> {
 
         const pullFlag = Boolean(flags['pull']);
         const pushFlag = Boolean(flags['push']);
-        const pull = pullFlag || pushFlag || (!pullFlag && !pushFlag);
-        const push = pushFlag || (!pullFlag && !pushFlag);
+        const bothOrNeither = (pullFlag && pushFlag) || (!pullFlag && !pushFlag);
+        const pull = bothOrNeither ? true : pullFlag;
+        const push = bothOrNeither ? true : pushFlag;
+        const defaultCommit = pullFlag && !pushFlag ? false : true;
+        const commit = flags['commit'] !== undefined ? Boolean(flags['commit']) : defaultCommit;
 
         const results = storage.syncDataHub
           ? await storage.syncDataHub({
               hubDir: hubFlag,
               pull,
               push,
-              commit: true,
+              commit,
               force: true,
             })
           : await globalGitSyncCoordinator.flushAll(discovered.config || readGlobalConfig(), {
               pull,
               push,
-              commit: true,
+              commit,
               force: true,
             });
 
@@ -1471,13 +1474,18 @@ async function main(): Promise<void> {
               `${colors.red}✗ Sync ${r.status} for ${r.hubDir}: ${r.error || 'Unknown error'}${colors.reset}`
             );
           } else if (r.status === 'offline') {
+            const offlinePrefix = r.committed
+              ? `Synced local commit for ${r.hubDir}`
+              : `Checked ${r.hubDir}`;
             console.log(
-              `${colors.yellow}⚠️  Synced local commit for ${r.hubDir} (remote offline: ${r.error || 'deferred push'}, pending commits: ${r.pendingCommits})${colors.reset}`
+              `${colors.yellow}⚠️  ${offlinePrefix} (remote offline: ${r.error || 'deferred push'}, pending commits: ${r.pendingCommits})${colors.reset}`
             );
           } else {
             const commitDetail = r.committed
               ? `committed ${r.commitSha || ''} "${r.commitMessage || ''}"`
-              : 'working tree clean';
+              : commit
+                ? 'working tree clean'
+                : 'commit skipped';
             console.log(
               `${colors.green}✔ Synced data hub ${r.hubDir}${colors.reset} (${commitDetail}, pulled: ${r.pulled ? 'yes' : 'no'}, pushed: ${r.pushed ? 'yes' : 'no'}, pending: ${r.pendingCommits})`
             );

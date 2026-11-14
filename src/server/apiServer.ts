@@ -166,6 +166,10 @@ export function invalidateApiCache(): void {
   cachedAllData.clear();
 }
 
+globalGitSyncCoordinator.onHubWorkingTreeUpdated(() => {
+  invalidateApiCache();
+});
+
 async function buildPlanningAllPayload(
   reqStorage: StorageAdapter,
   baseCacheKey: string,
@@ -205,7 +209,11 @@ async function buildPlanningAllPayload(
     );
   }
 
-  for (const t of tickets) {
+  for (let idx = 0; idx < tickets.length; idx++) {
+    if (idx > 0 && idx % 50 === 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    const t = tickets[idx];
     const numKey = String(t.meta.id);
     const code = t.projectDescriptor?.code || t.meta.project || 'Profe';
     const prefixedKey = `${code}-${t.meta.id}`;
@@ -1204,7 +1212,7 @@ export function startApiServer(port: number, storage: StorageAdapter, workspaceR
       if (!server.listening) return;
       try {
         if (storage.prewarmCache) {
-          await storage.prewarmCache();
+          await storage.prewarmCache({ chunkSize: 8 });
         } else {
           await storage.listTickets({});
         }

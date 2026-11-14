@@ -170,7 +170,7 @@ export function pingDaemon(port: number, timeoutMs = 1000): Promise<{ responding
   return new Promise((resolve) => {
     const req = http.get(
       `http://127.0.0.1:${port}/api/planning/projects`,
-      { timeout: timeoutMs },
+      { timeout: timeoutMs, agent: false },
       (res) => {
         let body = '';
         res.on('data', (chunk) => {
@@ -209,7 +209,7 @@ function fetchDaemonPid(port: number, timeoutMs = 1000): Promise<number | undefi
   return new Promise((resolve) => {
     const req = http.get(
       `http://127.0.0.1:${port}/api/ping`,
-      { timeout: timeoutMs },
+      { timeout: timeoutMs, agent: false },
       (res) => {
         let body = '';
         res.on('data', (chunk) => {
@@ -519,7 +519,11 @@ export async function getDaemonStatus(options: { port?: number; json?: boolean; 
   const stateFile = getDaemonStateFile(port, workspaceRoot);
   const logFile = getDaemonLogFile(port, workspaceRoot);
 
-  const ping = await pingDaemon(port, 1500);
+  let ping = await pingDaemon(port, 3000);
+  if (state && isProcessAlive(state.pid) && !ping.responding) {
+    await new Promise((r) => setTimeout(r, 150));
+    ping = await pingDaemon(port, 3000);
+  }
 
   if (state && isProcessAlive(state.pid) && ping.responding && ping.isEsedre) {
     const startedMs = Date.parse(state.startedAt) || Date.now();
@@ -590,7 +594,7 @@ function fetchJsonEndpoint(urlStr: string, timeoutMs: number): Promise<{ status:
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(urlStr);
     const transport = parsedUrl.protocol === 'https:' ? https : http;
-    const req = transport.get(parsedUrl, { timeout: timeoutMs }, (res) => {
+    const req = transport.get(parsedUrl, { timeout: timeoutMs, agent: false }, (res) => {
       let body = '';
       res.on('data', (chunk) => {
         body += chunk;

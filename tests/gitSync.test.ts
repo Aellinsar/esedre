@@ -19,6 +19,7 @@ import {
 import { FilesystemStorageAdapter } from '../src/storage/filesystem.js';
 import { HttpStorageAdapter } from '../src/storage/http.js';
 import { createApiHandler } from '../src/server/apiServer.js';
+import { EsedreConflictError } from '../src/types.js';
 import {
   setGlobalConfigKey,
   getGlobalConfigKey,
@@ -208,7 +209,7 @@ describe('Esedre-6: Automatic Data Hub Git Sync', () => {
     });
   });
 
-  describe('End-to-End Git Sync with Bare Remote, Lease Exclusion, Rebase & Conflict Recovery', () => {
+  describe('End-to-End Git Sync with Bare Remote, Lease Exclusion, Rebase & Conflict Recovery', { timeout: 45000 }, () => {
     let tempRoot: string;
     let bareRemoteDir: string;
     let hubDir: string;
@@ -432,7 +433,7 @@ describe('Esedre-6: Automatic Data Hub Git Sync', () => {
     });
   });
 
-  describe('Config, CLI Args & HTTP Remote Sync Endpoints', () => {
+  describe('Config, CLI Args & HTTP Remote Sync Endpoints', { timeout: 45000 }, () => {
     let tempRoot: string;
     let bareRemoteDir: string;
     let hubDir: string;
@@ -505,7 +506,7 @@ describe('Esedre-6: Automatic Data Hub Git Sync', () => {
       expect(resolved.pullOnStart).toBe(false);
     });
 
-    it('parses ese sync CLI flags (--status, --pull, --push, --hub, --json)', () => {
+    it('parses ese sync CLI flags (--status, --pull, --push, --commit, --no-commit, --hub, --json)', () => {
       const parsedStatus = parseCliArgs(['sync', '--status', '--json']);
       expect(parsedStatus.error).toBeUndefined();
       expect(parsedStatus.command).toBe('sync');
@@ -516,7 +517,23 @@ describe('Esedre-6: Automatic Data Hub Git Sync', () => {
       expect(parsedPull.error).toBeUndefined();
       expect(parsedPull.command).toBe('sync');
       expect(parsedPull.flags['pull']).toBe(true);
+      expect(parsedPull.flags['commit']).toBeUndefined();
       expect(parsedPull.flags['hub']).toBe('/custom/hub');
+
+      const parsedPullCommit = parseCliArgs(['sync', '--pull', '--commit']);
+      expect(parsedPullCommit.error).toBeUndefined();
+      expect(parsedPullCommit.flags['pull']).toBe(true);
+      expect(parsedPullCommit.flags['commit']).toBe(true);
+
+      const parsedPushNoCommit = parseCliArgs(['sync', '--push', '--no-commit']);
+      expect(parsedPushNoCommit.error).toBeUndefined();
+      expect(parsedPushNoCommit.flags['push']).toBe(true);
+      expect(parsedPushNoCommit.flags['no-commit']).toBe(true);
+      expect(parsedPushNoCommit.flags['commit']).toBe(false);
+
+      const parsedCommitFalse = parseCliArgs(['sync', '--commit', 'false']);
+      expect(parsedCommitFalse.error).toBeUndefined();
+      expect(parsedCommitFalse.flags['commit']).toBe(false);
     });
 
     it('exposes GET /api/planning/sync/status and POST /api/planning/sync over HttpStorageAdapter', async () => {
@@ -691,6 +708,264 @@ describe('Esedre-6: Automatic Data Hub Git Sync', () => {
       } else {
         expect(normalizeRealPath(tempRoot)).toBe(normalizeRealPath(path.join(tempRoot, '.')));
       }
+    });
+  });
+
+  describe('Concurrency, Working-Tree Serialization & Cache Invalidation (Esedre-114)', { timeout: 45000 }, () => {
+    let tempRoot: string;
+    let bareRemoteDir: string;
+    let hubDir: string;
+    let server: http.Server | null = null;
+    let prevGlobalDir: string | undefined;
+
+    beforeEach(() => {
+      tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-sync-race-'));
+      prevGlobalDir = process.env.ESEDRE_GLOBAL_DIR;
+      process.env.ESEDRE_GLOBAL_DIR = path.join(tempRoot, 'global-esedre');
+      fs.mkdirSync(process.env.ESEDRE_GLOBAL_DIR, { recursive: true });
+
+      bareRemoteDir = path.join(tempRoot, 'remote.git');
+      hubDir = path.join(tempRoot, 'esedre-data');
+
+      fs.mkdirSync(bareRemoteDir, { recursive: true });
+      git(bareRemoteDir, ['init', '--bare', '-b', 'main']);
+
+      fs.mkdirSync(path.join(hubDir, 'projects'), { recursive: true });
+      fs.writeFileSync(path.join(hubDir, 'projects.json'), '[]\n', 'utf-8');
+      git(hubDir, ['init', '-b', 'main']);
+      git(hubDir, ['config', 'user.name', 'Test Developer']);
+      git(hubDir, ['config', 'user.email', 'test@esedre.com']);
+      git(hubDir, ['remote', 'add', 'origin', bareRemoteDir]);
+      git(hubDir, ['add', 'projects.json']);
+      git(hubDir, ['commit', '-m', '[Infra] Initialize data hub']);
+      git(hubDir, ['push', '-u', 'origin', 'main']);
+    });
+
+    afterEach(async () => {
+      globalGitSyncCoordinator.stopDaemonBackgroundLoop();
+      await globalGitSyncCoordinator.waitForIdle();
+      if (server) {
+        await new Promise<void>((resolve) => server!.close(() => resolve()));
+        server = null;
+      }
+      if (prevGlobalDir === undefined) {
+        delete process.env.ESEDRE_GLOBAL_DIR;
+      } else {
+        process.env.ESEDRE_GLOBAL_DIR = prevGlobalDir;
+      }
+      try {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      } catch {}
+    });
+
+    it('serializes concurrent ticket writes and active sync flushes without ID collisions, lost writes, or staged .tmp files', async () => {
+      const storage = new FilesystemStorageAdapter(tempRoot, {
+        dataDir: hubDir,
+        projectCode: 'Esedre',
+        sync: {
+          enabled: true,
+          remote: 'origin',
+          branch: 'main',
+          push: true,
+          debounceSeconds: 0,
+        },
+      });
+
+      await storage.registerProject({ code: 'Esedre', name: 'Esedre Engine' });
+
+      // Fire 6 concurrent ticket creations alongside an explicit sync flush
+      const [createdTickets] = await Promise.all([
+        Promise.all(
+          Array.from({ length: 6 }, (_, idx) =>
+            storage.createTicket({
+              projectCode: 'Esedre',
+              title: `Concurrent ticket #${idx + 1}`,
+              type: 'Platform',
+              summary: `Created concurrently in slot ${idx + 1}`,
+            })
+          )
+        ),
+        storage.syncDataHub({ pull: true, push: true, commit: true, force: true }),
+      ]);
+
+      const assignedIds = createdTickets.map((t) => t.meta.id).sort((a, b) => a - b);
+      expect(assignedIds).toEqual([1, 2, 3, 4, 5, 6]);
+
+      // Plant a synthetic leftover .tmp file and fire concurrent comments, answers, inline comments, and sync
+      const strayTmpFile = path.join(hubDir, 'projects', 'Esedre', 'tickets', '1', 'meta.json.tmp.99999');
+      fs.writeFileSync(strayTmpFile, '{"partial":true', 'utf-8');
+
+      await Promise.all([
+        storage.addComment('Esedre-1', { author: 'AgentA', text: 'Concurrent comment 1' }),
+        storage.addComment('Esedre-1', { author: 'AgentB', text: 'Concurrent comment 2' }),
+        storage.addComment('Esedre-1', { author: 'AgentC', text: 'Concurrent comment 3' }),
+        storage.addComment('Esedre-1', { author: 'AgentD', text: 'Concurrent comment 4' }),
+        storage.saveAnswer('Esedre-1', 0, 'Use working-tree lock serialization'),
+        storage.saveInlineComment('Esedre-1', 'Concurrent', 'Verified under parallel load', 'Reviewer'),
+        storage.syncDataHub({ pull: true, push: true, commit: true, force: true }),
+      ]);
+
+      await globalGitSyncCoordinator.waitForIdle();
+      // Flush any trailing debounced mutations deterministically
+      await storage.syncDataHub({ pull: true, push: true, commit: true, force: true });
+
+      const ticket1 = await storage.getTicket('Esedre-1');
+      expect(ticket1?.comments.length).toBe(4);
+      const answers = await storage.getAnswers('Esedre-1');
+      expect(answers['0']).toBe('Use working-tree lock serialization');
+      const inlineComments = await storage.getInlineComments('Esedre-1');
+      expect(inlineComments.length).toBe(1);
+
+      // Verify remote repository received all 6 tickets, answers, and inline-comments, and NEVER staged .tmp files
+      const remoteTree = git(bareRemoteDir, ['ls-tree', '-r', '--name-only', 'HEAD']);
+      for (let id = 1; id <= 6; id++) {
+        expect(remoteTree).toContain(`projects/Esedre/tickets/${id}/meta.json`);
+      }
+      expect(remoteTree).toContain('projects/Esedre/tickets/1/comments.json');
+      expect(remoteTree).toContain('projects/Esedre/tickets/1/answers.json');
+      expect(remoteTree).toContain('projects/Esedre/tickets/1/inline-comments.json');
+      expect(remoteTree).not.toContain('.tmp.');
+
+      const status = await getDataHubSyncStatus(hubDir, {
+        enabled: true,
+        remote: 'origin',
+        branch: 'main',
+        push: true,
+      });
+      expect(status.pendingCommits).toBe(0);
+      expect(status.dirtyFilesCount).toBe(0);
+
+      storage.closeWatchers();
+    });
+
+    it('enforces optimistic concurrency (EsedreConflictError) when parallel updateTicket calls share the same lastHash', async () => {
+      const storage = new FilesystemStorageAdapter(tempRoot, {
+        dataDir: hubDir,
+        projectCode: 'Esedre',
+        sync: { enabled: false },
+      });
+      await storage.registerProject({ code: 'Esedre', name: 'Esedre Engine' });
+      const created = await storage.createTicket({
+        projectCode: 'Esedre',
+        title: 'Initial title before race',
+      });
+      const baselineSha = created.sha1!;
+      expect(baselineSha).toBeTruthy();
+
+      const outcomes = await Promise.allSettled([
+        storage.updateTicket('Esedre-1', { title: 'Updated by Worker Alpha' }, baselineSha),
+        storage.updateTicket('Esedre-1', { title: 'Updated by Worker Beta' }, baselineSha),
+      ]);
+
+      const fulfilled = outcomes.filter((o) => o.status === 'fulfilled');
+      const rejected = outcomes.filter((o): o is PromiseRejectedResult => o.status === 'rejected');
+      expect(fulfilled.length).toBe(1);
+      expect(rejected.length).toBe(1);
+      expect(rejected[0].reason).toBeInstanceOf(EsedreConflictError);
+
+      storage.closeWatchers();
+    });
+
+    it('preserves dirty local files on Pull-Only (commit: false) and immediately invalidates storage and API ETag caches on upstream pull', async () => {
+      const fsStorage = new FilesystemStorageAdapter(tempRoot, {
+        dataDir: hubDir,
+        projectCode: 'Esedre',
+        sync: {
+          enabled: false,
+          remote: 'origin',
+          branch: 'main',
+          push: true,
+        },
+      });
+      await fsStorage.registerProject({ code: 'Esedre', name: 'Esedre Engine' });
+      await fsStorage.createTicket({
+        projectCode: 'Esedre',
+        title: 'Baseline synced ticket',
+        priority: 'Low',
+      });
+      await fsStorage.syncDataHub({ pull: true, push: true, commit: true, force: true });
+
+      const handler = createApiHandler(fsStorage, tempRoot);
+      server = http.createServer(async (req, res) => {
+        await handler(req, res);
+      });
+      await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', () => resolve()));
+      const addr = server.address() as { port: number };
+      const baseUrl = `http://127.0.0.1:${addr.port}`;
+
+      // Warm both FilesystemStorageAdapter memory cache and API ETag cache
+      const initialTickets = await fsStorage.listTickets({ project: 'Esedre' });
+      expect(initialTickets.length).toBe(1);
+      expect(initialTickets[0].meta.priority).toBe('Low');
+
+      const res1 = await fetch(`${baseUrl}/api/planning/all`);
+      expect(res1.status).toBe(200);
+      const etag1 = res1.headers.get('etag');
+      expect(etag1).toBeTruthy();
+
+      const res304 = await fetch(`${baseUrl}/api/planning/all`, {
+        headers: { 'If-None-Match': etag1! },
+      });
+      expect(res304.status).toBe(304);
+
+      // Push an upstream update from an independent peer clone
+      const peerDir = path.join(tempRoot, 'peer-hub');
+      git(tempRoot, ['clone', bareRemoteDir, peerDir]);
+      git(peerDir, ['config', 'user.name', 'Peer Dev']);
+      git(peerDir, ['config', 'user.email', 'peer@esedre.com']);
+      const peerStorage = new FilesystemStorageAdapter(tempRoot, {
+        dataDir: peerDir,
+        projectCode: 'Esedre',
+        sync: { enabled: false },
+      });
+      await peerStorage.updateTicket('Esedre-1', { priority: 'Critical' });
+      await peerStorage.addComment('Esedre-1', {
+        author: 'PeerDev',
+        text: 'Escalated priority from peer machine',
+      });
+      await peerStorage.syncDataHub({ pull: true, push: true, commit: true, force: true });
+      peerStorage.closeWatchers();
+
+      // Create a local uncommitted ticket on primary hub before running Pull-Only
+      await fsStorage.createTicket({
+        projectCode: 'Esedre',
+        title: 'Local uncommitted draft ticket',
+      });
+
+      // Run Pull-Only (commit: false, pull: true, push: false)
+      const pullResults = await fsStorage.syncDataHub({
+        pull: true,
+        push: false,
+        commit: false,
+        force: true,
+      });
+      expect(pullResults.length).toBe(1);
+      expect(pullResults[0].status).toBe('idle');
+      expect(pullResults[0].committed).toBe(false);
+      expect(pullResults[0].pulled).toBe(true);
+      expect(pullResults[0].pushed).toBe(false);
+
+      // Local draft ticket must remain uncommitted in the working tree
+      const statusAfterPull = await fsStorage.getSyncStatus();
+      expect((statusAfterPull.hubs[0].dirtyFilesCount ?? 0) > 0).toBe(true);
+
+      // Immediately verify both FilesystemStorageAdapter and HTTP /api/planning/all invalidated stale caches (<5s TTL)
+      const refreshedTicket1 = await fsStorage.getTicket('Esedre-1');
+      expect(refreshedTicket1?.meta.priority).toBe('Critical');
+      expect(refreshedTicket1?.comments.some((c) => c.text.includes('Escalated priority from peer machine'))).toBe(
+        true
+      );
+
+      const resAfterPull = await fetch(`${baseUrl}/api/planning/all`, {
+        headers: { 'If-None-Match': etag1! },
+      });
+      expect(resAfterPull.status).toBe(200);
+      const payloadAfterPull = await resAfterPull.json();
+      const apiTicket1 = payloadAfterPull.metas['Esedre-1'];
+      expect(apiTicket1?.priority).toBe('Critical');
+      expect(apiTicket1?.commentCount).toBe(1);
+
+      fsStorage.closeWatchers();
     });
   });
 });

@@ -13,16 +13,19 @@ All storage engines implement the `StorageAdapter` contract defined in `src/stor
 
 - `getProjects(): Promise<ProjectDescriptor[]>`
 - `registerProject(input: RegisterProjectInput): Promise<ProjectDescriptor>`
-- `updateProject(code: string, updates: Partial<ProjectDescriptor>): Promise<ProjectDescriptor>`
-- `renameProjectCode(oldCode: string, newCode: string): Promise<ProjectDescriptor>`
+- `updateProject(input: UpdateProjectInput): Promise<ProjectDescriptor>`
+- `renameProjectCode(input: RenameProjectCodeInput): Promise<RenameProjectCodeResult>`
 - `listTickets(filter?: ListTicketsFilter): Promise<EsedreTicket[]>`
 - `getTicket(id: number | string): Promise<EsedreTicket | null>`
 - `createTicket(input: CreateTicketInput): Promise<EsedreTicket>`
-- `updateTicket(id: number | string, updates: Partial<TicketMeta>, lastHash?: string): Promise<EsedreTicket>`
-- `claimTicket(id: number | string, input: ClaimTicketInput): Promise<EsedreTicket>`
-- `renewLease(id: number | string, input: RenewLeaseInput): Promise<EsedreTicket>`
-- `releaseTicket(id: number | string, input: ReleaseTicketInput): Promise<EsedreTicket>`
-- `listActiveLeases(project?: string): Promise<TicketLeaseSummary[]>`
+- `updateTicket(id: number | string, updates: UpdateTicketInput, lastHash?: string): Promise<EsedreTicket>`
+- `claimTicket(input: ClaimLeaseInput): Promise<ClaimLeaseResult>`
+- `renewLease(input: RenewLeaseInput): Promise<TicketLease>`
+- `releaseTicket(input: ReleaseLeaseInput): Promise<{ released: boolean; ticketKey: string; previousLease?: TicketLease }>`
+- `getTicketLease(id: number | string, projectCode?: string): Promise<TicketLease | null>`
+- `listLeases(projectCode?: string): Promise<TicketLease[]>`
+- `getSyncStatus?(hubDir?: string): Promise<GitSyncStatusReport>`
+- `syncDataHub?(options?: SyncDataHubCallOptions): Promise<GitSyncResult[]>`
 - `addTicketLink(sourceId: number | string, relation: TicketLinkRelation, targetId: number | string, options?: { author?: string; project?: string }): Promise<{ source: EsedreTicket; target?: EsedreTicket }>`
 - `removeTicketLink(sourceId: number | string, targetId: number | string, options?: { relation?: TicketLinkRelation; project?: string }): Promise<{ source: EsedreTicket; target?: EsedreTicket }>`
 - `getPlan(id: number | string): Promise<string | null>`
@@ -197,16 +200,17 @@ Tickets with uncompleted `blocked-by` links have `isBlocked: true` projected dyn
 ## 12. Automatic Data Hub Git Sync (`src/sync/`)
 
 1. **Configuration (`sync` in `~/.esedre/config.json`)**:
-   - Opt-in via `ese configure set sync.enabled true` (`resolveGitSyncConfig` defaults: `enabled: false`, `remote: 'origin'`, `branch: 'main'`, `push: true`, `pullOnStart: true`, `debounceSeconds: 3`, `intervalMinutes: 5`).
+   - Opt-in via `ese configure set sync.enabled true` (`resolveGitSyncConfig` defaults: `enabled: false`, `remote: 'origin'`, `branch: 'main'`, `push: true`, `pullOnStart: true`, `debounceSeconds: 5`, `intervalMinutes: 15`).
 2. **Hard Data-Hub Boundary (`verifyDataHubGitRepo` in `src/sync/gitSync.ts`)**:
    - Verifies that `git rev-parse --show-toplevel` equals the canonical hub path (rejecting subdirectories inside parent repos), confirms the directory has `projects/` or `projects.json` or `.esedre-hub`, and rejects any repository containing `.esedre/esedre.json` with `projectCode` or Esedre's own `package.json` + `bin/esedre.ts`.
    - `FilesystemStorageAdapter.recordHubSyncMutation` only emits `SyncMutationEvent` when `loc.sourceType === 'hub' && loc.hubDir`.
-3. **Scoped Staging & Lease Exclusion (`stageDataHubChanges`)**:
-   - Stages only `projects/`, `projects.json`, and `.esedre-hub` while excluding `:(exclude)projects/*/tickets/*/lease.json` and `:(exclude)**/lease.json` so ephemeral TTL leases never create Git commit churn.
+3. **Scoped Staging, Transient File & Lease Exclusion (`stageDataHubChanges`)**:
+   - Stages only `projects/`, `projects.json`, and `.esedre-hub` while excluding `:(exclude)projects/*/tickets/*/lease.json`, `:(exclude)**/lease.json`, `:(exclude)**/*.tmp.*`, and `:(exclude)**/*.bak` so ephemeral TTL leases and atomic temp files never create Git commit churn.
 4. **Commit Message Formatting (`src/sync/commitMessage.ts`)**:
-   - `formatSyncCommitMessage(events, stagedFiles)` generates clean human commit messages following Esedre commit standards (`[#<ProjectCode>-<id>] <Imperative Summary>`), coalescing single-ticket and multi-ticket bursts within the debounce window, inferring `[#<ProjectCode>-<id>]` from staged paths when flushing unattributed changes, and stripping conventional prefixes and em dashes.
-5. **Non-Interactive Rebase, Lockfile & Conflict Recovery (`syncDataHub` & `GitSyncCoordinator`)**:
-   - Coordinates via `<hubDir>/.git/esedre-sync.lock` (stale PID lock recovery) and runs Git with `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`.
-   - Runs `git fetch --prune <remote> <branch>` and `git rebase --autostash <remote>/<branch>` before `git push -u <remote> <branch>`. If rebase fails, automatically runs `git rebase --abort` and records `status: 'conflict'` in `~/.esedre/sync-status.json`.
+   - `formatSyncCommitMessage(events, stagedFiles)` generates clean human commit messages following Esedre commit standards (`[#<ProjectCode>-<id>] <Imperative Summary>`), coalescing single-ticket and multi-ticket bursts within the debounce window, inferring `[#<ProjectCode>-<id>]` from staged paths (including `answers.json`, `inline-comments.json`, and `attachments/*`) when flushing unattributed changes, and stripping conventional prefixes and em dashes.
+5. **Working-Tree Lock Serialization, Non-Interactive Rebase & Cache Invalidation (`syncDataHub` & `GitSyncCoordinator`)**:
+   - Coordinates overall sync operations via `<gitInternalDir>/esedre-sync.lock` and serializes working-tree file mutations (`FilesystemStorageAdapter.withLocationsLock` and `upgradeProjectData`) against Git staging and rebase via `<gitInternalDir>/esedre-worktree.lock` (`withHubWorkingTreeLock`, with sorted multi-hub lock order and `AsyncLocalStorage` re-entrancy tokens), while keeping network `git fetch` and `git push` outside the working-tree lock.
+   - Runs Git with `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`, fetches and rebases (`git rebase --autostash <remote>/<branch>`) before pushing (plus one automatic fetch + rebase retry on concurrent push race), and runs `git rebase --abort` inside the working-tree lock if rebase fails, recording `status: 'conflict'` in `~/.esedre/sync-status.json`.
+   - When upstream pulls advance `HEAD`, `GitSyncCoordinator` notifies `WeakRef`-registered `FilesystemStorageAdapter` instances and `apiServer` to invalidate in-memory ticket, milestone, and HTTP ETag caches immediately.
 
 

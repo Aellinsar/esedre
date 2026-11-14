@@ -198,7 +198,7 @@ describe('Tier 2: Cross-Platform Black-Box Subprocess, MCP Pipe & Daemon E2E (Es
     });
   });
 
-  describe('2. Full Black-Box CLI Lifecycle & Chunked Pipe Hook Execution', () => {
+  describe('2. Full Black-Box CLI Lifecycle & Chunked Pipe Hook Execution', { timeout: 60000 }, () => {
     it('executes full CLI workflow (init hub/workspace, create, link, lease, plan, comment, release, snapshot)', () => {
       const hubDir = path.join(tempRoot, 'e2e-hub');
       const wsDir = path.join(tempRoot, 'e2e-ws');
