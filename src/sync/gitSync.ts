@@ -21,6 +21,7 @@ import {
   GitSyncResult,
   GitSyncStatusReport,
   GitSyncStatusState,
+  ResolvedGitSyncConfig,
   SyncMutationEvent,
 } from '../types.js';
 import { formatSyncCommitMessage } from './commitMessage.js';
@@ -810,7 +811,12 @@ export async function syncDataHub(
 
   return withHubSyncLock(resolvedHub, async () => {
     const startedAtMs = Date.now();
-    const shouldCommit = options.commit !== false;
+    const shouldCommit =
+      options.commit !== undefined
+        ? options.commit
+        : syncCfg.enabled
+          ? syncCfg.autoCommit
+          : true;
     const verification = await verifyDataHubGitRepo(resolvedHub);
     if (!verification.valid) {
       if (shouldCommit) {
@@ -857,8 +863,13 @@ export async function syncDataHub(
         error: safeErr,
       };
     }
-    const shouldPush = options.push !== undefined ? options.push : syncCfg.push;
-    const shouldPull = options.pull !== undefined ? options.pull : shouldPush;
+    const shouldPush = options.push !== undefined ? options.push : syncCfg.autoPush;
+    const shouldPull =
+      options.pull !== undefined
+        ? options.pull
+        : options.push === true
+          ? true
+          : shouldPush || syncCfg.autoPull;
 
     const outcome: {
       committed: boolean;
@@ -1109,7 +1120,17 @@ export async function getDataHubSyncStatus(
 ): Promise<GitSyncHubStatus> {
   const resolvedHub = path.resolve(expandHome(hubDir));
   const config: EsedreConfig | null | undefined =
-    configOrSync && typeof configOrSync === 'object' && !('sync' in configOrSync) && ('enabled' in configOrSync || 'remote' in configOrSync || 'branch' in configOrSync || 'push' in configOrSync)
+    configOrSync &&
+    typeof configOrSync === 'object' &&
+    !('sync' in configOrSync) &&
+    ('enabled' in configOrSync ||
+      'mode' in configOrSync ||
+      'autoCommit' in configOrSync ||
+      'autoPush' in configOrSync ||
+      'autoPull' in configOrSync ||
+      'remote' in configOrSync ||
+      'branch' in configOrSync ||
+      'push' in configOrSync)
       ? { sync: configOrSync as GitSyncConfig }
       : (configOrSync as EsedreConfig | null | undefined);
   const syncCfg = resolveGitSyncConfig(config);
@@ -1123,6 +1144,10 @@ export async function getDataHubSyncStatus(
     return {
       hubDir: resolvedHub,
       enabled: syncCfg.enabled,
+      mode: syncCfg.mode,
+      autoCommit: syncCfg.autoCommit,
+      autoPush: syncCfg.autoPush,
+      autoPull: syncCfg.autoPull,
       remote,
       branch,
       push: syncCfg.push,
@@ -1195,6 +1220,10 @@ export async function getDataHubSyncStatus(
   return {
     hubDir: resolvedHub,
     enabled: syncCfg.enabled,
+    mode: syncCfg.mode,
+    autoCommit: syncCfg.autoCommit,
+    autoPush: syncCfg.autoPush,
+    autoPull: syncCfg.autoPull,
     remote,
     branch,
     push: syncCfg.push,
@@ -1336,7 +1365,7 @@ export class GitSyncCoordinator {
   public enqueueMutation(event: SyncMutationEvent, config?: EsedreConfig | null): void {
     activeWorktreeLocks.exit(() => {
       const syncCfg = resolveGitSyncConfig(config);
-      if (!syncCfg.enabled) return;
+      if (!syncCfg.autoCommit) return;
 
       const resolvedHub = path.resolve(expandHome(event.hubDir));
       const key = normalizeRealPath(resolvedHub);
@@ -1358,7 +1387,7 @@ export class GitSyncCoordinator {
     });
   }
 
-  private computeFlushDelayMs(syncCfg: Required<GitSyncConfig>): number {
+  private computeFlushDelayMs(syncCfg: ResolvedGitSyncConfig): number {
     return this.isDaemonMode
       ? Math.max(50, syncCfg.debounceSeconds * 1000)
       : syncCfg.debounceSeconds === 0
@@ -1395,7 +1424,7 @@ export class GitSyncCoordinator {
     resolvedHub: string,
     event: SyncMutationEvent,
     config: EsedreConfig | null | undefined,
-    syncCfg: Required<GitSyncConfig>
+    syncCfg: ResolvedGitSyncConfig
   ): void {
     let entry = this.queues.get(key);
     if (!entry) {
@@ -1484,7 +1513,7 @@ export class GitSyncCoordinator {
       const remaining = this.queues.get(key);
       if (remaining && remaining.events.length > 0 && !this.timers.has(key)) {
         const resolvedCfg = resolveGitSyncConfig(remaining.config);
-        if (resolvedCfg.enabled) {
+        if (resolvedCfg.autoCommit) {
           this.scheduleTimerForKey(key, remaining.hubDir, Math.min(this.computeFlushDelayMs(resolvedCfg), 75));
         }
       }
@@ -1532,8 +1561,13 @@ export class GitSyncCoordinator {
 
       const initialCfg = getConfig();
       const syncCfg = resolveGitSyncConfig(initialCfg);
-      if (syncCfg.enabled && syncCfg.pullOnStart) {
-        void this.flushAll(initialCfg, { commit: true, pull: true, push: syncCfg.push }).catch(() => {});
+      const shouldPullOnStart = syncCfg.pullOnStart && (syncCfg.autoPull || syncCfg.autoPush);
+      if (syncCfg.autoCommit || shouldPullOnStart) {
+        void this.flushAll(initialCfg, {
+          commit: syncCfg.autoCommit,
+          pull: shouldPullOnStart,
+          push: syncCfg.autoPush,
+        }).catch(() => {});
       }
 
       // Check every 60s if intervalMinutes has elapsed for periodic background sync
@@ -1545,7 +1579,11 @@ export class GitSyncCoordinator {
         const elapsedMinutes = (Date.now() - lastPeriodicRun) / 60000;
         if (elapsedMinutes >= resolved.intervalMinutes) {
           lastPeriodicRun = Date.now();
-          void this.flushAll(cfg, { commit: true, pull: true, push: resolved.push }).catch(() => {});
+          void this.flushAll(cfg, {
+            commit: resolved.autoCommit,
+            pull: resolved.autoPull || resolved.autoPush,
+            push: resolved.autoPush,
+          }).catch(() => {});
         }
       }, 60000);
 

@@ -1,6 +1,6 @@
 import React from 'react';
-import { GitBranch, RefreshCw, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, AlertTriangle, XCircle, Clock, FolderGit2, ShieldAlert } from 'lucide-react';
-import { GitSyncHubStatus, GitSyncStatusState, ProjectSyncMode } from './types';
+import { GitBranch, GitCommit, RefreshCw, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, AlertTriangle, XCircle, Clock, FolderGit2, ShieldAlert } from 'lucide-react';
+import { GitSyncHubStatus, GitSyncMode, GitSyncStatusState, ProjectSyncMode } from './types';
 
 interface GitSyncHubCardProps {
   hub: GitSyncHubStatus;
@@ -8,8 +8,12 @@ interface GitSyncHubCardProps {
   onSyncHub: (hubDir: string, opts?: { pull?: boolean; push?: boolean; commit?: boolean }) => void;
 }
 
-export function getSyncStatusBadgeMeta(status: GitSyncStatusState, enabled: boolean): { label: string; dotClass: string; badgeClass: string } {
-  if (!enabled || status === 'disabled') {
+export function getSyncStatusBadgeMeta(
+  status: GitSyncStatusState,
+  enabled: boolean,
+  mode?: GitSyncMode
+): { label: string; dotClass: string; badgeClass: string } {
+  if (!enabled || status === 'disabled' || mode === 'off') {
     return { label: 'Disabled', dotClass: 'bg-slate-400', badgeClass: 'border-slate-400/40 bg-slate-500/10 text-slate-600 dark:text-slate-400' };
   }
   switch (status) {
@@ -21,13 +25,29 @@ export function getSyncStatusBadgeMeta(status: GitSyncStatusState, enabled: bool
       return { label: 'Error', dotClass: 'bg-rose-500', badgeClass: 'border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-300' };
     case 'offline':
       return { label: 'Offline (Local Commit)', dotClass: 'bg-amber-500', badgeClass: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300' };
-    default:
+    default: {
+      if (mode === 'commit-only') {
+        return { label: 'Commit Only (Local)', dotClass: 'bg-indigo-500', badgeClass: 'border-indigo-500/40 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300' };
+      }
+      if (mode === 'pull-only') {
+        return { label: 'Pull Only', dotClass: 'bg-cyan-500', badgeClass: 'border-cyan-500/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300' };
+      }
+      if (mode === 'commit-and-pull') {
+        return { label: 'Commit + Pull', dotClass: 'bg-teal-500', badgeClass: 'border-teal-500/40 bg-teal-500/10 text-teal-700 dark:text-teal-300' };
+      }
+      if (mode === 'push-only') {
+        return { label: 'Push Only', dotClass: 'bg-sky-500', badgeClass: 'border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300' };
+      }
+      if (mode === 'commit-and-push') {
+        return { label: 'Commit + Push', dotClass: 'bg-emerald-500', badgeClass: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' };
+      }
       return { label: 'Active / Idle', dotClass: 'bg-emerald-500', badgeClass: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' };
+    }
   }
 }
 
 export const GitSyncHubCard: React.FC<GitSyncHubCardProps> = ({ hub, isSyncing, onSyncHub }) => {
-  const badge = getSyncStatusBadgeMeta(hub.status, hub.enabled);
+  const badge = getSyncStatusBadgeMeta(hub.status, hub.enabled, hub.mode);
 
   return (
     <div className="p-3.5 rounded-xl bg-[var(--bg-input)] border border-[var(--border-subtle)] space-y-2.5">
@@ -101,6 +121,16 @@ export const GitSyncHubCard: React.FC<GitSyncHubCardProps> = ({ hub, isSyncing, 
         <button
           type="button"
           disabled={isSyncing}
+          onClick={() => onSyncHub(hub.hubDir, { commit: true, pull: false, push: false })}
+          className="px-2.5 py-1.5 rounded-lg bg-[var(--bg-surface)] hover:bg-[var(--accent-bg-subtle)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)] text-[11px] font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+          title="Stage and commit dirty hub files locally without network pull or push"
+        >
+          <GitCommit size={12} />
+          <span>Commit Only</span>
+        </button>
+        <button
+          type="button"
+          disabled={isSyncing}
           onClick={() => onSyncHub(hub.hubDir, { commit: false, pull: true, push: false })}
           className="px-2.5 py-1.5 rounded-lg bg-[var(--bg-surface)] hover:bg-[var(--accent-bg-subtle)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)] text-[11px] font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
         >
@@ -121,9 +151,10 @@ export const GitSyncHubCard: React.FC<GitSyncHubCardProps> = ({ hub, isSyncing, 
           disabled={isSyncing}
           onClick={() => onSyncHub(hub.hubDir, { commit: true, pull: true, push: true })}
           className="px-3 py-1.5 rounded-lg bg-[var(--accent-primary)] hover:brightness-110 text-white text-[11px] font-semibold inline-flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50 shadow-xs"
+          title="Stage, commit, pull with rebase, and push to remote"
         >
           <RefreshCw size={12} className={isSyncing ? 'animate-spin' : ''} />
-          <span>Sync Hub Now</span>
+          <span>Commit &amp; Push</span>
         </button>
       </div>
     </div>

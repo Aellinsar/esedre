@@ -62,7 +62,7 @@ The unified gateway at port `5674` coordinates two internal sub-services:
    - `POST /api/planning/leases/claim`: Acquires a ticket lease.
    - `POST /api/planning/leases/release`: Releases an active ticket lease.
    - `GET /api/planning/sync/status`: Returns `GitSyncStatusReport` across configured data hubs, including `projectModes` (`hub` vs. `in-repo` hands-off) and bounded sync metrics.
-   - `POST /api/planning/sync/config`: Validates and persists global `sync.*` settings (`enabled`, `remote`, `branch`, `push`, `pullOnStart`, `debounceSeconds`, `intervalMinutes`) in `~/.esedre/config.json` and refreshes the daemon background loop.
+   - `POST /api/planning/sync/config`: Validates and persists global `sync.*` settings (`mode`, `autoCommit`, `autoPush`, `autoPull`, legacy `enabled` / `push`, `remote`, `branch`, `pullOnStart`, `debounceSeconds`, `intervalMinutes`) in `~/.esedre/config.json` and refreshes the daemon background loop.
    - `POST /api/planning/sync`: Enqueues a debounced sync event (`notifyOnly: true`) or flushes/synchronizes configured data hubs immediately (`results: GitSyncResult[]`).
 
 ---

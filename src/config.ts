@@ -2,24 +2,138 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { threadId } from 'node:worker_threads';
-import { CURRENT_ESEDRE_VERSION, GitSyncConfig } from './types.js';
+import { CURRENT_ESEDRE_VERSION, GitSyncConfig, GitSyncMode, ResolvedGitSyncConfig } from './types.js';
 
-export type { GitSyncConfig };
+export type { GitSyncConfig, GitSyncMode, ResolvedGitSyncConfig };
 
 export const DEFAULT_ESEDRE_PORT = 5674;
 export const MAX_PROJECT_CODE_LENGTH = 8;
 export const PROJECT_CODE_REGEX = /^[a-zA-Z0-9]{1,8}$/;
 export const MAX_PROJECT_NAME_LENGTH = 48;
 
-export const DEFAULT_GIT_SYNC_CONFIG: Required<GitSyncConfig> = {
+export const DEFAULT_GIT_SYNC_CONFIG: ResolvedGitSyncConfig = {
   enabled: false,
+  mode: 'off',
+  autoCommit: false,
+  autoPush: false,
+  autoPull: false,
   remote: 'origin',
   branch: 'main',
-  push: true,
+  push: false,
   pullOnStart: true,
   debounceSeconds: 5,
   intervalMinutes: 15,
 };
+
+export function normalizeGitSyncMode(rawMode: unknown): GitSyncMode {
+  if (typeof rawMode !== 'string' || !rawMode.trim()) {
+    throw new Error(
+      `Invalid Git sync mode '${String(rawMode)}'. Valid modes: off, commit-only, pull-only, push-only, commit-and-pull, commit-and-push.`
+    );
+  }
+  const normalized = rawMode
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, '-');
+
+  switch (normalized) {
+    case 'off':
+    case 'disabled':
+    case 'false':
+    case 'none':
+      return 'off';
+    case 'commit-only':
+    case 'commit':
+    case 'local':
+    case 'local-only':
+      return 'commit-only';
+    case 'pull-only':
+    case 'pull':
+      return 'pull-only';
+    case 'push-only':
+    case 'push':
+      return 'push-only';
+    case 'commit-and-pull':
+    case 'commit+pull':
+      return 'commit-and-pull';
+    case 'commit-and-push':
+    case 'commit+push':
+    case 'full':
+    case 'sync':
+    case 'all':
+    case 'on':
+    case 'true':
+      return 'commit-and-push';
+    default:
+      throw new Error(
+        `Invalid Git sync mode '${rawMode}'. Valid modes: off, commit-only, pull-only, push-only, commit-and-pull, commit-and-push.`
+      );
+  }
+}
+
+export function modeToStageFlags(mode: GitSyncMode): {
+  autoCommit: boolean;
+  autoPull: boolean;
+  autoPush: boolean;
+} {
+  switch (mode) {
+    case 'off':
+      return { autoCommit: false, autoPull: false, autoPush: false };
+    case 'commit-only':
+      return { autoCommit: true, autoPull: false, autoPush: false };
+    case 'pull-only':
+      return { autoCommit: false, autoPull: true, autoPush: false };
+    case 'push-only':
+      return { autoCommit: false, autoPull: true, autoPush: true };
+    case 'commit-and-pull':
+      return { autoCommit: true, autoPull: true, autoPush: false };
+    case 'commit-and-push':
+      return { autoCommit: true, autoPull: true, autoPush: true };
+  }
+}
+
+export function deriveGitSyncMode(
+  autoCommit: boolean,
+  autoPull: boolean,
+  autoPush: boolean
+): GitSyncMode {
+  if (!autoCommit && !autoPull && !autoPush) return 'off';
+  if (autoCommit && autoPush) return 'commit-and-push';
+  if (!autoCommit && autoPush) return 'push-only';
+  if (autoCommit && autoPull && !autoPush) return 'commit-and-pull';
+  if (!autoCommit && autoPull && !autoPush) return 'pull-only';
+  return 'commit-only';
+}
+
+function expandGitSyncLayer(layer?: GitSyncConfig | null): Partial<GitSyncConfig> {
+  if (!layer || typeof layer !== 'object') return {};
+  const out: Partial<GitSyncConfig> = { ...layer };
+
+  if (layer.mode !== undefined) {
+    try {
+      const modeFlags = modeToStageFlags(normalizeGitSyncMode(layer.mode));
+      if (layer.autoCommit === undefined) out.autoCommit = modeFlags.autoCommit;
+      if (layer.autoPush === undefined && layer.push === undefined) out.autoPush = modeFlags.autoPush;
+      if (layer.autoPull === undefined) out.autoPull = modeFlags.autoPull;
+    } catch {}
+  }
+
+  if (layer.enabled === false) {
+    if (layer.autoCommit === undefined && layer.mode === undefined) out.autoCommit = false;
+    if (layer.autoPush === undefined && layer.mode === undefined) out.autoPush = false;
+    if (layer.autoPull === undefined && layer.mode === undefined) out.autoPull = false;
+  } else if (layer.enabled === true) {
+    if (layer.autoCommit === undefined && layer.mode === undefined) out.autoCommit = true;
+    if (layer.autoPush === undefined && layer.mode === undefined) {
+      out.autoPush = layer.push !== undefined ? Boolean(layer.push) : true;
+    }
+  } else if (layer.push !== undefined && layer.autoPush === undefined && layer.mode === undefined) {
+    // Preserve explicit push override if autoCommit/enabled came from a lower layer
+    out.autoPush = Boolean(layer.push);
+  }
+
+  return out;
+}
 
 export const GIT_REMOTE_NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 export const GIT_BRANCH_NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,127}$/;
@@ -53,12 +167,38 @@ export function validateGitBranchName(branch: string): string {
   return clean;
 }
 
-export function resolveGitSyncConfig(config?: EsedreConfig | null): Required<GitSyncConfig> {
+export function resolveGitSyncConfig(config?: EsedreConfig | null): ResolvedGitSyncConfig {
   const globalCfg = readGlobalConfig();
-  const raw: GitSyncConfig = {
-    ...(globalCfg?.sync || {}),
-    ...(config?.sync || {}),
+  const globalExpanded = expandGitSyncLayer(globalCfg?.sync);
+  const localExpanded = expandGitSyncLayer(config?.sync);
+  const raw: Partial<GitSyncConfig> = {
+    ...globalExpanded,
+    ...localExpanded,
   };
+
+  // Only treat legacy `push` alone (with no enabled/autoCommit/autoPush/mode anywhere) as inactive
+  const hasAnyActivationKey =
+    globalCfg?.sync?.enabled !== undefined ||
+    globalCfg?.sync?.mode !== undefined ||
+    globalCfg?.sync?.autoCommit !== undefined ||
+    globalCfg?.sync?.autoPush !== undefined ||
+    globalCfg?.sync?.autoPull !== undefined ||
+    config?.sync?.enabled !== undefined ||
+    config?.sync?.mode !== undefined ||
+    config?.sync?.autoCommit !== undefined ||
+    config?.sync?.autoPush !== undefined ||
+    config?.sync?.autoPull !== undefined;
+
+  const autoCommit = hasAnyActivationKey ? Boolean(raw.autoCommit ?? false) : false;
+  const autoPush = hasAnyActivationKey ? Boolean(raw.autoPush ?? false) : false;
+  const autoPull = hasAnyActivationKey
+    ? raw.autoPull !== undefined
+      ? Boolean(raw.autoPull)
+      : autoPush
+    : false;
+  const mode = deriveGitSyncMode(autoCommit, autoPull, autoPush);
+  const enabled = mode !== 'off';
+
   const debounce =
     typeof raw.debounceSeconds === 'number' && !Number.isNaN(raw.debounceSeconds)
       ? Math.min(Math.max(0, Math.round(raw.debounceSeconds)), 300)
@@ -80,14 +220,73 @@ export function resolveGitSyncConfig(config?: EsedreConfig | null): Required<Git
     } catch {}
   }
   return {
-    enabled: Boolean(raw.enabled ?? DEFAULT_GIT_SYNC_CONFIG.enabled),
+    enabled,
+    mode,
+    autoCommit,
+    autoPush,
+    autoPull,
     remote: safeRemote,
     branch: safeBranch,
-    push: raw.push !== undefined ? Boolean(raw.push) : DEFAULT_GIT_SYNC_CONFIG.push,
+    push: autoPush,
     pullOnStart: raw.pullOnStart !== undefined ? Boolean(raw.pullOnStart) : DEFAULT_GIT_SYNC_CONFIG.pullOnStart,
     debounceSeconds: debounce,
     intervalMinutes: interval,
   };
+}
+
+export function resolveSyncCliStages(
+  flags: Record<string, string | boolean>,
+  subcommand: string | undefined,
+  resolvedSync: ResolvedGitSyncConfig
+): { commit: boolean; pull: boolean; push: boolean } {
+  const sub = subcommand?.trim().toLowerCase();
+  const isCommitOnly = Boolean(
+    flags['commit-only'] || flags['commitOnly'] || sub === 'commit' || sub === 'commit-only'
+  );
+  const isExplicitFull = Boolean(flags['all'] || sub === 'all' || sub === 'full');
+  const explicitPull =
+    flags['pull'] !== undefined ? Boolean(flags['pull']) : sub === 'pull' ? true : undefined;
+  const explicitPush =
+    flags['push'] !== undefined ? Boolean(flags['push']) : sub === 'push' ? true : undefined;
+  const explicitCommit = flags['commit'] !== undefined ? Boolean(flags['commit']) : undefined;
+
+  if (isCommitOnly) {
+    return {
+      commit: explicitCommit ?? true,
+      pull: explicitPull ?? false,
+      push: explicitPush ?? false,
+    };
+  }
+
+  if (isExplicitFull) {
+    return {
+      commit: explicitCommit ?? true,
+      pull: explicitPull ?? true,
+      push: explicitPush ?? true,
+    };
+  }
+
+  if (explicitPull === undefined && explicitPush === undefined) {
+    if (resolvedSync.enabled) {
+      return {
+        commit: explicitCommit ?? resolvedSync.autoCommit,
+        pull: resolvedSync.autoPull || resolvedSync.autoPush,
+        push: resolvedSync.autoPush,
+      };
+    }
+    return {
+      commit: explicitCommit ?? true,
+      pull: true,
+      push: true,
+    };
+  }
+
+  const push = explicitPush !== undefined ? explicitPush : explicitPull === true ? false : (resolvedSync.enabled ? resolvedSync.autoPush : true);
+  const pull = explicitPull !== undefined ? explicitPull : explicitPush === true ? false : resolvedSync.autoPull;
+  const defaultCommit = explicitPull === true && !push ? false : true;
+  const commit = explicitCommit !== undefined ? explicitCommit : defaultCommit;
+
+  return { commit, pull, push };
 }
 
 export interface EsedrePortsConfig {
@@ -568,6 +767,12 @@ export function removeLocationFromGlobalConfig(identifier: string): { removed: b
 
 const CANONICAL_DOT_KEYS: Record<string, string> = {
   'sync.enabled': 'sync.enabled',
+  'sync.mode': 'sync.mode',
+  'sync.autocommit': 'sync.autoCommit',
+  'sync.commit': 'sync.autoCommit',
+  'sync.autopush': 'sync.autoPush',
+  'sync.autopull': 'sync.autoPull',
+  'sync.pull': 'sync.autoPull',
   'sync.remote': 'sync.remote',
   'sync.branch': 'sync.branch',
   'sync.push': 'sync.push',
@@ -597,6 +802,29 @@ export function getGlobalConfigKey(rawKey: string): any {
     const matched = Object.keys(current.remotes).find((k) => k.toLowerCase() === code.toLowerCase());
     return matched ? current.remotes[matched] : undefined;
   }
+  if (
+    key === 'sync.mode' ||
+    key === 'sync.autoCommit' ||
+    key === 'sync.autoPush' ||
+    key === 'sync.autoPull' ||
+    key === 'sync.enabled' ||
+    key === 'sync.push'
+  ) {
+    if (!current.sync || typeof current.sync !== 'object') return undefined;
+    const syncProp = key.slice('sync.'.length) as keyof ResolvedGitSyncConfig;
+    if ((current.sync as any)[syncProp] !== undefined && key !== 'sync.mode') {
+      return (current.sync as any)[syncProp];
+    }
+    const hasSyncModeState =
+      current.sync.mode !== undefined ||
+      current.sync.enabled !== undefined ||
+      current.sync.autoCommit !== undefined ||
+      current.sync.autoPush !== undefined ||
+      current.sync.autoPull !== undefined ||
+      current.sync.push !== undefined;
+    if (!hasSyncModeState) return undefined;
+    return resolveGitSyncConfig(current)[syncProp];
+  }
   if (key.includes('.')) {
     const parts = key.split('.');
     let val: any = current;
@@ -615,7 +843,9 @@ export function setGlobalConfigKey(rawKey: string, value: any): { key: string; v
   const isClear =
     value === null ||
     value === undefined ||
-    (typeof value === 'string' && ['none', 'null', ''].includes(value.trim().toLowerCase()));
+    (typeof value === 'string' &&
+      ['none', 'null', ''].includes(value.trim().toLowerCase()) &&
+      !(key === 'sync.mode' && value.trim().toLowerCase() === 'none'));
 
   if (isClear) {
     if (key.startsWith('remotes.')) {
@@ -655,7 +885,14 @@ export function setGlobalConfigKey(rawKey: string, value: any): { key: string; v
 
   let parsedValue = value;
   const lowerKey = key.toLowerCase();
-  if (lowerKey === 'sync.enabled' || lowerKey === 'sync.push' || lowerKey === 'sync.pullonstart') {
+  if (
+    lowerKey === 'sync.enabled' ||
+    lowerKey === 'sync.autocommit' ||
+    lowerKey === 'sync.autopush' ||
+    lowerKey === 'sync.autopull' ||
+    lowerKey === 'sync.push' ||
+    lowerKey === 'sync.pullonstart'
+  ) {
     if (typeof value === 'boolean') {
       parsedValue = value;
     } else if (typeof value === 'number') {
@@ -670,6 +907,8 @@ export function setGlobalConfigKey(rawKey: string, value: any): { key: string; v
         throw new Error(`Invalid boolean value '${value}' for '${key}'. Expected true or false.`);
       }
     }
+  } else if (lowerKey === 'sync.mode') {
+    parsedValue = normalizeGitSyncMode(value);
   } else if (lowerKey === 'sync.remote') {
     parsedValue = validateGitRemoteName(String(value));
   } else if (lowerKey === 'sync.branch') {
@@ -707,6 +946,77 @@ export function setGlobalConfigKey(rawKey: string, value: any): { key: string; v
       }
     }
     current.remotes[code] = parsedValue;
+  } else if (key === 'sync.mode') {
+    const stageFlags = modeToStageFlags(parsedValue as GitSyncMode);
+    const nextSync: GitSyncConfig = {
+      ...(current.sync || {}),
+      autoCommit: stageFlags.autoCommit,
+      autoPush: stageFlags.autoPush,
+    };
+    if (stageFlags.autoPull !== stageFlags.autoPush) {
+      nextSync.autoPull = stageFlags.autoPull;
+    } else {
+      delete nextSync.autoPull;
+    }
+    delete nextSync.mode;
+    delete nextSync.enabled;
+    delete nextSync.push;
+    current.sync = nextSync;
+  } else if (key === 'sync.autoCommit' || key === 'sync.autoPush' || key === 'sync.autoPull') {
+    const prevResolved = resolveGitSyncConfig(current);
+    const prop = key.slice('sync.'.length) as 'autoCommit' | 'autoPush' | 'autoPull';
+    const hadLegacyState =
+      current.sync?.enabled !== undefined ||
+      current.sync?.push !== undefined ||
+      current.sync?.mode !== undefined;
+    const nextSync: GitSyncConfig = {
+      ...(current.sync || {}),
+      ...(hadLegacyState
+        ? {
+            autoCommit: current.sync?.autoCommit ?? prevResolved.autoCommit,
+            autoPush: current.sync?.autoPush ?? prevResolved.autoPush,
+            ...(current.sync?.autoPull !== undefined || prevResolved.autoPull !== prevResolved.autoPush
+              ? { autoPull: current.sync?.autoPull ?? prevResolved.autoPull }
+              : {}),
+          }
+        : {}),
+      [prop]: Boolean(parsedValue),
+    };
+    if (key === 'sync.autoPush' && Boolean(parsedValue) === true && nextSync.autoPull === false) {
+      delete nextSync.autoPull;
+    }
+    delete nextSync.mode;
+    delete nextSync.enabled;
+    delete nextSync.push;
+    current.sync = nextSync;
+  } else if (key === 'sync.enabled') {
+    const boolVal = Boolean(parsedValue);
+    if (!boolVal) {
+      current.sync = {
+        ...(current.sync || {}),
+        enabled: false,
+        autoCommit: false,
+        autoPush: false,
+        autoPull: false,
+      };
+    } else {
+      const nextPush = current.sync?.autoPush ?? current.sync?.push ?? true;
+      current.sync = {
+        ...(current.sync || {}),
+        enabled: true,
+        autoCommit: current.sync?.autoCommit ?? true,
+        autoPush: nextPush,
+      };
+    }
+    delete current.sync.mode;
+  } else if (key === 'sync.push') {
+    const boolVal = Boolean(parsedValue);
+    current.sync = {
+      ...(current.sync || {}),
+      push: boolVal,
+      autoPush: boolVal,
+    };
+    delete current.sync.mode;
   } else if (key.includes('.')) {
     const parts = key.split('.');
     let obj: any = current;
@@ -724,22 +1034,27 @@ export function setGlobalConfigKey(rawKey: string, value: any): { key: string; v
   return { key, value: parsedValue };
 }
 
-export function updateGlobalGitSyncConfig(updates: Record<string, any>): Required<GitSyncConfig> {
+export function updateGlobalGitSyncConfig(updates: Record<string, any>): ResolvedGitSyncConfig {
   if (!updates || typeof updates !== 'object') {
     throw new Error('Invalid Git sync configuration payload.');
   }
 
-  const allowedKeys: Array<keyof GitSyncConfig> = [
+  // Apply legacy/preset keys before explicit boolean stage overrides so explicit fields win cleanly
+  const orderedKeys: Array<keyof GitSyncConfig> = [
     'enabled',
+    'push',
+    'mode',
+    'autoCommit',
+    'autoPush',
+    'autoPull',
+    'pullOnStart',
     'remote',
     'branch',
-    'push',
-    'pullOnStart',
     'debounceSeconds',
     'intervalMinutes',
   ];
 
-  for (const field of allowedKeys) {
+  for (const field of orderedKeys) {
     if (updates[field] === undefined) continue;
     const rawVal = updates[field];
     if (field === 'remote' || field === 'branch') {

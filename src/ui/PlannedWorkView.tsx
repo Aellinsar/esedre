@@ -2535,9 +2535,16 @@ export function PlannedWorkView({
           <div className="flex items-center gap-2">
             {isOwner && !isEmbedded && (() => {
               const hubs = syncReport?.hubs || [];
+              const mode = syncReport?.config?.mode;
+              const isPushActive = syncReport?.config?.autoPush ?? syncReport?.config?.push ?? false;
               const hasConflictOrError = hubs.some((h) => h.status === 'conflict' || h.status === 'error');
               const isSyncing = hubs.some((h) => h.status === 'syncing');
-              const hasPending = hubs.some((h) => h.status === 'offline' || h.pendingCommits > 0 || (h.dirtyFilesCount ?? 0) > 0);
+              const hasPending = hubs.some(
+                (h) =>
+                  h.status === 'offline' ||
+                  (isPushActive && h.pendingCommits > 0) ||
+                  (h.dirtyFilesCount ?? 0) > 0
+              );
               const syncDotClass = !syncReport?.enabled
                 ? 'bg-slate-400'
                 : hasConflictOrError
@@ -2546,6 +2553,8 @@ export function PlannedWorkView({
                 ? 'bg-sky-500 animate-pulse'
                 : hasPending
                 ? 'bg-amber-500'
+                : mode === 'commit-only'
+                ? 'bg-indigo-500'
                 : 'bg-emerald-500';
               const syncLabel = !syncReport?.enabled
                 ? 'Git Sync: Off'
@@ -2555,6 +2564,10 @@ export function PlannedWorkView({
                 ? 'Git Sync: Syncing...'
                 : hasPending
                 ? 'Git Sync: Pending Changes'
+                : mode === 'commit-only'
+                ? 'Git Sync: Commit Only'
+                : mode === 'pull-only'
+                ? 'Git Sync: Pull Only'
                 : 'Git Sync: Active';
               return (
                 <button

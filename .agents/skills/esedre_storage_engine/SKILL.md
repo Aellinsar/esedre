@@ -200,7 +200,8 @@ Tickets with uncompleted `blocked-by` links have `isBlocked: true` projected dyn
 ## 12. Automatic Data Hub Git Sync (`src/sync/`)
 
 1. **Configuration (`sync` in `~/.esedre/config.json`)**:
-   - Opt-in via `ese configure set sync.enabled true` (`resolveGitSyncConfig` defaults: `enabled: false`, `remote: 'origin'`, `branch: 'main'`, `push: true`, `pullOnStart: true`, `debounceSeconds: 5`, `intervalMinutes: 15`).
+   - Opt-in via `ese configure set sync.autoCommit true` (`commit-only` local mode) or `ese configure set sync.mode commit-and-push` (`resolveGitSyncConfig` defaults: `mode: 'off'`, `autoCommit: false`, `autoPush: false`, `autoPull: false`, `enabled: false`, `remote: 'origin'`, `branch: 'main'`, `push: false`, `pullOnStart: true`, `debounceSeconds: 5`, `intervalMinutes: 15`; legacy `enabled` and `push` keys remain supported).
+   - Stage isolation: `enqueueMutation` only schedules debounced flushes when `autoCommit` is `true`, and `commit-only` mode (`autoCommit: true, autoPush: false, autoPull: false`) executes zero network calls across debounced flushes, daemon startup, and periodic intervals.
 2. **Hard Data-Hub Boundary (`verifyDataHubGitRepo` in `src/sync/gitSync.ts`)**:
    - Verifies that `git rev-parse --show-toplevel` equals the canonical hub path (rejecting subdirectories inside parent repos), confirms the directory has `projects/` or `projects.json` or `.esedre-hub`, and rejects any repository containing `.esedre/esedre.json` with `projectCode` or Esedre's own `package.json` + `bin/esedre.ts`.
    - `FilesystemStorageAdapter.recordHubSyncMutation` only emits `SyncMutationEvent` when `loc.sourceType === 'hub' && loc.hubDir`.
