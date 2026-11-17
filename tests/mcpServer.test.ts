@@ -262,6 +262,45 @@ describe('EsedreMcpServer (JSON-RPC 2.0)', () => {
     expect(updatedTicket.detail?.raw).toContain('**Estimated Effort**: 2.0 - 3.5 hours');
   });
 
+  it('preserves explicit multi-paragraph ### Summary inside detail over summary param and writes **Type**: label in esedre_create_ticket (Ticket #116)', async () => {
+    const detailedSummary = [
+      'Paragraph one of the multi-paragraph summary inside detail markdown.',
+      '',
+      'Paragraph two detailing the exact reproduction steps and architectural context.',
+    ].join('\n');
+
+    const createRes = await callRpc(server, {
+      jsonrpc: '2.0',
+      id: 116,
+      method: 'tools/call',
+      params: {
+        name: 'esedre_create_ticket',
+        arguments: {
+          title: 'MCP Summary Precedence & Type Label',
+          type: 'Bug',
+          project: 'Core',
+          summary: 'Shorter one-line summary argument.',
+          detail: [
+            '### Summary',
+            detailedSummary,
+            '',
+            '### Fix Breakdown',
+            '1. First fix item',
+          ].join('\n'),
+          includeRaw: true,
+        },
+      },
+    });
+
+    expect(createRes.error).toBeUndefined();
+    const createdTicket = JSON.parse(createRes.result.content[0].text);
+    expect(createdTicket.detail?.summary).toBe(detailedSummary);
+    expect(createdTicket.detail?.raw).toMatch(/^# Ticket #1: MCP Summary Precedence & Type Label\n\*\*Type\*\*: Bug/m);
+    expect(createdTicket.detail?.raw).not.toMatch(/^\*\*Category\*\*:/m);
+    expect(createdTicket.detail?.raw).toContain(detailedSummary);
+    expect(createdTicket.detail?.raw).not.toContain('Shorter one-line summary argument.');
+  });
+
   it('returns hasPlan, summary, and hydrates planMarkdown when includePlan is true in esedre_list_tickets (Ticket #58)', async () => {
     // 1. Create two tickets: one with a plan, one without
     await adapter.createTicket({

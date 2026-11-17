@@ -1768,7 +1768,7 @@ export function PlannedWorkView({
     overrideOq?: string[]
   ) => {
     const title = metasMap[feat.ticketId]?.title || feat.title;
-    const cat = metasMap[feat.ticketId]?.category || feat.category;
+    const ticketType = metasMap[feat.ticketId]?.type || metasMap[feat.ticketId]?.category || feat.type || feat.category;
     const complexity = metasMap[feat.ticketId]?.complexity || feat.complexity;
     const effort = metasMap[feat.ticketId]?.estimatedEffort || feat.estimatedEffort || '2.0 - 4.0 hours';
     const rationale = overrideRationale !== undefined ? overrideRationale : (feat.rationale || '');
@@ -1776,7 +1776,7 @@ export function PlannedWorkView({
     const tech = overrideTech !== undefined ? overrideTech : (feat.technicalDetails || []);
     const oq = overrideOq !== undefined ? overrideOq : (feat.openQuestions || []);
 
-    let md = `# Ticket #${feat.ticketId}: ${title}\n**Category**: ${cat}  \n**Complexity**: ${complexity}  \n**Estimated Effort**: ${effort}  \n\n`;
+    let md = `# Ticket #${feat.ticketId}: ${title}\n**Type**: ${ticketType}  \n**Complexity**: ${complexity}  \n**Estimated Effort**: ${effort}  \n\n`;
     if (rationale.trim()) {
       md += `### Summary\n${rationale.trim()}\n\n`;
     }

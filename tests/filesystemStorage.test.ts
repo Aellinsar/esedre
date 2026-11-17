@@ -833,5 +833,75 @@ describe('FilesystemStorageAdapter', () => {
       'Prevents silent section drops in MCP responses.',
     ]);
   });
+
+  it('preserves explicit ### Summary in detail markdown over shorter summary parameter and emits **Type**: header label (Ticket #116)', async () => {
+    const multiParagraphSummary = [
+      'First paragraph of detailed multi-paragraph summary inside detail.md.',
+      '',
+      'Second paragraph explaining root cause and edge cases in full detail.',
+    ].join('\n');
+
+    // 1. createTicket with both summary and detail containing its own ### Summary block
+    const created = await adapter.createTicket({
+      title: 'Sleep-232 Summary Precedence Repro',
+      type: 'Bug',
+      projectCode: 'Core',
+      priority: 'High',
+      summary: 'Short one-liner summary passed via summary param.',
+      detail: [
+        '### Summary',
+        multiParagraphSummary,
+        '',
+        '### Fix Breakdown',
+        '1. Preserve multi-paragraph `### Summary` block in `detail.md`.',
+        '2. Emit `**Type**:` instead of `**Category**:` on line 2.',
+      ].join('\n'),
+    });
+
+    expect(created.detail?.summary).toBe(multiParagraphSummary);
+    expect(created.detail?.raw).toContain('**Type**: Bug  \n');
+    expect(created.detail?.raw).not.toMatch(/^\*\*Category\*\*:/m);
+    expect(created.detail?.raw).toContain(multiParagraphSummary);
+    expect(created.detail?.raw).not.toContain('Short one-liner summary passed via summary param.');
+
+    // 2. createTicket without detail still emits **Type**: and uses summary parameter
+    const simpleTicket = await adapter.createTicket({
+      title: 'Simple Summary Ticket',
+      type: 'Tools',
+      projectCode: 'Core',
+      summary: 'Concise summary when detail is omitted.',
+    });
+    expect(simpleTicket.detail?.summary).toBe('Concise summary when detail is omitted.');
+    expect(simpleTicket.detail?.raw).toContain('**Type**: Tools  \n');
+    expect(simpleTicket.detail?.raw).not.toContain('**Category**:');
+
+    // 3. updateTicket with both summary and detail containing its own ### Summary block preserves the detail's ### Summary
+    const updatedWithBoth = await adapter.updateTicket(simpleTicket.meta.id, {
+      summary: 'Short summary param on update.',
+      detail: [
+        '# Ticket #2: Simple Summary Ticket',
+        '**Category**: Tools  ',
+        '',
+        '### Summary',
+        'Rich updated summary authored directly inside detail markdown.',
+        '',
+        '### Task Breakdown',
+        '1. Verify full-document detail path.',
+      ].join('\n'),
+    });
+    expect(updatedWithBoth.detail?.summary).toBe(
+      'Rich updated summary authored directly inside detail markdown.'
+    );
+    expect(updatedWithBoth.detail?.raw).toContain('**Type**: Tools');
+    expect(updatedWithBoth.detail?.raw).not.toContain('**Category**:');
+
+    // 4. Standalone summary update (without detail) still updates ### Summary in detail.md
+    const updatedStandaloneSummary = await adapter.updateTicket(simpleTicket.meta.id, {
+      summary: 'Standalone summary update replaces the existing summary section.',
+    });
+    expect(updatedStandaloneSummary.detail?.summary).toBe(
+      'Standalone summary update replaces the existing summary section.'
+    );
+  });
 });
 

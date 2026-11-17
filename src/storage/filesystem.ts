@@ -2943,7 +2943,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
 
     if (syncAll || updates?.type || updates?.category) {
       const effectiveType = meta.type || meta.category;
-      const preferTypeLabel = Boolean(updates?.type || updates?.category);
+      const preferTypeLabel = Boolean(syncAll || updates?.type || updates?.category);
       preamble = replaceAndDedupeLine(
         preamble,
         /^([ \t]*(?:[-*•]\s+)?)\*\*(Type|Category)\*\*:\s*[^\n\r]*/gim,
@@ -3102,6 +3102,14 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     return `${prefix ? `${prefix}\n\n` : ''}### Summary\n${cleanSummary}\n${sectionsBody ? `\n${sectionsBody.trimStart()}` : ''}`;
   }
 
+  private extractExplicitSummarySectionBody(content: string): string {
+    const match = content.match(
+      /(?:^|\n)[ \t]*(?:##|###)\s*(?:Summary|Rationale)\s*\n([\s\S]*?)(?=\n[ \t]*(?:##|###|#)\s+|$)/i
+    );
+    if (!match) return '';
+    return this.stripSummaryPlaceholder(match[1]);
+  }
+
   private reconcileDetailSummarySection(
     processed: string,
     fallbackSummary?: string,
@@ -3115,8 +3123,9 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         /((?:##|###)\s*(?:Summary|Rationale)\s*\n)Summary to be defined\.?[ \t]*\r?\n+(?![ \t]*#)(?=\S)/i,
         '$1'
       );
-      if (cleanExplicitSummary) {
-        next = this.updateDetailSummarySection(next, cleanExplicitSummary);
+      const existingSummaryBody = this.extractExplicitSummarySectionBody(next);
+      if (!existingSummaryBody && (cleanExplicitSummary || cleanFallbackSummary)) {
+        next = this.updateDetailSummarySection(next, cleanExplicitSummary || cleanFallbackSummary);
       }
       return next;
     }
@@ -3151,8 +3160,9 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         /((?:##|###)\s*(?:Summary|Rationale)\s*\n)Summary to be defined\.?[ \t]*\r?\n+(?![ \t]*#)(?=\S)/i,
         '$1'
       );
-      if (cleanExplicitSummary) {
-        cleaned = this.updateDetailSummarySection(cleaned, cleanExplicitSummary);
+      const existingSummaryBody = this.extractExplicitSummarySectionBody(cleaned);
+      if (!existingSummaryBody && (cleanExplicitSummary || cleanFallbackSummary)) {
+        cleaned = this.updateDetailSummarySection(cleaned, cleanExplicitSummary || cleanFallbackSummary);
       }
       if (!hasBreakdown && !/(?:^|\n)[ \t]*(?:##|###)\s+(?!Summary|Rationale)/i.test(cleaned)) {
         return `${cleaned.trim()}\n`;
@@ -3185,6 +3195,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
     explicitSummary?: string
   ): string {
     const trimmed = rawDetail.trim();
+    const effectiveType = meta.type || meta.category;
     const priorityLine = meta.priority ? `**Priority**: ${meta.priority}  \n` : '';
     const milestoneLine = meta.milestone ? `**Milestone**: ${meta.milestone}  \n` : '';
 
@@ -3202,10 +3213,10 @@ export class FilesystemStorageAdapter implements StorageAdapter {
         const comp = (meta.complexity && meta.complexity !== 'undefined' && meta.complexity !== 'null')
           ? meta.complexity
           : 'Medium';
-        const metaBlock = `\n**Category**: ${meta.category}  \n${priorityLine}${milestoneLine}**Complexity**: ${comp}  \n**Estimated Effort**: ${eff}  \n`;
+        const metaBlock = `\n**Type**: ${effectiveType}  \n${priorityLine}${milestoneLine}**Complexity**: ${comp}  \n**Estimated Effort**: ${eff}  \n`;
         processed = processed.replace(/^(# Ticket[^\n]+\n)/m, `$1${metaBlock}`);
       } else if (!/\*\*(?:Type|Category)\*\*:/i.test(preambleCheck)) {
-        processed = processed.replace(/^(# Ticket[^\n]+\n)/m, `$1**Category**: ${meta.category}  \n`);
+        processed = processed.replace(/^(# Ticket[^\n]+\n)/m, `$1**Type**: ${effectiveType}  \n`);
       }
       processed = this.reconcileDetailMetadataHeaders(processed, meta, undefined, true);
       processed = this.reconcileDetailSummarySection(processed, fallbackSummary, explicitSummary);
@@ -3240,7 +3251,7 @@ export class FilesystemStorageAdapter implements StorageAdapter {
       : 'Medium';
 
     return `# Ticket #${meta.id}: ${meta.title}
-**Category**: ${meta.category}  
+**Type**: ${effectiveType}  
 ${priorityLine}${milestoneLine}**Complexity**: ${effectiveComplexity}  
 **Estimated Effort**: ${effectiveEffort}  
 
@@ -3427,15 +3438,16 @@ ${body.trim()}\n`;
     if (rawDetail) {
       detailMd = this.formatTicketDetailMarkdown(rawDetail, meta, cleanSummary, cleanSummary);
     } else {
+      const effectiveType = meta.type || meta.category;
       const priorityLine = meta.priority ? `**Priority**: ${meta.priority}  \n` : '';
       const milestoneLine = meta.milestone ? `**Milestone**: ${meta.milestone}  \n` : '';
       detailMd = `# Ticket #${nextId}: ${meta.title}
-**Category**: ${meta.category}  
+**Type**: ${effectiveType}  
 ${priorityLine}${milestoneLine}**Complexity**: ${meta.complexity}  
 **Estimated Effort**: ${meta.estimatedEffort}  
 
 ### Summary
-${input.summary || 'Summary to be defined.'}
+${cleanSummary || 'Summary to be defined.'}
 
 ### Feature Breakdown
 1. **Initial Requirement**:
