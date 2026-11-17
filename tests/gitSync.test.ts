@@ -24,6 +24,8 @@ import {
   setGlobalConfigKey,
   getGlobalConfigKey,
   resolveGitSyncConfig,
+  resolveSyncCliStages,
+  normalizeGitSyncMode,
   getGlobalConfigPath,
   DEFAULT_GIT_SYNC_CONFIG,
 } from '../src/config.js';
@@ -213,9 +215,13 @@ describe('Esedre-6: Automatic Data Hub Git Sync', () => {
     let tempRoot: string;
     let bareRemoteDir: string;
     let hubDir: string;
+    let prevGlobalDir: string | undefined;
 
     beforeEach(() => {
       tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-sync-e2e-'));
+      prevGlobalDir = process.env.ESEDRE_GLOBAL_DIR;
+      process.env.ESEDRE_GLOBAL_DIR = path.join(tempRoot, 'global-esedre');
+      fs.mkdirSync(process.env.ESEDRE_GLOBAL_DIR, { recursive: true });
       bareRemoteDir = path.join(tempRoot, 'remote.git');
       hubDir = path.join(tempRoot, 'esedre-data');
 
@@ -235,8 +241,13 @@ describe('Esedre-6: Automatic Data Hub Git Sync', () => {
 
     afterEach(async () => {
       await globalGitSyncCoordinator.waitForIdle();
+      if (prevGlobalDir === undefined) {
+        delete process.env.ESEDRE_GLOBAL_DIR;
+      } else {
+        process.env.ESEDRE_GLOBAL_DIR = prevGlobalDir;
+      }
       try {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       } catch {}
     });
 
@@ -964,6 +975,226 @@ describe('Esedre-6: Automatic Data Hub Git Sync', () => {
       expect(apiTicket1?.commentCount).toBe(1);
 
       fsStorage.closeWatchers();
+    });
+  });
+
+  describe('Explicit autoCommit / autoPush Properties & sync.mode Presets (Esedre-117)', { timeout: 45000 }, () => {
+    let tempRoot: string;
+    let bareRemoteDir: string;
+    let hubDir: string;
+    let server: http.Server | null = null;
+    let prevGlobalDir: string | undefined;
+
+    beforeEach(() => {
+      tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'esedre-sync-modes-'));
+      prevGlobalDir = process.env.ESEDRE_GLOBAL_DIR;
+      process.env.ESEDRE_GLOBAL_DIR = path.join(tempRoot, 'global-esedre');
+      fs.mkdirSync(process.env.ESEDRE_GLOBAL_DIR, { recursive: true });
+
+      bareRemoteDir = path.join(tempRoot, 'remote.git');
+      hubDir = path.join(tempRoot, 'esedre-data');
+
+      fs.mkdirSync(bareRemoteDir, { recursive: true });
+      git(bareRemoteDir, ['init', '--bare', '-b', 'main']);
+
+      fs.mkdirSync(path.join(hubDir, 'projects'), { recursive: true });
+      fs.writeFileSync(path.join(hubDir, 'projects.json'), '[]\n', 'utf-8');
+      git(hubDir, ['init', '-b', 'main']);
+      git(hubDir, ['config', 'user.name', 'Test Developer']);
+      git(hubDir, ['config', 'user.email', 'test@esedre.com']);
+      git(hubDir, ['remote', 'add', 'origin', bareRemoteDir]);
+      git(hubDir, ['add', 'projects.json']);
+      git(hubDir, ['commit', '-m', '[Infra] Initialize data hub']);
+      git(hubDir, ['push', '-u', 'origin', 'main']);
+    });
+
+    afterEach(async () => {
+      globalGitSyncCoordinator.stopDaemonBackgroundLoop();
+      await globalGitSyncCoordinator.waitForIdle();
+      if (server) {
+        await new Promise<void>((resolve) => server!.close(() => resolve()));
+        server = null;
+      }
+      if (prevGlobalDir === undefined) {
+        delete process.env.ESEDRE_GLOBAL_DIR;
+      } else {
+        process.env.ESEDRE_GLOBAL_DIR = prevGlobalDir;
+      }
+      try {
+        fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      } catch {}
+    });
+
+    it('supports sync.autoCommit = true (commit-only mode) with zero network push until autoPush is enabled', async () => {
+      const storage = new FilesystemStorageAdapter(tempRoot, {
+        dataDir: hubDir,
+        projectCode: 'Esedre',
+        sync: {
+          autoCommit: true,
+          debounceSeconds: 0,
+        },
+      });
+      await storage.registerProject({ code: 'Esedre', name: 'Esedre Engine' });
+
+      // Delete the bare remote temporarily to prove commit-only makes zero network calls even on daemon startup
+      const movedRemoteDir = path.join(tempRoot, 'remote-offline.git');
+      fs.renameSync(bareRemoteDir, movedRemoteDir);
+
+      await storage.createTicket({
+        projectCode: 'Esedre',
+        title: 'Local auto-committed ticket without push',
+      });
+      await globalGitSyncCoordinator.waitForIdle();
+
+      const localStatus = await getDataHubSyncStatus(hubDir, { autoCommit: true });
+      expect(localStatus.enabled).toBe(true);
+      expect(localStatus.mode).toBe('commit-only');
+      expect(localStatus.autoCommit).toBe(true);
+      expect(localStatus.autoPush).toBe(false);
+      expect(localStatus.autoPull).toBe(false);
+      expect(localStatus.status).toBe('idle');
+      expect(localStatus.dirtyFilesCount).toBe(0);
+      expect(localStatus.pendingCommits).toBeGreaterThanOrEqual(1);
+
+      const localLog = git(hubDir, ['log', '--oneline', '-n', '3']);
+      expect(localLog).toContain('[#Esedre-1] Create ticket: Local auto-committed ticket without push');
+
+      // Restore bare remote and verify remote still does NOT have the commit yet
+      fs.renameSync(movedRemoteDir, bareRemoteDir);
+      const remoteLogBefore = git(bareRemoteDir, ['log', '--oneline', '-n', '5']);
+      expect(remoteLogBefore).not.toContain('Local auto-committed ticket without push');
+
+      // Push pending local commits via Push Only (commit: false, pull: false, push: true)
+      const pushRes = await syncDataHub(hubDir, {
+        commit: false,
+        pull: false,
+        push: true,
+        force: true,
+      });
+      expect(pushRes.status).toBe('idle');
+      expect(pushRes.committed).toBe(false);
+      expect(pushRes.pushed).toBe(true);
+      expect(pushRes.pendingCommits).toBe(0);
+
+      const remoteLogAfter = git(bareRemoteDir, ['log', '--oneline', '-n', '5']);
+      expect(remoteLogAfter).toContain('[#Esedre-1] Create ticket: Local auto-committed ticket without push');
+      storage.closeWatchers();
+    });
+
+    it('normalizes sync.mode presets (COMMIT_ONLY, PULL_ONLY, COMMIT_AND_PUSH, OFF) and explicit autoCommit/autoPush keys', async () => {
+      expect(normalizeGitSyncMode('COMMIT_ONLY')).toBe('commit-only');
+      expect(normalizeGitSyncMode('commit-only')).toBe('commit-only');
+      expect(normalizeGitSyncMode('PULL_ONLY')).toBe('pull-only');
+      expect(normalizeGitSyncMode('COMMIT_AND_PUSH')).toBe('commit-and-push');
+      expect(normalizeGitSyncMode('full')).toBe('commit-and-push');
+      expect(normalizeGitSyncMode('OFF')).toBe('off');
+      expect(() => normalizeGitSyncMode('invalid-mode')).toThrow(/Invalid Git sync mode/);
+
+      // 1. Set COMMIT_ONLY via setGlobalConfigKey
+      setGlobalConfigKey('sync.mode', 'COMMIT_ONLY');
+      expect(getGlobalConfigKey('sync.mode')).toBe('commit-only');
+      expect(getGlobalConfigKey('sync.autoCommit')).toBe(true);
+      expect(getGlobalConfigKey('sync.autoPush')).toBe(false);
+      expect(getGlobalConfigKey('sync.autoPull')).toBe(false);
+      expect(getGlobalConfigKey('sync.enabled')).toBe(true);
+
+      // 2. Opt into autoPush on top of commit-only -> elevates mode to commit-and-push
+      setGlobalConfigKey('sync.autoPush', 'true');
+      expect(getGlobalConfigKey('sync.mode')).toBe('commit-and-push');
+      expect(getGlobalConfigKey('sync.autoCommit')).toBe(true);
+      expect(getGlobalConfigKey('sync.autoPush')).toBe(true);
+      expect(getGlobalConfigKey('sync.autoPull')).toBe(true);
+
+      // 3. Turn off via sync.mode = off (or none)
+      setGlobalConfigKey('sync.mode', 'none');
+      expect(getGlobalConfigKey('sync.mode')).toBe('off');
+      expect(getGlobalConfigKey('sync.enabled')).toBe(false);
+
+      // 4. Legacy { enabled: true, push: false } backwards compatibility
+      const legacyCommitOnly = resolveGitSyncConfig({ sync: { enabled: true, push: false } });
+      expect(legacyCommitOnly.mode).toBe('commit-only');
+      expect(legacyCommitOnly.autoCommit).toBe(true);
+      expect(legacyCommitOnly.autoPush).toBe(false);
+
+      // 5. HTTP POST /api/planning/sync/config accepts autoCommit/autoPush and rejects invalid mode with 400
+      const fsStorage = new FilesystemStorageAdapter(tempRoot, { dataDir: hubDir, projectCode: 'Esedre' });
+      const handler = createApiHandler(fsStorage, tempRoot);
+      server = http.createServer(async (req, res) => {
+        await handler(req, res);
+      });
+      await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', () => resolve()));
+      const addr = server.address() as { port: number };
+      const remoteUrl = `http://127.0.0.1:${addr.port}`;
+
+      const okRes = await fetch(`${remoteUrl}/api/planning/sync/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autoCommit: true, autoPush: false, autoPull: false }),
+      });
+      expect(okRes.status).toBe(200);
+      const okData = await okRes.json();
+      expect(okData.config.mode).toBe('commit-only');
+      expect(okData.config.autoCommit).toBe(true);
+      expect(okData.config.autoPush).toBe(false);
+
+      const badModeRes = await fetch(`${remoteUrl}/api/planning/sync/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'bogus_mode' }),
+      });
+      expect(badModeRes.status).toBe(400);
+      fsStorage.closeWatchers();
+    });
+
+    it('resolves CLI ese sync flags (--commit-only, --no-push, --no-pull, --all) and respects commit-only config on bare ese sync', () => {
+      const offCfg = resolveGitSyncConfig({ sync: { mode: 'off' } });
+      const commitOnlyCfg = resolveGitSyncConfig({ sync: { mode: 'commit-only' } });
+
+      // Bare `ese sync` when background sync is off -> full commit + pull + push
+      const bareOff = parseCliArgs(['sync']);
+      expect(resolveSyncCliStages(bareOff.flags, bareOff.positionals[0], offCfg)).toEqual({
+        commit: true,
+        pull: true,
+        push: true,
+      });
+
+      // Bare `ese sync` when configured as commit-only -> honors autoPush: false
+      expect(resolveSyncCliStages(bareOff.flags, bareOff.positionals[0], commitOnlyCfg)).toEqual({
+        commit: true,
+        pull: false,
+        push: false,
+      });
+
+      // `ese sync --all` forces full sync even when configured as commit-only
+      const parsedAll = parseCliArgs(['sync', '--all']);
+      expect(resolveSyncCliStages(parsedAll.flags, parsedAll.positionals[0], commitOnlyCfg)).toEqual({
+        commit: true,
+        pull: true,
+        push: true,
+      });
+
+      // `ese sync --commit-only` and `ese sync --no-push` perform pure local commit
+      const parsedCommitOnly = parseCliArgs(['sync', '--commit-only']);
+      expect(parsedCommitOnly.error).toBeUndefined();
+      expect(resolveSyncCliStages(parsedCommitOnly.flags, parsedCommitOnly.positionals[0], offCfg)).toEqual({
+        commit: true,
+        pull: false,
+        push: false,
+      });
+
+      const parsedNoPush = parseCliArgs(['sync', '--no-push']);
+      expect(parsedNoPush.error).toBeUndefined();
+      expect(resolveSyncCliStages(parsedNoPush.flags, parsedNoPush.positionals[0], offCfg)).toEqual({
+        commit: true,
+        pull: false,
+        push: false,
+      });
+
+      // Mode-specific UI badges remain backwards-compatible for 2 args and descriptive for 3 args
+      expect(getSyncStatusBadgeMeta('idle', true).label).toBe('Active / Idle');
+      expect(getSyncStatusBadgeMeta('idle', true, 'commit-only').label).toBe('Commit Only (Local)');
+      expect(getSyncStatusBadgeMeta('idle', true, 'pull-only').label).toBe('Pull Only');
+      expect(getSyncStatusBadgeMeta('idle', true, 'commit-and-push').label).toBe('Commit + Push');
     });
   });
 });

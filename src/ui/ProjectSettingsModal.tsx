@@ -451,7 +451,7 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
                       ) : (
                         <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 inline-flex items-center gap-1">
                           <Check size={10} />
-                          Data Hub ({syncReport?.enabled ? 'Auto-Sync Active' : 'Auto-Sync Off'})
+                          Data Hub ({syncReport?.enabled ? `Sync: ${syncReport.config?.mode || 'Active'}` : 'Auto-Sync Off'})
                         </span>
                       )}
                     </div>

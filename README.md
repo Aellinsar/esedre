@@ -196,26 +196,30 @@ Esedre resolves whether to use `HttpStorageAdapter` (remote HTTP) or `Filesystem
 4. **Workspace Server Host (`server.host` in `.esedre/esedre.json`)**: Shared team or intranet repositories can declare a default `server.host` in `.esedre/esedre.json` (automatically bypassed on the host machine itself when the host owns the local `dataDir` hub).
 5. **Machine-Global Default (`server.host` in `~/.esedre/config.json`)**: Routes all non-standalone workspaces on a client machine to your primary Esedre server, while still generating local `.esedre/snapshot.json` files inside each client workspace for zero-latency LLM agent grounding.
 
-#### Automatic Data Hub Git Sync (`sync.enabled`)
+#### Automatic Data Hub Git Sync (`sync.autoCommit`, `sync.autoPush` & `sync.mode`)
 
-Esedre can automatically commit, pull with rebase, and push mutations in your dedicated ticket data hub (`esedre-data`) to GitHub while strictly leaving your project source code repositories untouched:
+Esedre can automatically stage and commit mutations in your dedicated ticket data hub (`esedre-data`) locally (`commit-only`) or continuously rebase and push them to GitHub (`commit-and-push`), while strictly leaving your project source code repositories untouched:
 
 ```bash
-# Enable automatic data hub Git synchronization in ~/.esedre/config.json (defaults: 5s debounce, 15m interval)
-ese configure set sync.enabled true
+# Option A: Safe local auto-commit only (commits to esedre-data locally after 5s debounce; zero network push)
+ese configure set sync.autoCommit true          # equivalent preset: ese configure set sync.mode commit-only
 
-# Optional: customize debounce window (seconds) and periodic pull interval (minutes)
+# Option B: Full GitHub auto-sync (auto-commit + fetch/rebase + push to origin/main)
+ese configure set sync.mode commit-and-push     # or also run: ese configure set sync.autoPush true
+
+# Optional: customize debounce window (seconds), periodic pull interval (minutes), or auto-pull
 ese configure set sync.debounceSeconds 5
 ese configure set sync.intervalMinutes 15
 
-# Inspect data hub sync status, dirty file count, pending commits, and last synced SHA
+# Inspect data hub sync mode, dirty file count, pending commits, and last synced SHA
 ese sync --status
 
-# Trigger an immediate full sync (commit + pull/rebase + push), Pull Only (--pull), or Push Only (--push --no-commit)
+# Manual actions: Commit Only (--commit-only / --no-push), Pull Only (--pull), Push Only (--push --no-commit), or Full Sync (--all)
+ese sync --commit-only
 ese sync
 ```
 
-You can also configure sync settings, inspect per-project hub eligibility, and trigger **Sync Hub Now**, **Pull Only**, or **Push Only** from the **Global Esedre Settings** gear modal in the local Web UI (`ese start`).
+You can also select a mode preset (`Off`, `Commit Only`, `Pull Only`, `Commit & Push`), toggle `sync.autoCommit` and `sync.autoPush`, inspect per-project hub eligibility, and trigger **Commit Only**, **Pull Only**, **Push Only**, or **Commit & Push** from the **Global Esedre Settings** gear modal in the local Web UI (`ese start`).
 
 * **Hard Data-Hub Boundary (`verifyDataHubGitRepo`)**: Auto-sync verifies that the target directory is the top-level Git root of a dedicated Esedre data hub (`projects/` + `projects.json` or `.esedre-hub`) and refuses to operate on source code repositories, workspace repositories with `projectCode`, or subdirectories inside a parent repo.
 * **Ephemeral Lease & Temp Exclusion**: `projects/*/tickets/*/lease.json`, `*.tmp.*`, and `*.bak` files are excluded from staging so high-frequency agent lease claims, heartbeats, and atomic file writes never pollute Git commit history.

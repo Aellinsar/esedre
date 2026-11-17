@@ -331,7 +331,19 @@ export class EsedreConflictError extends Error {
   }
 }
 
+export type GitSyncMode =
+  | 'off'
+  | 'commit-only'
+  | 'pull-only'
+  | 'push-only'
+  | 'commit-and-pull'
+  | 'commit-and-push';
+
 export interface GitSyncConfig {
+  autoCommit?: boolean;
+  autoPush?: boolean;
+  autoPull?: boolean;
+  mode?: GitSyncMode;
   enabled?: boolean;
   remote?: string;
   branch?: string;
@@ -339,6 +351,20 @@ export interface GitSyncConfig {
   pullOnStart?: boolean;
   debounceSeconds?: number;
   intervalMinutes?: number;
+}
+
+export interface ResolvedGitSyncConfig {
+  enabled: boolean;
+  mode: GitSyncMode;
+  autoCommit: boolean;
+  autoPush: boolean;
+  autoPull: boolean;
+  remote: string;
+  branch: string;
+  push: boolean;
+  pullOnStart: boolean;
+  debounceSeconds: number;
+  intervalMinutes: number;
 }
 
 export type SyncMutationAction =
@@ -383,6 +409,10 @@ export interface GitSyncHubMetrics {
 export interface GitSyncHubStatus {
   hubDir: string;
   enabled: boolean;
+  mode?: GitSyncMode;
+  autoCommit?: boolean;
+  autoPush?: boolean;
+  autoPull?: boolean;
   remote: string;
   branch: string;
   push: boolean;
@@ -419,7 +449,7 @@ export interface GitSyncResult {
 
 export interface GitSyncStatusReport {
   enabled: boolean;
-  config: Required<GitSyncConfig>;
+  config: ResolvedGitSyncConfig;
   hubs: GitSyncHubStatus[];
   projectModes?: ProjectSyncMode[];
 }

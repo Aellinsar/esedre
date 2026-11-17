@@ -40,9 +40,13 @@ const BOOLEAN_OPTIONS: Record<string, { short?: string }> = {
   'no-in-dev': {},
   hub: {},
   pull: {},
+  'no-pull': {},
   push: {},
+  'no-push': {},
   commit: {},
   'no-commit': {},
+  'commit-only': {},
+  commitOnly: {},
 };
 
 const STRING_OPTIONS: Record<string, { short?: string }> = {
@@ -395,6 +399,26 @@ export function parseCliArgs(rawArgs: string[]): ParsedCliArgs {
     if (name === 'no-commit') {
       flags['no-commit'] = value;
       flags['commit'] = !value;
+      return;
+    }
+    if (name === 'no-push') {
+      flags['no-push'] = value;
+      flags['push'] = !value;
+      return;
+    }
+    if (name === 'no-pull') {
+      flags['no-pull'] = value;
+      flags['pull'] = !value;
+      return;
+    }
+    if (name === 'commit-only' || name === 'commitOnly') {
+      flags['commit-only'] = value;
+      flags['commitOnly'] = value;
+      if (value) {
+        flags['commit'] = true;
+        flags['pull'] = false;
+        flags['push'] = false;
+      }
       return;
     }
     if (name === 'no-include-completed') {

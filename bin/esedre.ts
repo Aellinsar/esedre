@@ -28,6 +28,7 @@ import {
   getGlobalConfigKey,
   resolvePorts,
   resolveGitSyncConfig,
+  resolveSyncCliStages,
   expandHome,
   writeGlobalVersion,
   DEFAULT_ESEDRE_PORT,
@@ -132,8 +133,12 @@ ${colors.bold}SERVICE DAEMON COMMANDS:${colors.reset}
   ${colors.bold}logs${colors.reset}        [--port <n>] [--lines <n>]
                Tail recent logs from the Esedre background server.
 
-  ${colors.bold}sync${colors.reset}        [--status | -s] [--pull] [--push] [--commit | --no-commit] [--hub <path>] [--json]
-               Synchronize configured Esedre data hub repository (esedre-data) with its Git remote.
+  ${colors.bold}sync${colors.reset}        [--status | -s] [--commit-only] [--pull | --no-pull] [--push | --no-push] [--commit | --no-commit] [--all] [--hub <path>] [--json]
+               Synchronize configured Esedre data hub repository (esedre-data) locally (--commit-only / --no-push) or with its Git remote.
+               • Commit Only: ese sync --commit-only       (stage & commit dirty hub files locally; zero network push)
+               • Pull Only:   ese sync --pull              (fetch & rebase upstream commits without committing dirty files)
+               • Push Only:   ese sync --push --no-commit  (push existing local commits without committing dirty files)
+               • Full Sync:   ese sync --all               (commit + fetch/rebase + push to remote)
 
   ${colors.bold}mcp${colors.reset}         Start the Model Context Protocol (MCP) JSON-RPC 2.0 stdio server for autonomous LLM coding agents.
 
@@ -147,7 +152,7 @@ ${colors.bold}DEVELOPER ADMINISTRATION (Human Setup & Configuration):${colors.re
                Inspect or mutate central Esedre configuration (~/.esedre/config.json).
                • add <path>       Link an external project repository (federated projects map) or register a data hub (dataDir)
                • remove <target>  Unlink a project or data hub
-               • set <key> <val>  Update a central configuration setting (e.g. server.host http://<ip>:5674 or none)
+               • set <key> <val>  Update a central configuration setting (e.g. sync.autoCommit true, sync.autoPush true, sync.mode commit-only, server.host http://<ip>:5674)
 
   ${colors.bold}upgrade${colors.reset}     [<path>] [-p|--project <code>] [--all|-a] [--force|-f] [--json]
                Upgrade workspace configuration schema, wrappers, MCP configs, agent skills, and project data schema. Registers workspace in ~/.esedre/config.json and refreshes snapshot.
@@ -182,6 +187,10 @@ ${colors.bold}OPTIONS:${colors.reset}
   --file <path>        Path to markdown file for detail (create, update), implementation plan (plan), or comment (comment).
   --plan "<md>"        Implementation plan markdown for ticket during create or update.
   --plan-file <path>   Path to markdown file for implementation plan during create or update.
+  --commit-only       Stage and commit data hub changes locally without pulling or pushing (for 'sync').
+  --pull / --no-pull  Enable or skip remote fetch and rebase during 'sync'.
+  --push / --no-push  Enable or skip remote push during 'sync'.
+  --commit / --no-commit Enable or skip local staging and commit during 'sync'.
   --host <url|local>   Override target remote Esedre daemon host URL (or 'local' for local disk).
   --json              Output raw machine-readable JSON (strongly recommended for autonomous LLM coding agents).
   --last-hash <hash>  Optimistic concurrency control: last known sha1 hash of the ticket from 'get'.
@@ -941,8 +950,8 @@ async function main(): Promise<void> {
         console.log(
           `  • Git Auto-Sync: ${
             resolvedSync.enabled
-              ? `${colors.green}enabled${colors.reset} (remote: ${resolvedSync.remote}, branch: ${resolvedSync.branch}, push: ${resolvedSync.push}, debounce: ${resolvedSync.debounceSeconds}s, interval: ${resolvedSync.intervalMinutes}m)`
-              : `${colors.dim}disabled (enable with 'ese configure set sync.enabled true')${colors.reset}`
+              ? `${colors.green}${resolvedSync.mode}${colors.reset} (autoCommit: ${resolvedSync.autoCommit}, autoPush: ${resolvedSync.autoPush}, autoPull: ${resolvedSync.autoPull}, remote: ${resolvedSync.remote}, branch: ${resolvedSync.branch}, debounce: ${resolvedSync.debounceSeconds}s, interval: ${resolvedSync.intervalMinutes}m)`
+              : `${colors.dim}off (enable local commit with 'ese configure set sync.autoCommit true' or full sync with 'ese configure set sync.mode commit-and-push')${colors.reset}`
           }`
         );
 
@@ -976,8 +985,10 @@ async function main(): Promise<void> {
         console.log(`  • Link external repository: ${colors.cyan}ese configure add <repoPath>${colors.reset}`);
         console.log(`  • Register a data hub:      ${colors.cyan}ese configure add <hubPath>${colors.reset}`);
         console.log(`  • Set remote server host:   ${colors.cyan}ese configure set server.host http://<host>:5674${colors.reset}`);
-        console.log(`  • Enable Git auto-sync:     ${colors.cyan}ese configure set sync.enabled true${colors.reset}`);
-        console.log(`  • Sync data hub manually:   ${colors.cyan}ese sync [--status]${colors.reset}`);
+        console.log(`  • Enable local auto-commit: ${colors.cyan}ese configure set sync.autoCommit true${colors.reset}`);
+        console.log(`  • Enable remote auto-push:  ${colors.cyan}ese configure set sync.autoPush true${colors.reset}`);
+        console.log(`  • Set sync mode preset:     ${colors.cyan}ese configure set sync.mode <off|commit-only|pull-only|commit-and-push>${colors.reset}`);
+        console.log(`  • Sync data hub manually:   ${colors.cyan}ese sync [--status | --commit-only | --pull | --push]${colors.reset}`);
         console.log(`  • Create hub project:       ${colors.cyan}ese init --project <code> --name "<name>"${colors.reset}`);
         console.log(`  • Unlink a project or hub:  ${colors.cyan}ese configure remove <code|path>${colors.reset}`);
         console.log(`  • Set setting value:        ${colors.cyan}ese configure set <key> <value>${colors.reset}`);
@@ -1361,8 +1372,9 @@ async function main(): Promise<void> {
               if (status.sync) {
                 const hubCount = status.sync.hubs.length;
                 const pendingTotal = status.sync.hubs.reduce((sum, h) => sum + (h.pendingCommits || 0), 0);
+                const modeLabel = status.sync.config?.mode || (status.sync.enabled ? 'enabled' : 'off');
                 console.log(
-                  `  • Git Sync:    ${status.sync.enabled ? `${colors.green}enabled${colors.reset}` : `${colors.dim}disabled${colors.reset}`} (${hubCount} hub(s), ${pendingTotal} pending commit(s))`
+                  `  • Git Sync:    ${status.sync.enabled ? `${colors.green}${modeLabel}${colors.reset}` : `${colors.dim}off${colors.reset}`} (${hubCount} hub(s), ${pendingTotal} pending commit(s))`
                 );
               }
             } else {
@@ -1380,8 +1392,9 @@ async function main(): Promise<void> {
             if (status.sync) {
               const hubCount = status.sync.hubs.length;
               const pendingTotal = status.sync.hubs.reduce((sum, h) => sum + (h.pendingCommits || 0), 0);
+              const modeLabel = status.sync.config?.mode || (status.sync.enabled ? 'enabled' : 'off');
               console.log(
-                `  • Git Sync:    ${status.sync.enabled ? `${colors.green}enabled${colors.reset}` : `${colors.dim}disabled${colors.reset}`} (${hubCount} hub(s), ${pendingTotal} pending commit(s))`
+                `  • Git Sync:    ${status.sync.enabled ? `${colors.green}${modeLabel}${colors.reset}` : `${colors.dim}off${colors.reset}`} (${hubCount} hub(s), ${pendingTotal} pending commit(s))`
               );
             }
 
@@ -1434,9 +1447,11 @@ async function main(): Promise<void> {
           }
           console.log(`\n${colors.bold}${colors.cyan}Esedre Data Hub Git Sync Status${colors.reset}`);
           console.log(
-            `  • Auto-Sync: ${
-              report.enabled ? `${colors.green}enabled${colors.reset}` : `${colors.dim}disabled${colors.reset}`
-            } (remote: ${report.config.remote}, branch: ${report.config.branch}, push: ${report.config.push}, debounce: ${report.config.debounceSeconds}s, interval: ${report.config.intervalMinutes}m)`
+            `  • Mode:      ${
+              report.enabled
+                ? `${colors.green}${report.config.mode}${colors.reset}`
+                : `${colors.dim}off${colors.reset}`
+            } (autoCommit: ${report.config.autoCommit}, autoPush: ${report.config.autoPush}, autoPull: ${report.config.autoPull}, remote: ${report.config.remote}, branch: ${report.config.branch}, debounce: ${report.config.debounceSeconds}s, interval: ${report.config.intervalMinutes}m)`
           );
           if (report.hubs.length === 0) {
             console.log(`  • Hubs:      ${colors.dim}(no data hubs configured in dataDir)${colors.reset}`);
@@ -1452,7 +1467,7 @@ async function main(): Promise<void> {
                     ? colors.yellow
                     : colors.red;
             console.log(`\n  ${colors.bold}Hub:${colors.reset} ${colors.cyan}${h.hubDir}${colors.reset}`);
-            console.log(`    - State:           ${stateColor}${h.status}${colors.reset}`);
+            console.log(`    - State:           ${stateColor}${h.status}${colors.reset} (mode: ${h.mode || report.config.mode})`);
             console.log(`    - Remote / Branch: ${h.remote} / ${h.branch}`);
             console.log(`    - Dirty Files:     ${h.dirtyFilesCount ?? 0}`);
             console.log(`    - Pending Commits: ${h.pendingCommits}`);
@@ -1471,13 +1486,9 @@ async function main(): Promise<void> {
           return;
         }
 
-        const pullFlag = Boolean(flags['pull']);
-        const pushFlag = Boolean(flags['push']);
-        const bothOrNeither = (pullFlag && pushFlag) || (!pullFlag && !pushFlag);
-        const pull = bothOrNeither ? true : pullFlag;
-        const push = bothOrNeither ? true : pushFlag;
-        const defaultCommit = pullFlag && !pushFlag ? false : true;
-        const commit = flags['commit'] !== undefined ? Boolean(flags['commit']) : defaultCommit;
+        const activeCfg = discovered.config || readGlobalConfig();
+        const resolvedSync = resolveGitSyncConfig(activeCfg);
+        const { commit, pull, push } = resolveSyncCliStages(flags, sub, resolvedSync);
 
         const results = storage.syncDataHub
           ? await storage.syncDataHub({
@@ -1487,7 +1498,7 @@ async function main(): Promise<void> {
               commit,
               force: true,
             })
-          : await globalGitSyncCoordinator.flushAll(discovered.config || readGlobalConfig(), {
+          : await globalGitSyncCoordinator.flushAll(activeCfg, {
               pull,
               push,
               commit,
